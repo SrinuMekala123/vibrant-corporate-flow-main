@@ -25,27 +25,33 @@ export function StatCard({ label, value, unit, change, trend, icon: Icon, gradie
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 20 }}
+      initial={{ opacity: 0, y: 15 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.4, delay }}
-      className="glass-card rounded-xl p-5 hover:shadow-glow transition-shadow duration-300"
+      whileHover={{ y: -5, scale: 1.02 }}
+      transition={{ duration: 0.3, delay }}
+      className="glass-card rounded-2xl p-6 border border-border/60 hover:border-primary/30 hover:shadow-glow transition-all duration-300 relative overflow-hidden group cursor-pointer"
     >
-      <div className="flex items-start justify-between mb-4">
-        <div className={cn("w-10 h-10 rounded-lg flex items-center justify-center", gradientMap[gradient])}>
-          <Icon className="w-5 h-5 text-primary-foreground" />
+      {/* Decorative ambient light behind card */}
+      <div className="absolute -right-8 -top-8 w-24 h-24 rounded-full bg-primary/5 group-hover:bg-primary/10 transition-all duration-300 filter blur-xl" />
+
+      <div className="flex items-start justify-between mb-4 relative z-10">
+        <div className={cn("w-11 h-11 rounded-xl flex items-center justify-center shadow-sm transition-transform group-hover:scale-110 duration-300", gradientMap[gradient])}>
+          <Icon className="w-5 h-5 text-white" />
         </div>
         {change !== undefined && (
-          <div className={cn("flex items-center gap-1 text-xs font-medium", trendColor)}>
-            <TrendIcon className="w-3 h-3" />
+          <div className={cn("flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-muted/65 border border-border/40", trendColor)}>
+            <TrendIcon className="w-3.5 h-3.5" />
             <span>{Math.abs(change)}%</span>
           </div>
         )}
       </div>
-      <p className="text-2xl font-bold text-foreground">
-        {value}
-        {unit && <span className="text-sm font-normal text-muted-foreground ml-1">{unit}</span>}
-      </p>
-      <p className="text-sm text-muted-foreground mt-1">{label}</p>
+      <div className="space-y-1 relative z-10">
+        <p className="text-3xl font-extrabold tracking-tight text-foreground">
+          {value}
+          {unit && <span className="text-sm font-semibold text-muted-foreground ml-1">{unit}</span>}
+        </p>
+        <p className="text-xs uppercase font-extrabold tracking-wider text-muted-foreground">{label}</p>
+      </div>
     </motion.div>
   );
 }

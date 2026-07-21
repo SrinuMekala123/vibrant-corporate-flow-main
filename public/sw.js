@@ -524,22 +524,26 @@ self.addEventListener('fetch', (event) => {
 
     // IMPORTANT: Skip all Supabase requests - let them go directly
     if (url.hostname.includes('supabase.co')) {
-        // Don't intercept, don't cache, just pass through
-        event.respondWith(fetch(event.request));
         return;
     }
 
     // Skip non-GET requests
     if (event.request.method !== 'GET') {
-        event.respondWith(fetch(event.request));
         return;
     }
 
-    // For HTML pages
-    if (event.request.mode === 'navigate') {
+    // For HTML pages (SPA shell routing)
+    const isNavigation = event.request.mode === 'navigate' || 
+                         url.pathname === '/' || 
+                         !url.pathname.includes('.');
+
+    if (isNavigation) {
         event.respondWith(
-            fetch(event.request).catch(() => {
-                return caches.match(OFFLINE_URL);
+            caches.match(OFFLINE_URL).then((cachedResponse) => {
+                // Prefer cached offline shell first for instant load and route takeover
+                return cachedResponse || fetch(event.request);
+            }).catch(() => {
+                return fetch(event.request);
             })
         );
         return;
@@ -556,6 +560,9 @@ self.addEventListener('fetch', (event) => {
                     cache.put(event.request, networkResponse.clone());
                     return networkResponse;
                 });
+            }).catch((err) => {
+                console.warn("SW static asset fetch failed:", err);
+                return new Response("Network error", { status: 408, headers: { 'Content-Type': 'text/plain' } });
             });
         })
     );

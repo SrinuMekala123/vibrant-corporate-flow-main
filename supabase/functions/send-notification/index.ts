@@ -94,10 +94,14 @@ serve(async (req: Request): Promise<Response> => {
     }
 
     const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY");
-
     if (!RESEND_API_KEY) {
-      throw new Error("RESEND_API_KEY is not set");
+      throw new Error("RESEND_API_KEY environment variable is not set");
     }
+
+    // Support sending to multiple emails if an array is passed
+    const toEmails = Array.isArray(email) ? email : [email];
+
+    console.log(`Attempting to send email. To: ${JSON.stringify(toEmails)} | Subject: ${subject}`);
 
     const res = await fetch("https://api.resend.com/emails", {
       method: "POST",
@@ -107,25 +111,34 @@ serve(async (req: Request): Promise<Response> => {
       },
       body: JSON.stringify({
         from: "Brihaspathi Support <onboarding@resend.dev>",
-        to: [email],
+        to: toEmails,
         subject: subject,
         html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2 style="color: #4f46e5;">🔧 Brihaspathi Field Service</h2>
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e5e7eb; border-radius: 8px; background: #ffffff;">
+            <h2 style="color: #4f46e5; margin-top: 0;">🔧 Brihaspathi Field Service</h2>
             <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 20px 0;">
             <p><strong>Subject:</strong> ${subject}</p>
-            ${ticketId ? `<p><strong>Ticket ID:</strong> ${ticketId}</p>` : ''}
-            <p style="background: #f9fafb; padding: 12px; border-radius: 6px;">${message.replace(/\n/g, '<br>')}</p>
+            ${ticketId ? `<p><strong>Ticket ID:</strong> #${ticketId.slice(0, 8)}</p>` : ''}
+            <div style="background: #f9fafb; padding: 16px; border-radius: 6px; border-left: 4px solid #4f46e5; white-space: pre-wrap; font-size: 14px; line-height: 1.5; color: #374151;">${message}</div>
             <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 20px 0;">
-            <p style="color: #6b7280; font-size: 12px;">
-              This is an automated notification from Brihaspathi Field Service Management.
+            <p style="color: #6b7280; font-size: 12px; margin-bottom: 0;">
+              This is an automated notification from Brihaspathi Field Service Management. Please do not reply directly to this email.
             </p>
           </div>
         `,
       }),
     });
 
-    const data = await res.json();
+    console.log(`Resend HTTP Response status: ${res.status}`);
+    let data;
+    try {
+      data = await res.json();
+      console.log("Resend Response Data:", JSON.stringify(data));
+    } catch (e) {
+      const rawText = await res.text();
+      console.error("Failed to parse Resend response as JSON. Raw text:", rawText);
+      throw new Error(`Resend returned non-JSON response (status ${res.status}): ${rawText}`);
+    }
 
     if (res.ok) {
       return new Response(JSON.stringify({ success: true, data }), {
@@ -133,10 +146,12 @@ serve(async (req: Request): Promise<Response> => {
         status: 200,
       });
     } else {
-      throw new Error(data.message || "Failed to send email");
+      console.error("Resend API rejected request. Error payload:", data);
+      const errMsg = data.message || (data.error && data.error.message) || `Resend API Error (HTTP ${res.status})`;
+      throw new Error(errMsg);
     }
-  } catch (error) {
-    console.error("Email error:", error);
+  } catch (error: any) {
+    console.error("Failed to send notification:", error.message);
     return new Response(JSON.stringify({ error: error.message }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
       status: 400,

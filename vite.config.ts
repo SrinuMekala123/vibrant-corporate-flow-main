@@ -69,7 +69,7 @@ export default defineConfig(({ mode }) => ({
       },
       manifest: false, // Don't generate manifest automatically
       devOptions: {
-        enabled: true,
+        enabled: false,
         type: 'module',
       },
     })

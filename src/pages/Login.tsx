@@ -1,241 +1,82 @@
-// import { useState } from "react";
-// import { useNavigate } from "react-router-dom";
-// import { motion } from "framer-motion";
-// import { Zap, Mail, Lock, Eye, EyeOff, ChevronDown } from "lucide-react";
-// import { Button } from "@/components/ui/button";
-// import { Input } from "@/components/ui/input";
-// import { useAuth, mockUsers, UserRole } from "@/contexts/AuthContext";
-// import { toast } from "sonner";
-
-// const roleColors: Record<UserRole, string> = {
-//   admin: "gradient-primary",
-//   supervisor: "gradient-cool",
-//   technician: "gradient-warm",
-//   customer: "bg-muted",
-// };
-
-// const roleLabels: Record<UserRole, string> = {
-//   admin: "Administrator",
-//   supervisor: "Supervisor",
-//   technician: "Field Technician",
-//   customer: "Customer",
-// };
-
-// const Login = () => {
-//   const [email, setEmail] = useState("");
-//   const [password, setPassword] = useState("");
-//   const [showPass, setShowPass] = useState(false);
-//   const [selectedRole, setSelectedRole] = useState<UserRole | null>(null);
-//   const navigate = useNavigate();
-//   const { login } = useAuth();
-
-//   const filteredUsers = selectedRole ? mockUsers.filter((u) => u.role === selectedRole) : [];
-
-//   const handleLogin = (e: React.FormEvent) => {
-//     e.preventDefault();
-//     const success = login(email);
-//     if (success) {
-//       toast.success("Logged in successfully!");
-//       navigate("/dashboard");
-//     } else {
-//       toast.error("Invalid email. Try selecting a user below.");
-//     }
-//   };
-
-//   const handleQuickLogin = (userEmail: string) => {
-//     setEmail(userEmail);
-//     const success = login(userEmail);
-//     if (success) {
-//       toast.success("Logged in successfully!");
-//       navigate("/dashboard");
-//     }
-//   };
-
-//   return (
-//     <div className="min-h-screen flex">
-//       {/* Left Panel - Gradient Hero */}
-//       <div className="hidden lg:flex lg:w-1/2 gradient-primary relative overflow-hidden items-center justify-center p-12">
-//         <div className="absolute inset-0 opacity-10">
-//           {[...Array(6)].map((_, i) => (
-//             <motion.div
-//               key={i}
-//               className="absolute rounded-full border border-primary-foreground/20"
-//               style={{
-//                 width: `${200 + i * 120}px`,
-//                 height: `${200 + i * 120}px`,
-//                 left: "50%",
-//                 top: "50%",
-//                 transform: "translate(-50%, -50%)",
-//               }}
-//               animate={{ scale: [1, 1.1, 1], opacity: [0.3, 0.1, 0.3] }}
-//               transition={{ duration: 4 + i, repeat: Infinity, ease: "easeInOut" }}
-//             />
-//           ))}
-//         </div>
-//         <motion.div
-//           initial={{ opacity: 0, y: 30 }}
-//           animate={{ opacity: 1, y: 0 }}
-//           transition={{ duration: 0.8 }}
-//           className="relative z-10 text-center"
-//         >
-//           <div className="w-20 h-20 mx-auto mb-8 rounded-2xl bg-primary-foreground/10 backdrop-blur-xl flex items-center justify-center border border-primary-foreground/20">
-//             <Zap className="w-10 h-10 text-primary-foreground" />
-//           </div>
-//           <h1 className="text-4xl font-display font-bold text-primary-foreground mb-4">
-//             Field Service<br />Management
-//           </h1>
-//           <p className="text-primary-foreground/70 text-lg max-w-md">
-//             Streamline your field operations with data-driven workflows and real-time tracking.
-//           </p>
-//         </motion.div>
-//       </div>
-
-//       {/* Right Panel - Login Form */}
-//       <div className="flex-1 flex items-center justify-center p-8 bg-background overflow-y-auto">
-//         <motion.div
-//           initial={{ opacity: 0, x: 20 }}
-//           animate={{ opacity: 1, x: 0 }}
-//           transition={{ duration: 0.5, delay: 0.2 }}
-//           className="w-full max-w-md"
-//         >
-//           {/* Mobile logo */}
-//           <div className="lg:hidden flex items-center gap-3 mb-10">
-//             <div className="w-10 h-10 rounded-xl gradient-primary flex items-center justify-center">
-//               <Zap className="w-5 h-5 text-primary-foreground" />
-//             </div>
-//             <span className="font-display font-bold text-xl">Brihaspathi FSM</span>
-//           </div>
-
-//           <h2 className="text-2xl font-display font-bold mb-2">Welcome back</h2>
-//           <p className="text-muted-foreground mb-8">Sign in to your account to continue</p>
-
-//           <form onSubmit={handleLogin} className="space-y-5">
-//             <div className="space-y-2">
-//               <label className="text-sm font-medium">Email</label>
-//               <div className="relative">
-//                 <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-//                 <Input
-//                   type="email"
-//                   placeholder="admin@brihaspathi.com"
-//                   value={email}
-//                   onChange={(e) => setEmail(e.target.value)}
-//                   className="pl-10 h-11"
-//                 />
-//               </div>
-//             </div>
-//             <div className="space-y-2">
-//               <label className="text-sm font-medium">Password</label>
-//               <div className="relative">
-//                 <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-//                 <Input
-//                   type={showPass ? "text" : "password"}
-//                   placeholder="••••••••"
-//                   value={password}
-//                   onChange={(e) => setPassword(e.target.value)}
-//                   className="pl-10 pr-10 h-11"
-//                 />
-//                 <button
-//                   type="button"
-//                   onClick={() => setShowPass(!showPass)}
-//                   className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-//                 >
-//                   {showPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-//                 </button>
-//               </div>
-//             </div>
-//             <Button type="submit" className="w-full h-11 gradient-primary text-primary-foreground font-semibold shadow-glow hover:opacity-90 transition-opacity">
-//               Sign In
-//             </Button>
-//           </form>
-
-//           {/* Quick Login by Role */}
-//           <div className="mt-8">
-//             <p className="text-xs text-muted-foreground uppercase tracking-wider mb-3 font-medium">Quick Login (Demo)</p>
-//             <div className="grid grid-cols-2 gap-2 mb-3">
-//               {(["admin", "supervisor", "technician", "customer"] as UserRole[]).map((role) => (
-//                 <button
-//                   key={role}
-//                   onClick={() => setSelectedRole(selectedRole === role ? null : role)}
-//                   className={`px-3 py-2 rounded-lg text-xs font-semibold capitalize transition-all border ${
-//                     selectedRole === role
-//                       ? "border-primary bg-primary/10 text-primary"
-//                       : "border-border bg-muted/50 text-muted-foreground hover:bg-muted"
-//                   }`}
-//                 >
-//                   {roleLabels[role]}
-//                 </button>
-//               ))}
-//             </div>
-//             {selectedRole && filteredUsers.length > 0 && (
-//               <motion.div
-//                 initial={{ opacity: 0, height: 0 }}
-//                 animate={{ opacity: 1, height: "auto" }}
-//                 className="space-y-2"
-//               >
-//                 {filteredUsers.map((u) => (
-//                   <button
-//                     key={u.id}
-//                     onClick={() => handleQuickLogin(u.email)}
-//                     className="w-full flex items-center gap-3 p-3 rounded-lg bg-muted/50 hover:bg-muted transition-colors text-left"
-//                   >
-//                     <div className={`w-9 h-9 rounded-full ${roleColors[u.role]} flex items-center justify-center text-xs font-bold text-primary-foreground`}>
-//                       {u.avatar}
-//                     </div>
-//                     <div className="flex-1 min-w-0">
-//                       <p className="text-sm font-medium truncate">{u.name}</p>
-//                       <p className="text-xs text-muted-foreground truncate">{u.email}</p>
-//                     </div>
-//                     <ChevronDown className="w-4 h-4 text-muted-foreground rotate-[-90deg]" />
-//                   </button>
-//                 ))}
-//               </motion.div>
-//             )}
-//           </div>
-
-//           <p className="text-center text-sm text-muted-foreground mt-8">
-//             © 2026 Brihaspathi Technologies Ltd.
-//           </p>
-//         </motion.div>
-//       </div>
-//     </div>
-//   );
-// };
-
-// export default Login;
-
-
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Zap, Mail, Lock, Eye, EyeOff, ChevronDown } from "lucide-react";
+import { Zap, Mail, Lock, Eye, EyeOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useAuth, UserRole } from "@/contexts/AuthContext";
+import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
-
-const roleColors: Record<UserRole, string> = {
-  admin: "gradient-primary",
-  supervisor: "gradient-cool",
-  technician: "gradient-warm",
-  customer: "bg-muted",
-};
-
-const roleLabels: Record<UserRole, string> = {
-  admin: "Administrator",
-  supervisor: "Supervisor",
-  technician: "Field Technician",
-  customer: "Customer",
-};
+import { supabase } from "@/lib/supabase";
 
 const Login = () => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPass, setShowPass] = useState(false);
-  const [selectedRole, setSelectedRole] = useState<UserRole | null>(null);
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
 
-  const { signIn, signUp } = useAuth();
+  const { signIn, user, loading: authLoading } = useAuth();
+
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
+  const [resetEmail, setResetEmail] = useState("");
+  const [resetLoading, setResetLoading] = useState(false);
+
+  // Note: If you see "WebCrypto API is not supported" in the console, this is a harmless Supabase client fallback for older environments and can be safely ignored.
+  const handlePasswordReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setResetLoading(true);
+    try {
+      // 📢 Remind to add http://localhost:8080/update-password (and LAN IP equivalent) in Supabase Dashboard -> Auth -> URL Configuration
+      // Also configure Site URL: http://localhost:8080 (or production URL when deployed)
+      const { error } = await supabase.auth.resetPasswordForEmail(resetEmail, {
+        redirectTo: `${window.location.origin}/update-password`,
+      });
+      if (error) throw error;
+      toast.success("Password reset email sent! Check your inbox.");
+      setShowForgotPassword(false);
+      setResetEmail("");
+    } catch (error: any) {
+      console.error("Forgot Password error:", error);
+      // Catch Supabase security rate limit (429 Too Many Requests)
+      // To test freely, increase the "Recover / Password Reset rate limit" under Authentication -> Settings -> Rate Limits in the Supabase Dashboard.
+      if (error.status === 429 || error.message?.includes("429") || error.message?.toLowerCase().includes("rate limit") || error.message?.toLowerCase().includes("too many requests")) {
+        toast.error("Too many requests. Please wait a few minutes before trying again, or contact support.");
+      } else {
+        toast.error(error.message || "Failed to send reset email");
+      }
+    } finally {
+      setResetLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    // 1. Check for query parameter errors (like expired reset links)
+    const params = new URLSearchParams(window.location.search);
+    const error = params.get("error");
+    const errorDesc = params.get("error_description");
+    if (error) {
+      toast.error(errorDesc || "Authentication error occurred.");
+      // Clean the URL query parameters
+      navigate("/", { replace: true });
+      return;
+    }
+
+    const forgot = params.get("forgot-password");
+    if (forgot === "true") {
+      setShowForgotPassword(true);
+    }
+
+    // 2. Redirect logged-in users to the dashboard (unless in recovery mode)
+    if (!authLoading && user) {
+      const isRecovery = window.location.hash.includes("type=recovery") || 
+                         window.location.href.includes("type=recovery") ||
+                         window.location.search.includes("code=") ||
+                         window.location.search.includes("type=recovery");
+      if (!isRecovery) {
+        navigate("/dashboard");
+      }
+    }
+  }, [user, authLoading, navigate]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -253,50 +94,18 @@ const Login = () => {
     setLoading(false);
   };
 
-  const handleQuickLogin = async (userEmail: string) => {
-    setLoading(true);
-    const { error } = await signIn(userEmail, "demo123");
-    if (!error) {
-      toast.success("Logged in successfully!");
-      navigate("/dashboard");
-    } else {
-      toast.error("Demo login failed. Please sign up or use correct credentials.");
-    }
-    setLoading(false);
-  };
-
-  const handleSignUp = async (role: UserRole) => {
-    if (!email || !password) {
-      toast.error("Please enter email and password first");
-      return;
-    }
-
-    setLoading(true);
-    const { error } = await signUp(
-      email,
-      password,
-      email.split("@")[0],
-      role
-    );
-
-    if (error) {
-      toast.error(error.message || "Sign up failed");
-    } else {
-      toast.success("Account created! Please check your email to confirm.");
-      navigate("/dashboard");
-    }
-    setLoading(false);
-  };
-
   return (
-    <div className="min-h-screen flex">
+    <div className="min-h-screen flex bg-background">
       {/* Left Panel - Gradient Hero */}
       <div className="hidden lg:flex lg:w-1/2 gradient-primary relative overflow-hidden items-center justify-center p-12">
-        <div className="absolute inset-0 opacity-10">
+        {/* Floating Background Elements */}
+        <div className="absolute inset-0 opacity-20">
+          <div className="absolute top-1/4 left-1/4 w-72 h-72 rounded-full bg-blue-400 filter blur-3xl animate-float" />
+          <div className="absolute bottom-1/4 right-1/4 w-80 h-80 rounded-full bg-emerald-400 filter blur-3xl animate-float-delayed" />
           {[...Array(6)].map((_, i) => (
             <motion.div
               key={i}
-              className="absolute rounded-full border border-primary-foreground/20"
+              className="absolute rounded-full border border-white/10"
               style={{
                 width: `${200 + i * 120}px`,
                 height: `${200 + i * 120}px`,
@@ -304,8 +113,8 @@ const Login = () => {
                 top: "50%",
                 transform: "translate(-50%, -50%)",
               }}
-              animate={{ scale: [1, 1.1, 1], opacity: [0.3, 0.1, 0.3] }}
-              transition={{ duration: 4 + i, repeat: Infinity, ease: "easeInOut" }}
+              animate={{ scale: [1, 1.08, 1], opacity: [0.15, 0.05, 0.15] }}
+              transition={{ duration: 6 + i, repeat: Infinity, ease: "easeInOut" }}
             />
           ))}
         </div>
@@ -313,65 +122,71 @@ const Login = () => {
           initial={{ opacity: 0, y: 30 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.8 }}
-          className="relative z-10 text-center"
+          className="relative z-10 text-center text-primary-foreground max-w-lg"
         >
-          <div className="w-20 h-20 mx-auto mb-8 rounded-2xl bg-primary-foreground/10 backdrop-blur-xl flex items-center justify-center border border-primary-foreground/20">
-            <Zap className="w-10 h-10 text-primary-foreground" />
+          <div className="w-20 h-20 mx-auto mb-8 rounded-2xl bg-white/10 backdrop-blur-xl flex items-center justify-center border border-white/20 shadow-glow animate-float">
+            <Zap className="w-10 h-10 text-white fill-white/10" />
           </div>
-          <h1 className="text-4xl font-display font-bold text-primary-foreground mb-4">
-            Field Service<br />Management
+          <h1 className="text-4xl xl:text-5xl font-display font-extrabold tracking-tight mb-4">
+            Field Service Management
           </h1>
-          <p className="text-primary-foreground/70 text-lg max-w-md">
-            Streamline your field operations with data-driven workflows and real-time tracking.
+          <p className="text-white/80 text-lg font-normal leading-relaxed">
+            Elevating field service operations with real-time analytics, automated technician dispatch, and dynamic, data-driven workflows.
           </p>
         </motion.div>
       </div>
 
-      {/* Right Panel - Login Form */}
-      <div className="flex-1 flex items-center justify-center p-8 bg-background overflow-y-auto">
+      {/* Right Panel - Secure Login Form */}
+      <div className="flex-1 flex items-center justify-center p-6 sm:p-12 md:p-16 overflow-y-auto">
         <motion.div
           initial={{ opacity: 0, x: 20 }}
           animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.5, delay: 0.2 }}
-          className="w-full max-w-md"
+          transition={{ duration: 0.5, delay: 0.1 }}
+          className="w-full max-w-md space-y-8"
         >
-          {/* Mobile logo */}
-          <div className="lg:hidden flex items-center gap-3 mb-10">
-            <div className="w-10 h-10 rounded-xl gradient-primary flex items-center justify-center">
-              <Zap className="w-5 h-5 text-primary-foreground" />
+          {/* Brand Logo for Mobile */}
+          <div className="lg:hidden flex items-center gap-3 mb-6">
+            <div className="w-10 h-10 rounded-xl gradient-primary flex items-center justify-center shadow-glow">
+              <Zap className="w-5 h-5 text-white" />
             </div>
-            <span className="font-display font-bold text-xl">Brihaspathi FSM</span>
+            <span className="font-display font-extrabold text-2xl tracking-tight text-gradient">Brihaspathi FSM</span>
           </div>
 
-          <h2 className="text-2xl font-display font-bold mb-2">Welcome back</h2>
-          <p className="text-muted-foreground mb-8">Sign in to your account to continue</p>
+          <div className="space-y-2">
+            <div className="mb-5 flex justify-start">
+              <img src="/highbtlogo-tm-1.webp" alt="Brihaspathi Technologies" className="h-14 object-contain" />
+            </div>
+            <h2 className="text-3xl font-display font-extrabold tracking-tight text-foreground">Welcome Back</h2>
+            <p className="text-muted-foreground text-sm">Enter your credentials to access the Field Service Console.</p>
+          </div>
 
+          {/* Secure Login Form */}
           <form onSubmit={handleLogin} className="space-y-5">
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Email</label>
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Email Address</label>
               <div className="relative">
-                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                 <Input
                   type="email"
                   placeholder="you@company.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="pl-10 h-11"
+                  className="pl-11 h-12 rounded-xl border-border/80 focus:border-primary focus:ring-primary/20 bg-card"
                   required
                   disabled={loading}
                 />
               </div>
             </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Password</label>
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Password</label>
               <div className="relative">
-                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                 <Input
                   type={showPass ? "text" : "password"}
                   placeholder="••••••••"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="pl-10 pr-10 h-11"
+                  className="pl-11 pr-11 h-12 rounded-xl border-border/80 focus:border-primary focus:ring-primary/20 bg-card"
                   required
                   minLength={6}
                   disabled={loading}
@@ -379,75 +194,106 @@ const Login = () => {
                 <button
                   type="button"
                   onClick={() => setShowPass(!showPass)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground disabled:opacity-50"
+                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                   disabled={loading}
                 >
                   {showPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
             </div>
+            <div className="text-right">
+              <button
+                type="button"
+                onClick={() => setShowForgotPassword(true)}
+                className="text-xs font-semibold text-primary hover:underline hover:text-primary/80 transition-colors"
+                disabled={loading}
+              >
+                Forgot Password?
+              </button>
+            </div>
             <Button
               type="submit"
-              className="w-full h-11 gradient-primary text-primary-foreground font-semibold shadow-glow hover:opacity-90 transition-opacity"
+              className="w-full h-12 rounded-xl gradient-primary text-white font-bold shadow-glow hover:opacity-95 transition-all mt-2"
               disabled={loading}
             >
               {loading ? (
-                <span className="flex items-center gap-2">
-                  <span className="animate-spin rounded-full h-4 w-4 border-2 border-primary-foreground border-t-transparent" />
-                  Signing in...
+                <span className="flex items-center justify-center gap-2">
+                  <span className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
+                  Authenticating...
                 </span>
               ) : "Sign In"}
             </Button>
           </form>
 
-          {/* Quick Login by Role (Demo Only) */}
-          {/* <div className="mt-8">
-            <p className="text-xs text-muted-foreground uppercase tracking-wider mb-3 font-medium">Quick Login (Demo)</p>
-            <div className="grid grid-cols-2 gap-2 mb-3">
-              {(["admin", "supervisor", "technician", "customer"] as UserRole[]).map((role) => (
-                <button
-                  key={role}
-                  onClick={() => setSelectedRole(selectedRole === role ? null : role)}
-                  className={`px-3 py-2 rounded-lg text-xs font-semibold capitalize transition-all border ${selectedRole === role
-                    ? "border-primary bg-primary/10 text-primary"
-                    : "border-border bg-muted/50 text-muted-foreground hover:bg-muted"
-                    } ${loading ? "opacity-50 cursor-not-allowed" : ""}`}
-                  disabled={loading}
-                >
-                  {roleLabels[role]}
-                </button>
-              ))}
-            </div>
-            {selectedRole && (
-              <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: "auto" }}
-                className="space-y-2"
-              >
-                <div className="p-3 rounded-lg bg-muted/50 text-xs text-muted-foreground">
-                  <p>Enter email above, then click:</p>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="mt-2 w-full"
-                    onClick={() => handleSignUp(selectedRole)}
-                    disabled={loading || !email}
-                  >
-                    Sign Up as {roleLabels[selectedRole]}
-                  </Button>
-                  <p className="mt-2 text-[10px]">
-                    Demo password: <code className="bg-muted px-1 rounded">demo123</code>
-                  </p>
-                </div>
-              </motion.div>
-            )}
-          </div> */}
-
-          <p className="text-center text-sm text-muted-foreground mt-8">
-            © 2026 Brihaspathi Technologies Ltd.
+          <p className="text-center text-xs text-muted-foreground font-medium pt-4">
+            © 2026 Brihaspathi Technologies Ltd. All rights reserved.
           </p>
         </motion.div>
       </div>
+
+      {showForgotPassword && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-card border border-border/80 p-6 sm:p-8 rounded-2xl max-w-md w-full shadow-2xl space-y-6 relative overflow-hidden"
+          >
+            {/* Background elements */}
+            <div className="absolute -top-12 -right-12 w-32 h-32 rounded-full bg-primary/10 filter blur-2xl" />
+            
+            <div className="space-y-2">
+              <h2 className="text-2xl font-display font-extrabold tracking-tight text-foreground">Reset Password</h2>
+              <p className="text-sm text-muted-foreground">
+                Enter your email address and we'll send you a secure link to reset your password.
+              </p>
+            </div>
+
+            <form onSubmit={handlePasswordReset} className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Email Address</label>
+                <div className="relative">
+                  <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                  <Input
+                    type="email"
+                    value={resetEmail}
+                    onChange={(e) => setResetEmail(e.target.value)}
+                    placeholder="you@company.com"
+                    className="pl-11 h-12 rounded-xl border-border/80 focus:border-primary focus:ring-primary/20 bg-background"
+                    required
+                    disabled={resetLoading}
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setShowForgotPassword(false)}
+                  className="flex-1 h-11 rounded-xl"
+                  disabled={resetLoading}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={resetLoading}
+                  className="flex-1 h-11 rounded-xl gradient-primary text-white font-bold"
+                >
+                  {resetLoading ? (
+                    <span className="flex items-center justify-center gap-2">
+                      <span className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
+                      Sending...
+                    </span>
+                  ) : (
+                    "Send Reset Link"
+                  )}
+                </Button>
+              </div>
+            </form>
+          </motion.div>
+        </div>
+      )}
     </div>
   );
 };
