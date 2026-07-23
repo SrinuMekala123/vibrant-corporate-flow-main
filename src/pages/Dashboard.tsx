@@ -296,7 +296,7 @@ const Dashboard = () => {
             </span>
             System Active
           </div>
-          <h1 className="text-3xl font-display font-black tracking-tight text-slate-900">{getGreetingText()}</h1>
+          <h1 className="text-2xl sm:text-3xl font-display font-black tracking-tight text-slate-900 break-words leading-tight">{getGreetingText()}</h1>
           <p className="text-slate-500 text-[13px] font-medium mt-2 max-w-3xl leading-relaxed">
             Welcome to your smart tracking dashboard. Monitor live field complaints, manage scheduled service tasks, download system metrics, and track updates dynamically.
           </p>

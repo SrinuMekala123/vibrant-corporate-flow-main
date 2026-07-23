@@ -13,6 +13,7 @@ import { complaintService } from "@/services/complaintService";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import browserImageCompression from "browser-image-compression";
+import { notificationService } from "@/services/notificationService";
 
 const ComplaintEdit = () => {
   const { id } = useParams();
@@ -23,6 +24,37 @@ const ComplaintEdit = () => {
   const isCustomer = isRole("customer");
   const isAdminOrSupervisor = isRole("admin", "supervisor");
   const isAdmin = isRole("admin");
+
+  const fetchProfileByName = async (name: string) => {
+    if (!name) return null;
+    const trimmedName = name.trim();
+    try {
+      if (trimmedName.includes('@')) {
+        const { data } = await supabase
+          .from('profiles')
+          .select('id, email, full_name')
+          .ilike('email', trimmedName)
+          .maybeSingle();
+        if (data) return data;
+      }
+      const { data: exactMatch } = await supabase
+        .from('profiles')
+        .select('id, email, full_name')
+        .eq('full_name', trimmedName)
+        .maybeSingle();
+      if (exactMatch) return exactMatch;
+
+      const { data: partialMatch } = await supabase
+        .from('profiles')
+        .select('id, email, full_name')
+        .ilike('full_name', `%${trimmedName}%`)
+        .limit(1);
+      return partialMatch?.[0] || null;
+    } catch (e) {
+      console.warn("Failed to fetch profile by name:", e);
+      return null;
+    }
+  };
 
   const { data: existingComplaint, isLoading: isFetching } = useQuery({
     queryKey: ['complaint', id],
@@ -45,7 +77,19 @@ const ComplaintEdit = () => {
     queryFn: async () => {
       const { data, error } = await supabase.from('profiles').select('id, full_name, email, phone, expertise, available').eq('role', 'supervisor');
       if (error) throw error;
-      return data;
+      return (data || []).map((s: any) => ({
+        ...s,
+        id: s.id || "",
+        full_name: s.full_name || "",
+        email: s.email || "",
+        phone: s.phone || "",
+        expertise: s.expertise || "",
+        available: s.available ?? true,
+        employeeId: s.employee_id || s.employeeId || s.employee_code || s.employeeCode || "",
+        employee_id: s.employee_id || s.employeeId || s.employee_code || s.employeeCode || "",
+        employeeCode: s.employee_code || s.employeeCode || "",
+        department: s.department || s.expertise || "",
+      }));
     },
     enabled: isAdminOrSupervisor,
   });
@@ -55,7 +99,19 @@ const ComplaintEdit = () => {
     queryFn: async () => {
       const { data, error } = await supabase.from('profiles').select('id, full_name, email, phone, expertise, available').eq('role', 'technician');
       if (error) throw error;
-      return data;
+      return (data || []).map((t: any) => ({
+        ...t,
+        id: t.id || "",
+        full_name: t.full_name || "",
+        email: t.email || "",
+        phone: t.phone || "",
+        expertise: t.expertise || "",
+        available: t.available ?? true,
+        employeeId: t.employee_id || t.employeeId || t.employee_code || t.employeeCode || "",
+        employee_id: t.employee_id || t.employeeId || t.employee_code || t.employeeCode || "",
+        employeeCode: t.employee_code || t.employeeCode || "",
+        department: t.department || t.expertise || "",
+      }));
     },
     enabled: isAdminOrSupervisor,
   });
@@ -89,6 +145,8 @@ const ComplaintEdit = () => {
   });
 
   const [evidenceUrls, setEvidenceUrls] = useState<string[]>([]);
+  const [selectedSupervisorId, setSelectedSupervisorId] = useState("");
+  const [selectedTechnicianId, setSelectedTechnicianId] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isLocating, setIsLocating] = useState(false);
@@ -165,6 +223,32 @@ const ComplaintEdit = () => {
       setEvidenceUrls(existingComplaint.complaint_images || []);
     }
   }, [existingComplaint]);
+
+  useEffect(() => {
+    if (supervisors && form.assignedSupervisor) {
+      const match = supervisors.find((s: any) => s.full_name === form.assignedSupervisor);
+      if (match) {
+        setSelectedSupervisorId(match.id);
+      } else {
+        setSelectedSupervisorId("");
+      }
+    } else {
+      setSelectedSupervisorId("");
+    }
+  }, [supervisors, form.assignedSupervisor]);
+
+  useEffect(() => {
+    if (technicians && form.assignedTechnician) {
+      const match = technicians.find((t: any) => t.full_name === form.assignedTechnician);
+      if (match) {
+        setSelectedTechnicianId(match.id);
+      } else {
+        setSelectedTechnicianId("");
+      }
+    } else {
+      setSelectedTechnicianId("");
+    }
+  }, [technicians, form.assignedTechnician]);
 
   useEffect(() => {
     if (isNew && isCustomer && userProfile && user) {
@@ -435,65 +519,66 @@ const ComplaintEdit = () => {
         queryClient.invalidateQueries({ queryKey: ['dashboard-complaints'] });
         queryClient.invalidateQueries({ queryKey: ['customer-complaints'] });
         
-        // Notify customer on creation
-        let customerEmail: string | null = null;
-        try {
-          const { data: custProfile } = await supabase
-            .from("profiles")
-            .select("email")
-            .eq("id", form.customerId)
-            .maybeSingle();
-          customerEmail = custProfile?.email || null;
-        } catch (e) {
-          console.error("Failed to fetch customer email:", e);
-        }
-
-        if (!customerEmail && user && user.id === form.customerId) {
-          customerEmail = user.email;
-        }
-
-        if (customerEmail) {
-          sendNotification(
-            customerEmail,
-            "📝 Complaint Registered Successfully",
-            `Dear ${form.customerName || "Customer"},\n\nYour complaint has been successfully registered.\n\nTicket Details:\n- Ticket ID: #${newComplaint.id.slice(0, 8)}\n- Title: ${form.title}\n- Description: ${form.description}\n\nOur team is reviewing it and will assign a supervisor shortly.`,
-            newComplaint.id
+        // Notify based on who created the complaint
+        if (isCustomer) {
+          // 1. Customer creates a complaint: Notify: All Admins.
+          const adminIds = await notificationService.getAdminUserIds();
+          await notificationService.insertNotification(
+            adminIds,
+            newComplaint.id,
+            'info',
+            '🔔 New Complaint Registered',
+            `New complaint registered by ${form.customerName || "Customer"}. Ticket #${newComplaint.id.slice(0, 8)} requires assignment.`,
+            1,
+            undefined,
+            user?.id
           );
-        }
-
-        // Notify all admins and supervisors about the new complaint
-        try {
-          const { data: staff } = await supabase
-            .from("profiles")
-            .select("email, full_name")
-            .in("role", ["admin", "supervisor"]);
-
-          if (staff) {
-            for (const person of staff) {
-              if (person.email) {
-                sendNotification(
-                  person.email,
-                  "🔔 New Ticket Pending Assignment",
-                  `Dear ${person.full_name},\n\nA new complaint has been registered and is pending triage/assignment.\n\nTicket Details:\n- Ticket ID: #${newComplaint.id.slice(0, 8)}\n- Title: ${form.title}\n- Customer: ${form.customerName || "Unknown"}\n- Description: ${form.description}`,
-                  newComplaint.id
-                );
-              }
+        } else {
+          // If Admin/Supervisor created it
+          // 2. Admin/Supervisor assigns a Supervisor:
+          if (form.assignedSupervisor) {
+            const supervisorProfile = await fetchProfileByName(form.assignedSupervisor);
+            if (supervisorProfile) {
+              await notificationService.insertNotification(
+                supervisorProfile.id,
+                newComplaint.id,
+                'assignment',
+                '📋 Ticket Assigned',
+                `You have been assigned to Ticket #${newComplaint.id.slice(0, 8)} for telephonic triage.`,
+                1,
+                undefined,
+                user?.id
+              );
             }
           }
-        } catch (e) {
-          console.error("Failed to notify admins/supervisors of new ticket:", e);
-        }
-        
-        // Notify assigned supervisor if present
-        if (form.assignedSupervisor && !isCustomer) {
-          const supervisorEmail = await fetchEmailByName(form.assignedSupervisor);
-          if (supervisorEmail) {
-            sendNotification(
-              supervisorEmail,
-              "📋 New Ticket Assigned",
-              `Dear ${form.assignedSupervisor},\nYou have been assigned as the supervisor for ticket #${newComplaint.id.slice(0, 8)}: "${form.title}".`,
-              newComplaint.id
-            );
+
+          // 3. Admin creates complaint & assigns Technician directly (Direct Dispatch):
+          if (form.assignedTechnician) {
+            const technicianProfile = await fetchProfileByName(form.assignedTechnician);
+            if (technicianProfile) {
+              await notificationService.insertNotification(
+                technicianProfile.id,
+                newComplaint.id,
+                'assignment',
+                '🔧 Direct Dispatch',
+                `Directly assigned to Ticket #${newComplaint.id.slice(0, 8)}. Proceed to site.`,
+                3,
+                undefined,
+                user?.id
+              );
+            }
+            if (form.customerId) {
+              await notificationService.insertNotification(
+                form.customerId,
+                newComplaint.id,
+                'info',
+                '🚐 Technician Dispatched',
+                `A technician has been dispatched to your location for Ticket #${newComplaint.id.slice(0, 8)}.`,
+                3,
+                undefined,
+                user?.id
+              );
+            }
           }
         }
 
@@ -554,54 +639,46 @@ const ComplaintEdit = () => {
           customer_lng: form.customerLng,
         } as any);
 
-        let customerEmail: string | null = null;
-        try {
-          const { data: custProfile } = await supabase
-            .from("profiles")
-            .select("email")
-            .eq("id", form.customerId)
-            .maybeSingle();
-          customerEmail = custProfile?.email || null;
-        } catch (e) {
-          console.error("Failed to fetch customer email:", e);
-        }
-
         if (supervisorChanged) {
-          const supervisorEmail = await fetchEmailByName(form.assignedSupervisor);
-          if (supervisorEmail) {
-            sendNotification(
-              supervisorEmail,
-              "📋 Ticket Assigned",
-              `Dear ${form.assignedSupervisor},\nYou have been assigned as the supervisor for ticket #${id?.slice(0, 8)}: "${form.title}".`,
-              id
-            );
-          }
-          if (customerEmail) {
-            sendNotification(
-              customerEmail,
-              "📋 Supervisor Assigned to Your Complaint",
-              `Dear ${form.customerName || "Customer"},\n\nSupervisor "${form.assignedSupervisor}" has been assigned to your complaint ticket #${id?.slice(0, 8)}: "${form.title}".\n\nThey will perform triage shortly.`,
-              id
+          const supervisorProfile = await fetchProfileByName(form.assignedSupervisor);
+          if (supervisorProfile) {
+            await notificationService.insertNotification(
+              supervisorProfile.id,
+              id!,
+              'assignment',
+              '📋 Ticket Assigned',
+              `You have been assigned to Ticket #${id?.slice(0, 8)} for telephonic triage.`,
+              1,
+              undefined,
+              user?.id
             );
           }
         }
 
         if (technicianChanged) {
-          const technicianEmail = await fetchEmailByName(form.assignedTechnician);
-          if (technicianEmail) {
-            sendNotification(
-              technicianEmail,
-              "🔧 Job Assigned",
-              `Dear ${form.assignedTechnician},\nYou have been assigned as the technician for ticket #${id?.slice(0, 8)}: "${form.title}".`,
-              id
+          const technicianProfile = await fetchProfileByName(form.assignedTechnician);
+          if (technicianProfile) {
+            await notificationService.insertNotification(
+              technicianProfile.id,
+              id!,
+              'assignment',
+              '🔧 Job Assigned',
+              `You have been assigned to Ticket #${id?.slice(0, 8)} at ${form.location || 'site'}.`,
+              3,
+              undefined,
+              user?.id
             );
           }
-          if (customerEmail) {
-            sendNotification(
-              customerEmail,
-              "🔧 Technician Dispatched to Your Location",
-              `Dear ${form.customerName || "Customer"},\n\nTechnician "${form.assignedTechnician}" has been dispatched to resolve your complaint ticket #${id?.slice(0, 8)}: "${form.title}".\n\nThey will arrive at your location shortly.`,
-              id
+          if (form.customerId) {
+            await notificationService.insertNotification(
+              form.customerId,
+              id!,
+              'info',
+              '🔧 Technician Assigned',
+              `Technician ${form.assignedTechnician} has been assigned to your Ticket #${id?.slice(0, 8)}.`,
+              3,
+              undefined,
+              user?.id
             );
           }
         }
@@ -673,7 +750,7 @@ const ComplaintEdit = () => {
               onChange={(e) => setForm({ ...form, title: e.target.value })} 
               placeholder="Brief description of the problem..." 
               required 
-              disabled={isSaving} 
+              disabled={isSaving || (!isNew && isRole("supervisor"))} 
               maxLength={250} 
             />
           </div>
@@ -686,7 +763,7 @@ const ComplaintEdit = () => {
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">Contact Phone <span className="text-destructive">*</span></label>
-                <Input value={form.customerPhone} onChange={(e) => setForm({ ...form, customerPhone: e.target.value })} placeholder="+91 9876543210" required disabled={isSaving} />
+                <Input value={form.customerPhone} onChange={(e) => setForm({ ...form, customerPhone: e.target.value })} placeholder="+91 9876543210" required disabled={isSaving || (!isNew && isRole("supervisor"))} />
               </div>
             </>
           ) : (
@@ -705,7 +782,7 @@ const ComplaintEdit = () => {
                     <Select value={form.customerId} onValueChange={(v) => {
                       const selectedCustomer = customers?.find((c: any) => c.id === v);
                       setForm({ ...form, customerId: v, customerName: selectedCustomer?.full_name || "", customerPhone: selectedCustomer?.phone || "" });
-                    }} disabled={isSaving || !customers}>
+                    }} disabled={isSaving || !customers || (!isNew && isRole("supervisor"))}>
                       <SelectTrigger><SelectValue placeholder="Select Customer" /></SelectTrigger>
                       <SelectContent>
                         {customers?.map((c: any) => (
@@ -717,7 +794,7 @@ const ComplaintEdit = () => {
                   </div>
                   <div className="space-y-2">
                     <label className="text-sm font-medium">Phone</label>
-                    <Input value={form.customerPhone} onChange={(e) => setForm({ ...form, customerPhone: e.target.value })} placeholder="+91 ..." disabled={isSaving} />
+                    <Input value={form.customerPhone} onChange={(e) => setForm({ ...form, customerPhone: e.target.value })} placeholder="+91 ..." disabled={isSaving || (!isNew && isRole("supervisor"))} />
                   </div>
                 </>
               )}
@@ -741,7 +818,7 @@ const ComplaintEdit = () => {
                   }}
                   placeholder="Site address..." 
                   required 
-                  disabled={isSaving} 
+                  disabled={isSaving || (!isNew && isRole("supervisor"))} 
                   className="w-full" 
                 />
                 
@@ -756,6 +833,7 @@ const ComplaintEdit = () => {
                           setShowLocationSuggestions(false);
                         }}
                         className="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-accent hover:text-accent-foreground transition-colors truncate"
+                        disabled={!isNew && isRole("supervisor")}
                       >
                         {suggestion}
                       </button>
@@ -798,7 +876,7 @@ const ComplaintEdit = () => {
 
           <div className="space-y-2">
             <label className="text-sm font-medium">Field of Work <span className="text-destructive">*</span></label>
-            <Select value={form.fieldOfWork} onValueChange={(v) => setForm({ ...form, fieldOfWork: v })} disabled={isSaving}>
+            <Select value={form.fieldOfWork} onValueChange={(v) => setForm({ ...form, fieldOfWork: v })} disabled={isSaving || (!isNew && isRole("supervisor"))}>
               <SelectTrigger><SelectValue placeholder="Select field" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="Solar PV">Solar PV</SelectItem>
@@ -811,7 +889,7 @@ const ComplaintEdit = () => {
 
           <div className="space-y-2">
             <label className="text-sm font-medium">Severity Level <span className="text-destructive">*</span></label>
-            <Select value={form.severity} onValueChange={(v) => setForm({ ...form, severity: v as SeverityTier })} disabled={isSaving}>
+            <Select value={form.severity} onValueChange={(v) => setForm({ ...form, severity: v as SeverityTier })} disabled={isSaving || (!isNew && isRole("supervisor"))}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="minor">Minor - Low priority</SelectItem>
@@ -824,7 +902,7 @@ const ComplaintEdit = () => {
           {isAdminOrSupervisor && !isNew && (
             <div className="space-y-2">
               <label className="text-sm font-medium">Status</label>
-              <Select value={form.status} onValueChange={(v) => setForm({ ...form, status: v })} disabled={isSaving}>
+              <Select value={form.status} onValueChange={(v) => setForm({ ...form, status: v })} disabled={isSaving || (!isNew && isRole("supervisor"))}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="unassigned">Unassigned</SelectItem>
@@ -850,16 +928,27 @@ const ComplaintEdit = () => {
                 )}
               </label>
               <Select 
-                value={form.assignedSupervisor} 
+                value={selectedSupervisorId || "clear_unassigned"} 
                 onValueChange={(v) => {
                   const actualVal = v === "clear_unassigned" ? "" : v;
-                  let updatedStatus = form.status;
-                  if (actualVal && form.status === "unassigned") {
-                    updatedStatus = "assigned";
-                  } else if (!actualVal && form.status === "assigned") {
-                    updatedStatus = "unassigned";
+                  if (!actualVal) {
+                    setSelectedSupervisorId("");
+                    let updatedStatus = form.status;
+                    if (form.status === "assigned") {
+                      updatedStatus = "unassigned";
+                    }
+                    setForm({ ...form, assignedSupervisor: "", status: updatedStatus });
+                  } else {
+                    const match = supervisors?.find((s: any) => s.id === actualVal);
+                    if (match) {
+                      setSelectedSupervisorId(match.id);
+                      let updatedStatus = form.status;
+                      if (form.status === "unassigned") {
+                        updatedStatus = "assigned";
+                      }
+                      setForm({ ...form, assignedSupervisor: match.full_name, status: updatedStatus });
+                    }
                   }
-                  setForm({ ...form, assignedSupervisor: actualVal, status: updatedStatus });
                 }} 
                 disabled={isSaving || !supervisors || !isAdmin}
               >
@@ -870,10 +959,12 @@ const ComplaintEdit = () => {
                     <>
                       <div className="px-2 py-1.5 text-xs font-semibold text-primary uppercase tracking-wider">Matching Expertise {form.fieldOfWork && `(${form.fieldOfWork})`}</div>
                       {matchingSupervisors.map((s: any) => (
-                        <SelectItem key={s.id} value={s.full_name}>
-                          <div className="flex items-center gap-2">
-                            <span>{s.full_name}</span>
-                            {s.expertise && (<span className="text-xs text-muted-foreground">• {s.expertise}</span>)}
+                        <SelectItem key={s.id} value={s.id}>
+                          <div className="flex flex-col text-left py-0.5">
+                            <span className="font-medium">{s.full_name}</span>
+                            <span className="text-[10px] text-muted-foreground leading-normal">
+                              {s.email}{s.phone ? ` • ${s.phone}` : ''}{s.employeeId ? ` • ID: ${s.employeeId}` : ''}{s.expertise ? ` • ${s.expertise}` : ''}
+                            </span>
                           </div>
                         </SelectItem>
                       ))}
@@ -883,10 +974,12 @@ const ComplaintEdit = () => {
                     <>
                       <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider border-t mt-1 pt-2">Other Supervisors</div>
                       {nonMatchingSupervisors.map((s: any) => (
-                        <SelectItem key={s.id} value={s.full_name}>
-                          <div className="flex items-center gap-2">
-                            <span className="text-muted-foreground">{s.full_name}</span>
-                            {s.expertise && (<span className="text-xs text-muted-foreground">• {s.expertise}</span>)}
+                        <SelectItem key={s.id} value={s.id}>
+                          <div className="flex flex-col text-left py-0.5">
+                            <span className="font-medium text-muted-foreground">{s.full_name}</span>
+                            <span className="text-[10px] text-muted-foreground leading-normal">
+                              {s.email}{s.phone ? ` • ${s.phone}` : ''}{s.employeeId ? ` • ID: ${s.employeeId}` : ''}{s.expertise ? ` • ${s.expertise}` : ''}
+                            </span>
                           </div>
                         </SelectItem>
                       ))}
@@ -897,26 +990,47 @@ const ComplaintEdit = () => {
             </div>
           )}
 
-          {isRole("supervisor") && !isNew && (
+          {isAdminOrSupervisor && !isNew && (isRole("supervisor") || (isRole("admin") && !!existingComplaint?.assigned_technician)) && (
             <div className="md:col-span-2 space-y-2">
               <label className="text-sm font-medium flex items-center gap-2">
                 <Filter className="w-3.5 h-3.5 text-primary" />
                 Assigned Technician
                 {form.fieldOfWork && (<span className="text-xs font-normal text-muted-foreground">— Filtered by "{form.fieldOfWork}" expertise</span>)}
               </label>
-              <Select value={form.assignedTechnician} onValueChange={(v) => setForm({ ...form, assignedTechnician: v })} disabled={isSaving || !technicians}>
+              <Select 
+                value={selectedTechnicianId || "clear_unassigned"} 
+                onValueChange={(v) => {
+                  const actualVal = v === "clear_unassigned" ? "" : v;
+                  if (!actualVal) {
+                    setSelectedTechnicianId("");
+                    setForm({ ...form, assignedTechnician: "" });
+                  } else {
+                    const match = technicians?.find((t: any) => t.id === actualVal);
+                    if (match) {
+                      setSelectedTechnicianId(match.id);
+                      setForm({ ...form, assignedTechnician: match.full_name });
+                    }
+                  }
+                }} 
+                disabled={isSaving || !technicians || isAdmin}
+              >
                 <SelectTrigger><SelectValue placeholder="Assign technician" /></SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="clear_unassigned">None (Unassign)</SelectItem>
                   {matchingTechnicians.length > 0 && (
                     <>
                       <div className="px-2 py-1.5 text-xs font-semibold text-primary uppercase tracking-wider">Matching Expertise {form.fieldOfWork && `(${form.fieldOfWork})`}</div>
                       {matchingTechnicians.map((t: any) => (
-                        <SelectItem key={t.id} value={t.full_name}>
-                          <div className="flex items-center gap-2">
-                            <span>{t.full_name}</span>
-                            {t.expertise && (<span className="text-xs text-muted-foreground">• {t.expertise}</span>)}
-                            <span className={`w-2 h-2 rounded-full ${t.available ? "bg-success" : "bg-muted-foreground"}`} />
-                            <span className="text-xs text-muted-foreground">{t.available ? "Available" : "Busy"}</span>
+                        <SelectItem key={t.id} value={t.id}>
+                          <div className="flex flex-col text-left py-0.5">
+                            <div className="flex items-center gap-2">
+                              <span className="font-medium">{t.full_name}</span>
+                              <span className={`w-1.5 h-1.5 rounded-full ${t.available ? "bg-success" : "bg-muted-foreground"}`} />
+                              <span className="text-[9px] text-muted-foreground">{t.available ? "Available" : "Busy"}</span>
+                            </div>
+                            <span className="text-[10px] text-muted-foreground leading-normal">
+                              {t.email}{t.phone ? ` • ${t.phone}` : ''}{t.employeeId ? ` • ID: ${t.employeeId}` : ''}{t.expertise ? ` • ${t.expertise}` : ''}
+                            </span>
                           </div>
                         </SelectItem>
                       ))}
@@ -926,11 +1040,15 @@ const ComplaintEdit = () => {
                     <>
                       <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider border-t mt-1 pt-2">Other Technicians</div>
                       {nonMatchingTechnicians.map((t: any) => (
-                        <SelectItem key={t.id} value={t.full_name}>
-                          <div className="flex items-center gap-2">
-                            <span className="text-muted-foreground">{t.full_name}</span>
-                            {t.expertise && (<span className="text-xs text-muted-foreground">• {t.expertise}</span>)}
-                            <span className={`w-2 h-2 rounded-full ${t.available ? "bg-success" : "bg-muted-foreground"}`} />
+                        <SelectItem key={t.id} value={t.id}>
+                          <div className="flex flex-col text-left py-0.5">
+                            <div className="flex items-center gap-2">
+                              <span className="font-medium text-muted-foreground">{t.full_name}</span>
+                              <span className={`w-1.5 h-1.5 rounded-full ${t.available ? "bg-success" : "bg-muted-foreground"}`} />
+                            </div>
+                            <span className="text-[10px] text-muted-foreground leading-normal">
+                              {t.email}{t.phone ? ` • ${t.phone}` : ''}{t.employeeId ? ` • ID: ${t.employeeId}` : ''}{t.expertise ? ` • ${t.expertise}` : ''}
+                            </span>
                           </div>
                         </SelectItem>
                       ))}
@@ -943,10 +1061,10 @@ const ComplaintEdit = () => {
 
           <div className="md:col-span-2 space-y-2">
             <label className="text-sm font-medium">Problem Description <span className="text-destructive">*</span></label>
-            <Textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} rows={4} placeholder={isCustomer ? "Describe the issue in detail. What happened? When did it start?" : "Describe the issue..."} required disabled={isSaving} />
+            <Textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} rows={4} placeholder={isCustomer ? "Describe the issue in detail. What happened? When did it start?" : "Describe the issue..."} required disabled={isSaving || (!isNew && isRole("supervisor"))} />
           </div>
 
-          {isRole("supervisor") && !isNew && (
+          {isAdminOrSupervisor && !isNew && (
             <div className="md:col-span-2 space-y-2">
               <label className="text-sm font-medium">Resolution Notes</label>
               <Textarea value={form.resolution} onChange={(e) => setForm({ ...form, resolution: e.target.value })} rows={3} placeholder="Resolution details..." disabled={isSaving} />
@@ -971,16 +1089,18 @@ const ComplaintEdit = () => {
               }
               setEvidenceUrls(prev => [...prev, ...urls]);
               if (urls.length > 0) toast.success(`${urls.length} file(s) uploaded`);
-            }} className="text-sm file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary/10 file:text-primary hover:file:bg-primary/20" disabled={isSaving || isUploading} />
+            }} className="text-sm file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary/10 file:text-primary hover:file:bg-primary/20" disabled={isSaving || isUploading || (!isNew && isRole("supervisor"))} />
             {isUploading && <p className="text-xs text-muted-foreground">Uploading...</p>}
             {evidenceUrls.length > 0 && (
               <div className="flex flex-wrap gap-2 mt-2">
                 {evidenceUrls.map((url, i) => (
                   <div key={i} className="relative group">
                     <a href={url} target="_blank" rel="noopener noreferrer" className="text-xs text-primary hover:underline bg-primary/10 px-3 py-1.5 rounded-lg inline-flex items-center gap-1">Evidence {i + 1}</a>
-                    <button type="button" onClick={() => setEvidenceUrls(prev => prev.filter((_, idx) => idx !== i))} className="absolute -top-1 -right-1 w-5 h-5 bg-destructive text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                      <X className="w-3 h-3" />
-                    </button>
+                    {!(!isNew && isRole("supervisor")) && (
+                      <button type="button" onClick={() => setEvidenceUrls(prev => prev.filter((_, idx) => idx !== i))} className="absolute -top-1 -right-1 w-5 h-5 bg-destructive text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                        <X className="w-3 h-3" />
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>

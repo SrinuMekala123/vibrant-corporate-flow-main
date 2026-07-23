@@ -17,6 +17,7 @@ import SignatureCanvas from "react-signature-canvas";
 import browserImageCompression from "browser-image-compression";
 import { saveOfflineDraft, syncOfflineDrafts, getOfflineDraft } from '@/lib/offlineStorage';
 import ImageGallery from "@/components/ImageGallery";
+import { notificationService } from "@/services/notificationService";
 
 type SignatureMode = "draw" | "upload";
 type SatisfactionLevel = "satisfied" | "partially_satisfied" | "unsatisfied" | "";
@@ -84,6 +85,10 @@ const ComplaintDetail = () => {
   const [currentUserFullName, setCurrentUserFullName] = useState("");
   const [isUploading, setIsUploading] = useState(false);
   const [customerPhone, setCustomerPhone] = useState<string | null>(null);
+  const [pirSeverityInput, setPirSeverityInput] = useState("medium");
+  const [supSeverityInput, setSupSeverityInput] = useState("medium");
+  const [targetDurationInput, setTargetDurationInput] = useState("4");
+  const [isApprovingPir, setIsApprovingPir] = useState(false);
 
   const [feedbackSatisfaction, setFeedbackSatisfaction] = useState<SatisfactionLevel>("");
   const [feedbackComments, setFeedbackComments] = useState("");
@@ -128,6 +133,37 @@ const ComplaintDetail = () => {
     }
   };
 
+  const fetchProfileByName = async (name: string) => {
+    if (!name) return null;
+    const trimmedName = name.trim();
+    try {
+      if (trimmedName.includes('@')) {
+        const { data } = await supabase
+          .from('profiles')
+          .select('id, email, full_name')
+          .ilike('email', trimmedName)
+          .maybeSingle();
+        if (data) return data;
+      }
+      const { data: exactMatch } = await supabase
+        .from('profiles')
+        .select('id, email, full_name')
+        .eq('full_name', trimmedName)
+        .maybeSingle();
+      if (exactMatch) return exactMatch;
+
+      const { data: partialMatch } = await supabase
+        .from('profiles')
+        .select('id, email, full_name')
+        .ilike('full_name', `%${trimmedName}%`)
+        .limit(1);
+      return partialMatch?.[0] || null;
+    } catch (e) {
+      console.warn("Failed to fetch profile by name:", e);
+      return null;
+    }
+  };
+
   const { data: ticket, isLoading, error, refetch } = useQuery({
     queryKey: ['complaint', id],
     queryFn: () => complaintService.getById(id!),
@@ -150,6 +186,10 @@ const ComplaintDetail = () => {
       setPirFindings(prev => prev || ticket.pir_findings || "");
       setPirAudioUrl(prev => prev || ticket.pir_audio_url || "");
       setEvidenceUrls(prev => prev.length > 0 ? prev : (ticket.technician_evidence || []));
+      
+      if (ticket.pir_findings_severity) setPirSeverityInput(ticket.pir_findings_severity);
+      if (ticket.supervisor_severity) setSupSeverityInput(ticket.supervisor_severity);
+      if (ticket.target_duration_hours) setTargetDurationInput(String(ticket.target_duration_hours));
       
       if (ticket.current_phase) {
         setActivePhase(ticket.current_phase);
@@ -422,37 +462,67 @@ const ComplaintDetail = () => {
     const customerEmail = ticket.profiles?.email || null;
     const supervisorEmail = ticket.assigned_supervisor ? await fetchEmailByName(ticket.assigned_supervisor) : null;
 
+    const adminIds = await notificationService.getAdminUserIds();
+    const slicedId = ticket.id.slice(0, 8);
+    const supervisorDisplayName = currentUserFullName || ticket.assigned_supervisor || 'Supervisor';
+
     if (outcome === 'remote_fixed') {
-      if (customerEmail) {
-        sendNotification(customerEmail, "📞 Issue Resolved Remotely",
-          `Dear ${customerName},\nYour ticket #${ticket.id.slice(0, 8)} was resolved via phone by ${supervisorName || 'our supervisor'}.`, ticket.id);
+      // 4. Remote Fix: Notify Customer AND Admin
+      if (ticket.customer_id) {
+        await notificationService.insertNotification(
+          ticket.customer_id,
+          ticket.id,
+          'success',
+          '📞 Remote Fix Resolved',
+          `Your issue for Ticket #${slicedId} was resolved remotely by ${supervisorDisplayName}.`,
+          2,
+          undefined,
+          user?.id
+        );
       }
-      if (supervisorEmail) {
-        sendNotification(supervisorEmail, "📞 Issue Resolved Remotely",
-          `Ticket #${ticket.id.slice(0, 8)} has been triaged and resolved remotely via phone.`, ticket.id);
-      }
-      updateMutation.mutate({
-        status: 'completed',
-        current_phase: 6,
-        triage_outcome: outcome,
-        resolution: 'Resolved remotely via telephonic triage.'
-      } as any);
+      await notificationService.insertNotification(
+        adminIds,
+        ticket.id,
+        'success',
+        '📞 Remote Fix Resolved',
+        `Ticket #${slicedId} resolved via Remote Fix by ${supervisorDisplayName}.`,
+        2,
+        undefined,
+        user?.id
+      );
     } else {
-      if (customerEmail) {
-        sendNotification(customerEmail, "🚐 Field Visit Required",
-          `Dear ${customerName},\nYour ticket #${ticket.id.slice(0, 8)} requires a field visit. A technician will be dispatched soon.`, ticket.id);
+      // 5. Field Visit Required: Notify Admin AND Customer
+      await notificationService.insertNotification(
+        adminIds,
+        ticket.id,
+        'info',
+        '🚐 Field Visit Required',
+        `Field visit required for Ticket #${slicedId}. Technician assignment pending.`,
+        2,
+        undefined,
+        user?.id
+      );
+      if (ticket.customer_id) {
+        await notificationService.insertNotification(
+          ticket.customer_id,
+          ticket.id,
+          'info',
+          '🚐 Field Visit Required',
+          `A field visit is required for your complaint #${slicedId}. A technician will be assigned shortly.`,
+          2,
+          undefined,
+          user?.id
+        );
       }
-      if (supervisorEmail) {
-        sendNotification(supervisorEmail, "🚐 Field Visit Required",
-          `Ticket #${ticket.id.slice(0, 8)} requires a field visit.`, ticket.id);
-      }
-      updateMutation.mutate({
-        status: 'assigned',
-        current_phase: 3, // 🔥 Moves to Phase 3 (Dispatch)
-        triage_outcome: outcome,
-        assignment_timestamp: new Date().toISOString()
-      } as any);
     }
+
+    updateMutation.mutate({
+      status: outcome === 'remote_fixed' ? 'completed' : 'assigned',
+      current_phase: outcome === 'remote_fixed' ? 6 : 3,
+      triage_outcome: outcome,
+      resolution: outcome === 'remote_fixed' ? 'Resolved remotely via telephonic triage.' : null,
+      assignment_timestamp: outcome === 'field_required' ? new Date().toISOString() : null
+    } as any);
   };
 
   const handleStartJourney = async () => {
@@ -471,39 +541,29 @@ const ComplaintDetail = () => {
       toast.warning("📍 Customer location address not available, starting journey anyway...");
     }
 
-    const customerEmail = ticket.profiles?.email || null;
-    const supervisorEmail = ticket.assigned_supervisor ? await fetchEmailByName(ticket.assigned_supervisor) : null;
-
-    if (customerEmail) {
-      sendNotification(customerEmail, "🚀 Technician En Route",
-        `Dear ${customerName},\nTechnician ${currentUserFullName} has started their journey to your location for ticket #${ticket.id.slice(0, 8)}.`, ticket.id);
-    }
-    if (supervisorEmail) {
-      sendNotification(supervisorEmail, "🚀 Journey Started",
-        `${currentUserFullName} started journey to #${ticket.id.slice(0, 8)}. GPS: ${gps ? `${gps.lat.toFixed(4)}, ${gps.lng.toFixed(4)}` : 'Unknown'}`, ticket.id);
-    }
-    // Notify all admins dynamically
-    try {
-      const { data: admins } = await supabase
-        .from("profiles")
-        .select("email")
-        .eq("role", "admin");
-
-      if (admins) {
-        for (const admin of admins) {
-          if (admin.email) {
-            sendNotification(
-              admin.email,
-              "🚀 Journey Started (Admin Notification)",
-              `Technician ${currentUserFullName} has started their journey for ticket #${ticket.id.slice(0, 8)}.`,
-              ticket.id
-            );
-          }
-        }
+    // Notify Supervisor, Customer, and Admin
+    let supervisorId = null;
+    if (ticket.assigned_supervisor) {
+      const supervisorProfile = await fetchProfileByName(ticket.assigned_supervisor);
+      if (supervisorProfile) {
+        supervisorId = supervisorProfile.id;
       }
-    } catch (e) {
-      console.error("Failed to notify admins of journey start:", e);
     }
+
+    const adminIds = await notificationService.getAdminUserIds();
+    const recipientIds = [supervisorId, ticket.customer_id, ...adminIds].filter(Boolean) as string[];
+
+    await notificationService.insertNotification(
+      recipientIds,
+      ticket.id,
+      'info',
+      '🚀 Journey Started',
+      `Technician ${ticket.assigned_technician || currentUserFullName} has started their journey for Ticket #${ticket.id.slice(0, 8)}.`,
+      3,
+      undefined,
+      user?.id
+    );
+
     updateMutation.mutate({
       status: "in-progress",
       current_phase: 4,
@@ -518,11 +578,30 @@ const ComplaintDetail = () => {
       toast.error("Add PIR findings");
       return;
     }
-    const supervisorEmail = ticket.assigned_supervisor ? await fetchEmailByName(ticket.assigned_supervisor) : null;
-    if (supervisorEmail) {
-      sendNotification(supervisorEmail, "📋 PIR Submitted",
-        `${currentUserFullName} submitted PIR for #${ticket.id.slice(0, 8)}. Findings: ${pirFindings}`, ticket.id);
+
+    // Notify Customer, Supervisor, and Admin
+    let supervisorId = null;
+    if (ticket.assigned_supervisor) {
+      const supervisorProfile = await fetchProfileByName(ticket.assigned_supervisor);
+      if (supervisorProfile) {
+        supervisorId = supervisorProfile.id;
+      }
     }
+
+    const adminIds = await notificationService.getAdminUserIds();
+    const recipientIds = [ticket.customer_id, supervisorId, ...adminIds].filter(Boolean) as string[];
+
+    await notificationService.insertNotification(
+      recipientIds,
+      ticket.id,
+      'info',
+      '📋 PIR Submitted',
+      `PIR submitted for Ticket #${ticket.id.slice(0, 8)} by ${ticket.assigned_technician || currentUserFullName}. Pending approval.`,
+      4,
+      undefined,
+      user?.id
+    );
+
     updateMutation.mutate({
       pir_findings: pirFindings,
       pir_audio_url: pirAudioUrl || null,
@@ -538,6 +617,30 @@ const ComplaintDetail = () => {
       toast.error("Please add resolution notes");
       return;
     }
+
+    // Notify Admin, Supervisor, and Customer
+    let supervisorId = null;
+    if (ticket.assigned_supervisor) {
+      const supervisorProfile = await fetchProfileByName(ticket.assigned_supervisor);
+      if (supervisorProfile) {
+        supervisorId = supervisorProfile.id;
+      }
+    }
+
+    const adminIds = await notificationService.getAdminUserIds();
+    const recipientIds = [supervisorId, ticket.customer_id, ...adminIds].filter(Boolean) as string[];
+
+    await notificationService.insertNotification(
+      recipientIds,
+      ticket.id,
+      'info',
+      '🔧 Resolution Submitted',
+      `Job completed and evidence uploaded for Ticket #${ticket.id.slice(0, 8)} by ${ticket.assigned_technician || currentUserFullName}.`,
+      5,
+      undefined,
+      user?.id
+    );
+
     await updateMutation.mutateAsync({
       resolution: resolutionNote
     } as any);
@@ -577,6 +680,44 @@ const ComplaintDetail = () => {
   };
 
   // ✅ FIXED: Uses technician_evidence instead of evidence_urls
+  const handleApprovePIR = async () => {
+    if (!targetDurationInput || isNaN(Number(targetDurationInput)) || Number(targetDurationInput) <= 0) {
+      toast.error("Please enter a valid target duration in hours");
+      return;
+    }
+    setIsApprovingPir(true);
+    try {
+      await updateMutation.mutateAsync({
+        pir_findings_severity: pirSeverityInput,
+        supervisor_severity: supSeverityInput,
+        target_duration_hours: Number(targetDurationInput)
+      } as any);
+
+      // Trigger notification to technician
+      if (ticket.assigned_technician) {
+        const technicianProfile = await fetchProfileByName(ticket.assigned_technician);
+        if (technicianProfile) {
+          await notificationService.insertNotification(
+            technicianProfile.id,
+            ticket.id,
+            'success',
+            '✅ PIR Approved',
+            `PIR approved - Proceed with work. Target time: ${targetDurationInput} hours`,
+            4,
+            undefined,
+            user?.id
+          );
+        }
+      }
+      toast.success("PIR approved successfully!");
+    } catch (err) {
+      console.error("Failed to approve PIR:", err);
+      toast.error("Failed to approve PIR");
+    } finally {
+      setIsApprovingPir(false);
+    }
+  };
+
   const handleFinalSignOff = async () => {
     let signatureUrl = null;
     if (signatureMode === "draw") {
@@ -593,22 +734,47 @@ const ComplaintDetail = () => {
       return;
     }
 
-    const customerEmail = ticket.profiles?.email || null;
-    const supervisorEmail = ticket.assigned_supervisor ? await fetchEmailByName(ticket.assigned_supervisor) : null;
+    // Notify Admin, Supervisor, and Customer
+    let supervisorId = null;
+    if (ticket.assigned_supervisor) {
+      const supervisorProfile = await fetchProfileByName(ticket.assigned_supervisor);
+      if (supervisorProfile) {
+        supervisorId = supervisorProfile.id;
+      }
+    }
 
-    if (customerEmail) {
-      sendNotification(customerEmail, "✅ Service Completed",
-        `Dear ${customerName},\nYour ticket #${ticket.id.slice(0, 8)} has been completed by technician ${currentUserFullName} and is awaiting final closure.`, ticket.id);
+    const adminIds = await notificationService.getAdminUserIds();
+    const adminAndSupIds = [supervisorId, ...adminIds].filter(Boolean) as string[];
+
+    await notificationService.insertNotification(
+      adminAndSupIds,
+      ticket.id,
+      'success',
+      '📋 Customer Sign-off Received',
+      `Customer sign-off received for Ticket #${ticket.id.slice(0, 8)}. Ready for verification.`,
+      5,
+      undefined,
+      user?.id
+    );
+
+    if (ticket.customer_id) {
+      await notificationService.insertNotification(
+        ticket.customer_id,
+        ticket.id,
+        'success',
+        '✍️ Customer Sign-off',
+        `Thank you for signing off on the work for Ticket #${ticket.id.slice(0, 8)}.`,
+        5,
+        undefined,
+        user?.id
+      );
     }
-    if (supervisorEmail) {
-      sendNotification(supervisorEmail, "✅ Job Completed with Evidence",
-        `${currentUserFullName} completed #${ticket.id.slice(0, 8)}.\nResolution: ${resolutionNote}\nEvidence: ${evidenceUrls.length} files\nSignature: Captured (${signatureMode})`, ticket.id);
-    }
+
     updateMutation.mutate({
       status: "completed",
       current_phase: 6,
       resolution: resolutionNote,
-      technician_evidence: evidenceUrls, // ✅ FIXED: Changed from evidence_urls
+      technician_evidence: evidenceUrls,
       signature_url: signatureUrl,
       signoff_timestamp: new Date().toISOString()
     } as any);
@@ -635,13 +801,37 @@ const ComplaintDetail = () => {
         feedback_timestamp: new Date().toISOString()
       } as any);
       
-      const supervisorEmail = ticket.assigned_supervisor ? await fetchEmailByName(ticket.assigned_supervisor) : null;
       const satisfactionLabel = feedbackSatisfaction === 'satisfied' ? '✅ Satisfied' :
         feedbackSatisfaction === 'partially_satisfied' ? '⚠️ Partially Satisfied' : '❌ Unsatisfied';
 
-      if (supervisorEmail) {
-        sendNotification(supervisorEmail, "📋 Universal Feedback Collected",
-          `Ticket #${ticket.id.slice(0, 8)}\nCustomer: ${customerName}\nSatisfaction: ${satisfactionLabel}\nContact Method: ${feedbackContactMethod}\nComments:\n${feedbackComments}\nCollected by: ${currentUserFullName}`, ticket.id);
+      // 12. Notify Technician AND Customer
+      if (ticket.assigned_technician) {
+        const technicianProfile = await fetchProfileByName(ticket.assigned_technician);
+        if (technicianProfile) {
+          await notificationService.insertNotification(
+            technicianProfile.id,
+            ticket.id,
+            'feedback',
+            '📋 Feedback Saved',
+            `Feedback collected and saved for Ticket #${ticket.id.slice(0, 8)}.`,
+            6,
+            undefined,
+            user?.id
+          );
+        }
+      }
+
+      if (ticket.customer_id) {
+        await notificationService.insertNotification(
+          ticket.customer_id,
+          ticket.id,
+          'feedback',
+          '💖 Feedback Submitted',
+          `Thank you for your feedback on Ticket #${ticket.id.slice(0, 8)}.`,
+          6,
+          undefined,
+          user?.id
+        );
       }
       toast.success("✅ Customer feedback collected successfully!");
       setShowFeedbackForm(false);
@@ -661,17 +851,21 @@ const ComplaintDetail = () => {
     if (!window.confirm("Confirm final closure of this ticket?\nThis action cannot be undone.")) {
       return;
     }
-    const customerEmail = ticket.profiles?.email || null;
-    const technicianEmail = ticket.assigned_technician ? await fetchEmailByName(ticket.assigned_technician) : null;
 
-    if (customerEmail) {
-      sendNotification(customerEmail, "🎉 Ticket Officially Closed",
-        `Dear ${customerName},\nYour ticket #${ticket.id.slice(0, 8)} has been officially closed.\nThank you for your feedback!\nBest regards,\nBrihaspathi Team`, ticket.id);
+    // 13. Notify Customer
+    if (ticket.customer_id) {
+      await notificationService.insertNotification(
+        ticket.customer_id,
+        ticket.id,
+        'success',
+        '🎉 Ticket Closed',
+        `Ticket #${ticket.id.slice(0, 8)} has been successfully closed. Thank you for choosing Brihaspathi.`,
+        6,
+        undefined,
+        user?.id
+      );
     }
-    if (technicianEmail) {
-      sendNotification(technicianEmail, "🎉 Ticket Officially Closed",
-        `Dear ${ticket.assigned_technician},\n\nThe ticket #${ticket.id.slice(0, 8)} you worked on has been verified and officially closed by supervisor ${currentUserFullName}.\nThank you for your hard work!`, ticket.id);
-    }
+
     updateMutation.mutate({
       status: "closed",
       current_phase: 6,
@@ -688,17 +882,21 @@ const ComplaintDetail = () => {
       setShowFeedbackForm(true);
       return;
     }
-    const customerEmail = ticket.profiles?.email || null;
-    const technicianEmail = ticket.assigned_technician ? await fetchEmailByName(ticket.assigned_technician) : null;
+    
+    // 13. Notify Customer
+    if (ticket.customer_id) {
+      await notificationService.insertNotification(
+        ticket.customer_id,
+        ticket.id,
+        'success',
+        '🎉 Ticket Closed',
+        `Ticket #${ticket.id.slice(0, 8)} has been successfully closed. Thank you for choosing Brihaspathi.`,
+        6,
+        undefined,
+        user?.id
+      );
+    }
 
-    if (customerEmail) {
-      sendNotification(customerEmail, "🎉 Ticket Closed",
-        `Dear ${customerName},\nYour ticket #${ticket.id.slice(0, 8)} is resolved and closed.`, ticket.id);
-    }
-    if (technicianEmail) {
-      sendNotification(technicianEmail, "🎉 Ticket Closed",
-        `Dear ${ticket.assigned_technician},\n\nThe ticket #${ticket.id.slice(0, 8)} has been closed.`, ticket.id);
-    }
     updateMutation.mutate({ status: "closed", current_phase: 6 } as any);
     setShowVerification(false);
   };
@@ -708,11 +906,30 @@ const ComplaintDetail = () => {
       toast.error("Add reason");
       return;
     }
-    const technicianEmail = ticket.assigned_technician ? await fetchEmailByName(ticket.assigned_technician) : null;
-    if (technicianEmail) {
-      sendNotification(technicianEmail, "🔄 Rework Required",
-        `Ticket #${ticket.id.slice(0, 8)} has been sent back for rework by supervisor ${currentUserFullName}.\nReason/Notes: ${verificationNote}`, ticket.id);
+
+    // 6. Notify Customer, Admin, and Technician
+    let technicianId = null;
+    if (ticket.assigned_technician) {
+      const technicianProfile = await fetchProfileByName(ticket.assigned_technician);
+      if (technicianProfile) {
+        technicianId = technicianProfile.id;
+      }
     }
+
+    const adminIds = await notificationService.getAdminUserIds();
+    const recipientIds = [ticket.customer_id, technicianId, ...adminIds].filter(Boolean) as string[];
+
+    await notificationService.insertNotification(
+      recipientIds,
+      ticket.id,
+      'warning',
+      '🔄 Returned to Triage',
+      `Ticket #${ticket.id.slice(0, 8)} has been sent back to Phase 2 for re-evaluation.`,
+      2,
+      undefined,
+      user?.id
+    );
+
     updateMutation.mutate({
       status: "in-progress",
       current_phase: 4,
@@ -733,11 +950,30 @@ const ComplaintDetail = () => {
     if (!window.confirm("⚠️ Revert this ticket?\nThis will return the ticket to Phase 2 (Telephonic Triage) for re-evaluation.")) {
       return;
     }
-    const supervisorEmail = ticket.assigned_supervisor ? await fetchEmailByName(ticket.assigned_supervisor) : null;
-    if (supervisorEmail) {
-      sendNotification(supervisorEmail, "⏪ Ticket Returned to Triage",
-        `Ticket #${ticket.id.slice(0, 8)} has been returned to Phase 2 (Telephonic Triage) by ${currentUserFullName} for re-evaluation.`, ticket.id);
+
+    // 6. Notify Customer, Admin, and Technician
+    let technicianId = null;
+    if (ticket.assigned_technician) {
+      const technicianProfile = await fetchProfileByName(ticket.assigned_technician);
+      if (technicianProfile) {
+        technicianId = technicianProfile.id;
+      }
     }
+
+    const adminIds = await notificationService.getAdminUserIds();
+    const recipientIds = [ticket.customer_id, technicianId, ...adminIds].filter(Boolean) as string[];
+
+    await notificationService.insertNotification(
+      recipientIds,
+      ticket.id,
+      'warning',
+      '🔄 Returned to Triage',
+      `Ticket #${ticket.id.slice(0, 8)} has been sent back to Phase 2 for re-evaluation.`,
+      2,
+      undefined,
+      user?.id
+    );
+
     updateMutation.mutate({
       status: "assigned",
       current_phase: 2,
@@ -1046,6 +1282,99 @@ const ComplaintDetail = () => {
                 {renderEvidenceFiles(ticket.technician_evidence)}
               </div>
             )}
+
+            {/* Display Approved PIR Validation Details if present */}
+            {(ticket.pir_findings_severity || ticket.supervisor_severity || ticket.target_duration_hours) ? (
+              <div className="mt-3 bg-emerald-50/50 border border-emerald-200/60 p-4 rounded-lg space-y-3">
+                <span className="text-xs font-semibold text-emerald-800 uppercase tracking-wider block">🛡️ PIR Validation Details</span>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="bg-white p-3 rounded border border-emerald-100">
+                    <span className="text-xs text-muted-foreground block mb-0.5">Findings Severity</span>
+                    <span className="font-semibold text-slate-800 capitalize">{ticket.pir_findings_severity || 'Not set'}</span>
+                  </div>
+                  <div className="bg-white p-3 rounded border border-emerald-100">
+                    <span className="text-xs text-muted-foreground block mb-0.5">Supervisor Severity</span>
+                    <span className="font-semibold text-slate-800 capitalize">{ticket.supervisor_severity || 'Not set'}</span>
+                  </div>
+                  <div className="bg-white p-3 rounded border border-emerald-100">
+                    <span className="text-xs text-muted-foreground block mb-0.5">Target Duration</span>
+                    <span className="font-semibold text-slate-800">{ticket.target_duration_hours ? `${ticket.target_duration_hours} Hours` : 'Not set'}</span>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            {/* Supervisor/Admin Validation Action Panel */}
+            {isRole("admin", "supervisor") && ticket.pir_findings && !(ticket.pir_findings_severity || ticket.supervisor_severity || ticket.target_duration_hours) && (
+              <div className="mt-4 bg-slate-50 border-2 border-dashed border-indigo-200 p-5 rounded-lg space-y-4">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="w-5 h-5 text-indigo-600" />
+                  <span className="font-semibold text-slate-800 text-sm">Supervisor PIR Verification Panel</span>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-xs text-slate-600 font-medium block">PIR Findings Severity</label>
+                    <select
+                      value={pirSeverityInput}
+                      onChange={(e) => setPirSeverityInput(e.target.value)}
+                      className="w-full bg-white border border-slate-300 rounded px-2.5 py-1.5 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                    >
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                      <option value="critical">Critical</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs text-slate-600 font-medium block">Supervisor Severity</label>
+                    <select
+                      value={supSeverityInput}
+                      onChange={(e) => setSupSeverityInput(e.target.value)}
+                      className="w-full bg-white border border-slate-300 rounded px-2.5 py-1.5 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                    >
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                      <option value="critical">Critical</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs text-slate-600 font-medium block">Target Duration (Hours)</label>
+                    <input
+                      type="number"
+                      min="1"
+                      value={targetDurationInput}
+                      onChange={(e) => setTargetDurationInput(e.target.value)}
+                      className="w-full bg-white border border-slate-300 rounded px-2.5 py-1.5 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
+                      placeholder="e.g. 4"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex justify-end pt-2">
+                  <Button
+                    onClick={handleApprovePIR}
+                    disabled={isApprovingPir}
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white flex items-center gap-1.5 text-xs h-9 px-4 rounded shadow-sm transition-all"
+                  >
+                    {isApprovingPir ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        Verifying...
+                      </>
+                    ) : (
+                      <>
+                        <ShieldCheck className="w-4 h-4" />
+                        Verify & Approve PIR
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
         );
 
@@ -1134,39 +1463,57 @@ const ComplaintDetail = () => {
     <div className="space-y-6 max-w-[1600px] w-full mx-auto p-4 md:p-6 lg:p-8">
 
       {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-border/30 pb-4 relative z-10">
-        <div className="flex items-start gap-3 flex-1 min-w-0">
-          <button onClick={() => navigate(-1)} className="w-9 h-9 rounded-lg bg-muted hover:bg-muted/80 shrink-0 mt-1">
-            <ArrowLeft className="w-4 h-4" />
+      <div className="glass-card rounded-2xl p-5 md:p-6 border border-border/60 shadow-glow relative overflow-hidden flex flex-col md:flex-row md:items-center justify-between gap-4 relative z-10">
+        {/* Decorative ambient light behind header */}
+        <div className="absolute -right-8 -top-8 w-24 h-24 rounded-full bg-primary/5 group-hover:bg-primary/10 transition-all duration-300 filter blur-xl pointer-events-none" />
+        
+        <div className="flex items-start gap-4 flex-1 min-w-0">
+          <button 
+            onClick={() => navigate(-1)} 
+            className="w-10 h-10 rounded-xl bg-muted hover:bg-muted/80 flex items-center justify-center shrink-0 border border-border/40 hover:border-primary/20 transition-all duration-200"
+          >
+            <ArrowLeft className="w-5 h-5 text-muted-foreground" />
           </button>
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2 mb-0.5">
-              <span className="text-sm font-mono text-primary font-semibold">{ticket.id.slice(0, 8)}...</span>
+          <div className="min-w-0 flex-1 space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-mono font-bold bg-primary/10 text-primary px-2.5 py-1 rounded-full border border-primary/20">
+                Ticket ID: {ticket.id.slice(0, 8)}
+              </span>
               {ticket.severity && <SeverityBadge severity={ticket.severity as any} />}
               {ticket.status && <StatusBadge status={ticket.status} />}
             </div>
-            <h1 className="text-xl font-display font-bold break-words" title={ticket.title}>{ticket.title}</h1>
-            <p className="text-xs text-muted-foreground mt-1 flex flex-wrap items-center gap-x-2">
+            <h1 className="text-xl md:text-2xl font-display font-extrabold text-foreground tracking-tight break-words" title={ticket.title}>
+              {ticket.title}
+            </h1>
+            <div className="text-xs text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1">
               <span>
-                Customer: <span className="font-semibold text-primary">{ticket.customer_name || ticket.profiles?.full_name || ticket.created_by_name || "Customer"}</span> on {formatIndianDateTime(ticket.created_at)}
+                Customer: <span className="font-semibold text-foreground">{ticket.customer_name || ticket.profiles?.full_name || ticket.created_by_name || "Customer"}</span>
+              </span>
+              <span className="text-muted-foreground/45">•</span>
+              <span>
+                Registered on <span className="font-medium text-foreground">{formatIndianDateTime(ticket.created_at)}</span>
               </span>
               {ticket.assigned_supervisor && (
-                <span>
-                  • Assigned by <span className="font-semibold text-indigo-600">{ticket.assigned_supervisor}</span>
-                </span>
+                <>
+                  <span className="text-muted-foreground/45">•</span>
+                  <span>
+                    Supervisor: <span className="font-semibold text-primary">{ticket.assigned_supervisor}</span>
+                  </span>
+                </>
               )}
-            </p>
+            </div>
           </div>
         </div>
-        <div className="flex items-center gap-2 self-start md:self-auto shrink-0">
+        
+        <div className="flex items-center gap-2.5 self-end md:self-auto shrink-0 border-t md:border-t-0 pt-3 md:pt-0 w-full md:w-auto justify-end">
           {canVerify && (
-            <Button size="sm" variant="outline" className="border-warning text-warning" onClick={() => setShowVerification(!showVerification)}>
+            <Button size="sm" variant="outline" className="border-warning/60 text-warning hover:bg-warning/5" onClick={() => setShowVerification(!showVerification)}>
               <ShieldCheck className="w-4 h-4 mr-2" /> Verify
             </Button>
           )}
           {canEdit && (
-            <Link to={`/complaints/${ticket.id}/edit`}>
-              <Button variant="outline" size="sm"><Edit className="w-4 h-4 mr-2" /> Edit</Button>
+            <Link to={`/complaints/${ticket.id}/edit`} className="w-full md:w-auto">
+              <Button variant="outline" size="sm" className="w-full md:w-auto border-border/80 hover:border-primary/30"><Edit className="w-4 h-4 mr-2" /> Edit</Button>
             </Link>
           )}
         </div>

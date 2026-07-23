@@ -250,10 +250,20 @@ const KPIAnalytics = () => {
     return acc;
   }, {}) || {};
 
+  const getFieldColor = (field: string) => {
+    switch (field) {
+      case "Solar PV": return "#f97316"; // Orange
+      case "Networking": return "#3b82f6"; // Blue
+      case "Security Systems": return "#8b5cf6"; // Purple
+      case "Power Systems": return "#10b981"; // Green
+      default: return "#6b7280"; // Gray
+    }
+  };
+
   const pieData = Object.entries(fieldData).map(([name, value]) => ({
     name,
     value,
-    fill: ["#4f46e5", "#14b8a6", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899"][Object.keys(fieldData).length % 6],
+    fill: getFieldColor(name),
   }));
 
   const kpiCards = [
@@ -274,19 +284,23 @@ const KPIAnalytics = () => {
 
       {/* KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {kpiCards.map((kpi, i) => (
-          <StatCard
-            key={kpi.label}
-            label={kpi.label}
-            value={kpi.value}
-            unit={kpi.unit}
-            change={kpi.change}
-            trend={kpi.trend}
-            icon={kpi.icon}
-            gradient={kpi.gradient}
-            delay={i * 0.08}
-          />
-        ))}
+        {kpiCards.map((kpi, i) => {
+          const isBlueHighlight = ["First-Time Fix Rate", "SLA Adherence", "Response Latency"].includes(kpi.label);
+          return (
+            <StatCard
+              key={kpi.label}
+              label={kpi.label}
+              value={kpi.value}
+              unit={kpi.unit}
+              change={kpi.change}
+              trend={kpi.trend}
+              icon={kpi.icon}
+              gradient={kpi.gradient}
+              delay={i * 0.08}
+              className={isBlueHighlight ? "bg-blue-50/40 border-blue-200/80 hover:border-blue-300 hover:bg-blue-50/70" : undefined}
+            />
+          );
+        })}
       </div>
 
       {/* Charts */}
@@ -301,8 +315,8 @@ const KPIAnalytics = () => {
                 <XAxis dataKey="month" tick={{ fontSize: 12 }} stroke="hsl(220, 10%, 50%)" />
                 <YAxis tick={{ fontSize: 12 }} stroke="hsl(220, 10%, 50%)" />
                 <Tooltip contentStyle={{ borderRadius: "12px", border: "1px solid hsl(220, 15%, 90%)", boxShadow: "0 4px 16px hsl(0 0% 0% / 0.08)" }} />
-                <Line type="monotone" dataKey="completed" stroke="hsl(230, 70%, 50%)" strokeWidth={2.5} dot={{ r: 4 }} name="Completed" />
-                <Line type="monotone" dataKey="tickets" stroke="hsl(175, 60%, 42%)" strokeWidth={2.5} dot={{ r: 4 }} name="Total" />
+                <Line type="monotone" dataKey="completed" stroke="#10b981" strokeWidth={2.5} dot={{ r: 4 }} name="Completed" />
+                <Line type="monotone" dataKey="tickets" stroke="#3b82f6" strokeWidth={2.5} dot={{ r: 4 }} name="Total" />
               </LineChart>
             </ResponsiveContainer>
           ) : (
@@ -320,8 +334,8 @@ const KPIAnalytics = () => {
                 <XAxis dataKey="month" tick={{ fontSize: 12 }} stroke="hsl(220, 10%, 50%)" />
                 <YAxis tick={{ fontSize: 12 }} stroke="hsl(220, 10%, 50%)" />
                 <Tooltip contentStyle={{ borderRadius: "12px", border: "1px solid hsl(220, 15%, 90%)" }} />
-                <Bar dataKey="mttr" fill="hsl(35, 95%, 55%)" radius={[4, 4, 0, 0]} name="MTTR (hrs)" />
-                <Bar dataKey="travelEfficiency" fill="hsl(230, 70%, 50%)" radius={[4, 4, 0, 0]} name="Travel (min)" />
+                <Bar dataKey="mttr" fill="#f97316" radius={[4, 4, 0, 0]} name="MTTR (hrs)" />
+                <Bar dataKey="travelEfficiency" fill="#3b82f6" radius={[4, 4, 0, 0]} name="Travel (min)" />
               </BarChart>
             </ResponsiveContainer>
           ) : (

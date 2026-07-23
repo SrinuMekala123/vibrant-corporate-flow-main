@@ -172,6 +172,7 @@ import {
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { motion, AnimatePresence } from "framer-motion";
+import { NotificationCenter } from "./NotificationCenter";
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
   const { user, signOut } = useAuth();
@@ -372,6 +373,11 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       >
         <Menu className="w-5 h-5" />
       </button>
+
+      {/* 🔥 Notification Center - Floating in top-right */}
+      <div className="fixed top-4 right-4 md:top-5 md:right-6 z-40">
+        <NotificationCenter />
+      </div>
 
       {/* 🔥 Main Content - Proper spacing */}
       <main className={`transition-all duration-300 min-h-screen px-4 py-6 md:p-8 pt-20 md:pt-8 ${

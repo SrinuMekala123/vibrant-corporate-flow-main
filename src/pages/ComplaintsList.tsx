@@ -244,29 +244,36 @@ const ComplaintsList = () => {
                 className="pl-11 rounded-xl border-border/60"
               />
             </div>
-            <div className="flex flex-row items-center gap-2">
-              <div className="flex items-center gap-1.5">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-3 w-full lg:w-auto">
+              <div className="flex items-center gap-1.5 w-full sm:w-auto">
                 <span className="text-xs text-muted-foreground whitespace-nowrap">From:</span>
-                <div className="relative">
+                <div className="relative w-full sm:w-auto">
                   <Input
                     type="date"
                     value={fromDate}
                     onClick={(e) => e.currentTarget.showPicker()}
-                    onChange={(e) => setFromDate(e.target.value)}
-                    className="rounded-xl border-border/60 text-xs w-[140px] h-10 pl-8 pr-2.5 bg-slate-950/20 cursor-pointer"
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setFromDate(val);
+                      if (toDate && val > toDate) {
+                        setToDate("");
+                      }
+                    }}
+                    className="rounded-xl border-border/60 text-xs w-full sm:w-[140px] h-10 pl-8 pr-2.5 bg-slate-950/20 cursor-pointer"
                   />
                   <Calendar className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
                 </div>
               </div>
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5 w-full sm:w-auto">
                 <span className="text-xs text-muted-foreground whitespace-nowrap">To:</span>
-                <div className="relative">
+                <div className="relative w-full sm:w-auto">
                   <Input
                     type="date"
                     value={toDate}
+                    min={fromDate}
                     onClick={(e) => e.currentTarget.showPicker()}
                     onChange={(e) => setToDate(e.target.value)}
-                    className="rounded-xl border-border/60 text-xs w-[140px] h-10 pl-8 pr-2.5 bg-slate-950/20 cursor-pointer"
+                    className="rounded-xl border-border/60 text-xs w-full sm:w-[140px] h-10 pl-8 pr-2.5 bg-slate-950/20 cursor-pointer"
                   />
                   <Calendar className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
                 </div>
@@ -278,7 +285,7 @@ const ComplaintsList = () => {
                       variant="ghost"
                       size="sm"
                       onClick={() => { setFromDate(""); setToDate(""); }}
-                      className="text-xs h-9 px-2 hover:bg-muted text-muted-foreground hover:text-foreground flex items-center gap-1"
+                      className="text-xs h-9 px-2 hover:bg-muted text-muted-foreground hover:text-foreground flex items-center gap-1 w-full sm:w-auto justify-center sm:justify-start"
                     >
                       <X className="w-3.5 h-3.5" /> Clear
                     </Button>
@@ -321,29 +328,36 @@ const ComplaintsList = () => {
                 className="pl-11 rounded-xl border-border/60"
               />
             </div>
-            <div className="flex flex-row items-center gap-2">
-              <div className="flex items-center gap-1.5">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-3 w-full lg:w-auto">
+              <div className="flex items-center gap-1.5 w-full sm:w-auto">
                 <span className="text-xs text-muted-foreground whitespace-nowrap">From:</span>
-                <div className="relative">
+                <div className="relative w-full sm:w-auto">
                   <Input
                     type="date"
                     value={fromDate}
                     onClick={(e) => e.currentTarget.showPicker()}
-                    onChange={(e) => setFromDate(e.target.value)}
-                    className="rounded-xl border-border/60 text-xs w-[140px] h-10 pl-8 pr-2.5 bg-slate-950/20 cursor-pointer"
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setFromDate(val);
+                      if (toDate && val > toDate) {
+                        setToDate("");
+                      }
+                    }}
+                    className="rounded-xl border-border/60 text-xs w-full sm:w-[140px] h-10 pl-8 pr-2.5 bg-slate-950/20 cursor-pointer"
                   />
                   <Calendar className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
                 </div>
               </div>
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5 w-full sm:w-auto">
                 <span className="text-xs text-muted-foreground whitespace-nowrap">To:</span>
-                <div className="relative">
+                <div className="relative w-full sm:w-auto">
                   <Input
                     type="date"
                     value={toDate}
+                    min={fromDate}
                     onClick={(e) => e.currentTarget.showPicker()}
                     onChange={(e) => setToDate(e.target.value)}
-                    className="rounded-xl border-border/60 text-xs w-[140px] h-10 pl-8 pr-2.5 bg-slate-950/20 cursor-pointer"
+                    className="rounded-xl border-border/60 text-xs w-full sm:w-[140px] h-10 pl-8 pr-2.5 bg-slate-950/20 cursor-pointer"
                   />
                   <Calendar className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
                 </div>
@@ -355,7 +369,7 @@ const ComplaintsList = () => {
                       variant="ghost"
                       size="sm"
                       onClick={() => { setFromDate(""); setToDate(""); }}
-                      className="text-xs h-9 px-2 hover:bg-muted text-muted-foreground hover:text-foreground flex items-center gap-1"
+                      className="text-xs h-9 px-2 hover:bg-muted text-muted-foreground hover:text-foreground flex items-center gap-1 w-full sm:w-auto justify-center sm:justify-start"
                     >
                       <X className="w-3.5 h-3.5" /> Clear
                     </Button>
