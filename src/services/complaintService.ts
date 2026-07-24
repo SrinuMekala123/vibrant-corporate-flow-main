@@ -148,6 +148,7 @@ export interface Complaint {
   technician_evidence?: string[];   // Technician images (After)
   signature_url?: string;
   triage_outcome?: 'remote_fixed' | 'field_required';
+  pir_decision_tree?: string;
   assignment_timestamp?: string;
   start_journey_timestamp?: string;
   arrival_timestamp?: string;

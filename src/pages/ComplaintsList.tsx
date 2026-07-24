@@ -249,9 +249,20 @@ const ComplaintsList = () => {
                 <span className="text-xs text-muted-foreground whitespace-nowrap">From:</span>
                 <div className="relative w-full sm:w-auto">
                   <Input
-                    type="date"
+                    type={fromDate ? "date" : "text"}
+                    placeholder="dd/mm/yyyy"
                     value={fromDate}
-                    onClick={(e) => e.currentTarget.showPicker()}
+                    onFocus={(e) => {
+                      e.currentTarget.type = "date";
+                      try { e.currentTarget.showPicker(); } catch (err) {}
+                    }}
+                    onBlur={(e) => {
+                      if (!fromDate) e.currentTarget.type = "text";
+                    }}
+                    onClick={(e) => {
+                      e.currentTarget.type = "date";
+                      try { e.currentTarget.showPicker(); } catch (err) {}
+                    }}
                     onChange={(e) => {
                       const val = e.target.value;
                       setFromDate(val);
@@ -268,10 +279,21 @@ const ComplaintsList = () => {
                 <span className="text-xs text-muted-foreground whitespace-nowrap">To:</span>
                 <div className="relative w-full sm:w-auto">
                   <Input
-                    type="date"
+                    type={toDate ? "date" : "text"}
+                    placeholder="dd/mm/yyyy"
                     value={toDate}
                     min={fromDate}
-                    onClick={(e) => e.currentTarget.showPicker()}
+                    onFocus={(e) => {
+                      e.currentTarget.type = "date";
+                      try { e.currentTarget.showPicker(); } catch (err) {}
+                    }}
+                    onBlur={(e) => {
+                      if (!toDate) e.currentTarget.type = "text";
+                    }}
+                    onClick={(e) => {
+                      e.currentTarget.type = "date";
+                      try { e.currentTarget.showPicker(); } catch (err) {}
+                    }}
                     onChange={(e) => setToDate(e.target.value)}
                     className="rounded-xl border-border/60 text-xs w-full sm:w-[140px] h-10 pl-8 pr-2.5 bg-slate-950/20 cursor-pointer"
                   />
@@ -333,9 +355,20 @@ const ComplaintsList = () => {
                 <span className="text-xs text-muted-foreground whitespace-nowrap">From:</span>
                 <div className="relative w-full sm:w-auto">
                   <Input
-                    type="date"
+                    type={fromDate ? "date" : "text"}
+                    placeholder="dd/mm/yyyy"
                     value={fromDate}
-                    onClick={(e) => e.currentTarget.showPicker()}
+                    onFocus={(e) => {
+                      e.currentTarget.type = "date";
+                      try { e.currentTarget.showPicker(); } catch (err) {}
+                    }}
+                    onBlur={(e) => {
+                      if (!fromDate) e.currentTarget.type = "text";
+                    }}
+                    onClick={(e) => {
+                      e.currentTarget.type = "date";
+                      try { e.currentTarget.showPicker(); } catch (err) {}
+                    }}
                     onChange={(e) => {
                       const val = e.target.value;
                       setFromDate(val);
@@ -352,10 +385,21 @@ const ComplaintsList = () => {
                 <span className="text-xs text-muted-foreground whitespace-nowrap">To:</span>
                 <div className="relative w-full sm:w-auto">
                   <Input
-                    type="date"
+                    type={toDate ? "date" : "text"}
+                    placeholder="dd/mm/yyyy"
                     value={toDate}
                     min={fromDate}
-                    onClick={(e) => e.currentTarget.showPicker()}
+                    onFocus={(e) => {
+                      e.currentTarget.type = "date";
+                      try { e.currentTarget.showPicker(); } catch (err) {}
+                    }}
+                    onBlur={(e) => {
+                      if (!toDate) e.currentTarget.type = "text";
+                    }}
+                    onClick={(e) => {
+                      e.currentTarget.type = "date";
+                      try { e.currentTarget.showPicker(); } catch (err) {}
+                    }}
                     onChange={(e) => setToDate(e.target.value)}
                     className="rounded-xl border-border/60 text-xs w-full sm:w-[140px] h-10 pl-8 pr-2.5 bg-slate-950/20 cursor-pointer"
                   />

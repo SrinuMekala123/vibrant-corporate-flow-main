@@ -783,7 +783,11 @@ const ComplaintEdit = () => {
                       const selectedCustomer = customers?.find((c: any) => c.id === v);
                       setForm({ ...form, customerId: v, customerName: selectedCustomer?.full_name || "", customerPhone: selectedCustomer?.phone || "" });
                     }} disabled={isSaving || !customers || (!isNew && isRole("supervisor"))}>
-                      <SelectTrigger><SelectValue placeholder="Select Customer" /></SelectTrigger>
+                      <SelectTrigger className="h-10">
+                        <SelectValue placeholder="Select Customer">
+                          {form.customerName ? <span className="truncate font-medium">{form.customerName}</span> : undefined}
+                        </SelectValue>
+                      </SelectTrigger>
                       <SelectContent>
                         {customers?.map((c: any) => (
                           <SelectItem key={c.id} value={c.id}>{c.full_name} ({c.email})</SelectItem>
@@ -952,7 +956,11 @@ const ComplaintEdit = () => {
                 }} 
                 disabled={isSaving || !supervisors || !isAdmin}
               >
-                <SelectTrigger><SelectValue placeholder="Assign supervisor" /></SelectTrigger>
+                <SelectTrigger className="h-10">
+                  <SelectValue placeholder="Assign supervisor">
+                    {form.assignedSupervisor ? <span className="truncate font-medium">{form.assignedSupervisor}</span> : undefined}
+                  </SelectValue>
+                </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="clear_unassigned">None (Unassign)</SelectItem>
                   {matchingSupervisors.length > 0 && (
@@ -990,7 +998,7 @@ const ComplaintEdit = () => {
             </div>
           )}
 
-          {isAdminOrSupervisor && !isNew && (isRole("supervisor") || (isRole("admin") && !!existingComplaint?.assigned_technician)) && (
+          {isRole("supervisor") && !isNew && (
             <div className="md:col-span-2 space-y-2">
               <label className="text-sm font-medium flex items-center gap-2">
                 <Filter className="w-3.5 h-3.5 text-primary" />
@@ -1012,9 +1020,13 @@ const ComplaintEdit = () => {
                     }
                   }
                 }} 
-                disabled={isSaving || !technicians || isAdmin}
+                disabled={isSaving || !technicians}
               >
-                <SelectTrigger><SelectValue placeholder="Assign technician" /></SelectTrigger>
+                <SelectTrigger className="h-10">
+                  <SelectValue placeholder="Assign technician">
+                    {form.assignedTechnician ? <span className="truncate font-medium">{form.assignedTechnician}</span> : undefined}
+                  </SelectValue>
+                </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="clear_unassigned">None (Unassign)</SelectItem>
                   {matchingTechnicians.length > 0 && (

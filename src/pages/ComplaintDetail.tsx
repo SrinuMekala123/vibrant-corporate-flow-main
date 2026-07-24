@@ -88,6 +88,11 @@ const ComplaintDetail = () => {
   const [pirSeverityInput, setPirSeverityInput] = useState("medium");
   const [supSeverityInput, setSupSeverityInput] = useState("medium");
   const [targetDurationInput, setTargetDurationInput] = useState("4");
+
+  const [showStartJourneyModal, setShowStartJourneyModal] = useState(false);
+  const [typedStartLocation, setTypedStartLocation] = useState("");
+  const [isDetectingGps, setIsDetectingGps] = useState(false);
+  const [detectedCoords, setDetectedCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [isApprovingPir, setIsApprovingPir] = useState(false);
 
   const [feedbackSatisfaction, setFeedbackSatisfaction] = useState<SatisfactionLevel>("");
@@ -302,7 +307,14 @@ const ComplaintDetail = () => {
           if (oldStatus !== newStatus) {
             toast.info(`Ticket status changed to: ${newStatus}`);
           } else {
-            toast.info(`Ticket has been updated`);
+            const oldLat = payload.old?.arrival_lat;
+            const newLat = payload.new?.arrival_lat;
+            const oldLng = payload.old?.arrival_lng;
+            const newLng = payload.new?.arrival_lng;
+            const isCoordUpdate = oldLat !== newLat || oldLng !== newLng;
+            if (!isCoordUpdate) {
+              toast.info(`Ticket has been updated`);
+            }
           }
         }
       })
@@ -314,6 +326,48 @@ const ComplaintDetail = () => {
       }
     };
   }, [id, queryClient]);
+
+  // Live GPS tracking of the technician while in transit
+  useEffect(() => {
+    if (!ticket || !isRole("technician") || ticket.status !== 'in-progress' || ticket.current_phase !== 4 || ticket.arrival_timestamp) {
+      return;
+    }
+
+    let watchId: number | null = null;
+
+    const startWatching = () => {
+      if (!navigator.geolocation) return;
+
+      watchId = navigator.geolocation.watchPosition(
+        async (position) => {
+          const { latitude, longitude } = position.coords;
+          try {
+            await supabase
+              .from('complaints')
+              .update({
+                arrival_lat: latitude,
+                arrival_lng: longitude
+              })
+              .eq('id', ticket.id);
+          } catch (err) {
+            console.error("Failed to update live coordinates:", err);
+          }
+        },
+        (error) => {
+          console.warn("Live GPS watch error:", error);
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+      );
+    };
+
+    startWatching();
+
+    return () => {
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+      }
+    };
+  }, [ticket?.id, ticket?.status, ticket?.current_phase, ticket?.arrival_timestamp, isRole]);
 
   const sendNotification = async (email: string, subject: string, message: string, ticketId?: string) => {
     try {
@@ -410,7 +464,7 @@ const ComplaintDetail = () => {
           const ipGps = await fetchIPCoordinates();
           resolve(ipGps);
         },
-        { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
       );
     });
   };
@@ -526,21 +580,75 @@ const ComplaintDetail = () => {
   };
 
   const handleStartJourney = async () => {
-    const gps = await verifyGPS();
+    setIsDetectingGps(true);
+    setDetectedCoords(null);
+    setTypedStartLocation("");
+
+    try {
+      const gps = await verifyGPS();
+      if (gps) {
+        setIsDetectingGps(false);
+        await confirmStartJourneyWithCoords(gps.lat, gps.lng);
+      } else {
+        setIsDetectingGps(false);
+        setShowStartJourneyModal(true);
+      }
+    } catch (e) {
+      console.warn("GPS detection failed:", e);
+      setIsDetectingGps(false);
+      setShowStartJourneyModal(true);
+    }
+  };
+
+  const confirmStartJourneyWithCoords = async (lat: number, lng: number) => {
+    const startLocJson = JSON.stringify({ lat, lng });
+
     const destination = (ticket.customer_lat && ticket.customer_lng)
       ? `${ticket.customer_lat},${ticket.customer_lng}`
       : ticket.location ? encodeURIComponent(ticket.location) : null;
 
     if (destination) {
-      const mapsUrl = gps 
-        ? `https://www.google.com/maps/dir/?api=1&origin=${gps.lat},${gps.lng}&destination=${destination}&travelmode=driving`
-        : `https://www.google.com/maps/dir/?api=1&destination=${destination}&travelmode=driving`;
+      const mapsUrl = `https://www.google.com/maps/dir/?api=1&origin=${lat},${lng}&destination=${destination}&travelmode=driving`;
       window.open(mapsUrl, '_blank');
       toast.success("🗺️ Opening navigation to customer location...");
     } else {
       toast.warning("📍 Customer location address not available, starting journey anyway...");
     }
 
+    await saveJourneyStart(startLocJson);
+  };
+
+  const confirmStartJourney = async () => {
+    setShowStartJourneyModal(false);
+
+    let startLocJson = null;
+    if (typedStartLocation.trim()) {
+      startLocJson = JSON.stringify({ address: typedStartLocation.trim() });
+    } else if (detectedCoords) {
+      startLocJson = JSON.stringify({ lat: detectedCoords.lat, lng: detectedCoords.lng });
+    }
+
+    const destination = (ticket.customer_lat && ticket.customer_lng)
+      ? `${ticket.customer_lat},${ticket.customer_lng}`
+      : ticket.location ? encodeURIComponent(ticket.location) : null;
+
+    if (destination) {
+      let mapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${destination}&travelmode=driving`;
+      if (typedStartLocation.trim()) {
+        mapsUrl = `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(typedStartLocation.trim())}&destination=${destination}&travelmode=driving`;
+      } else if (detectedCoords) {
+        mapsUrl = `https://www.google.com/maps/dir/?api=1&origin=${detectedCoords.lat},${detectedCoords.lng}&destination=${destination}&travelmode=driving`;
+      }
+      window.open(mapsUrl, '_blank');
+      toast.success("🗺️ Opening navigation to customer location...");
+    } else {
+      toast.warning("📍 Customer location address not available, starting journey anyway...");
+    }
+
+    await saveJourneyStart(startLocJson);
+  };
+
+  const saveJourneyStart = async (startLocJson: string | null) => {
     // Notify Supervisor, Customer, and Admin
     let supervisorId = null;
     if (ticket.assigned_supervisor) {
@@ -568,8 +676,7 @@ const ComplaintDetail = () => {
       status: "in-progress",
       current_phase: 4,
       start_journey_timestamp: new Date().toISOString(),
-      arrival_lat: gps?.lat || null,
-      arrival_lng: gps?.lng || null
+      pir_decision_tree: startLocJson
     } as any);
   };
 
@@ -602,11 +709,15 @@ const ComplaintDetail = () => {
       user?.id
     );
 
+    const gps = await verifyGPS();
+
     updateMutation.mutate({
       pir_findings: pirFindings,
       pir_audio_url: pirAudioUrl || null,
       technician_evidence: evidenceUrls,
-      arrival_timestamp: new Date().toISOString()
+      arrival_timestamp: new Date().toISOString(),
+      arrival_lat: gps?.lat || null,
+      arrival_lng: gps?.lng || null
     } as any);
     setShowPIRForm(false);
     toast.success("PIR submitted");
@@ -1215,10 +1326,103 @@ const ComplaintDetail = () => {
               <div>
                 <span className="text-xs text-muted-foreground block">Start Journey Time</span>
                 <span className="font-medium text-slate-700">
-                  {ticket.start_journey_timestamp ? formatIndianDateTime(ticket.start_journey_timestamp) : 'Not started journey yet'}
+                  {ticket.start_journey_timestamp ? (
+                    <span className="text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1">
+                      🚀 Started on {formatIndianDateTime(ticket.start_journey_timestamp)}
+                    </span>
+                  ) : 'Not started journey yet'}
                 </span>
               </div>
             </div>
+
+            {ticket.start_journey_timestamp && (
+              <div className="mt-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 rounded-lg flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <span className="text-xs text-slate-400 uppercase tracking-wider block font-semibold">Live Transit Status</span>
+                  <div className="flex items-center gap-2">
+                    <span className="relative flex h-2.5 w-2.5">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+                    </span>
+                    <span className="font-bold text-slate-900 dark:text-white text-sm">
+                      {ticket.arrival_timestamp ? 'Technician Arrived at Site' : 'Technician is en route to your location'}
+                    </span>
+                  </div>
+                  {(() => {
+                    let startLoc = '';
+                    if (ticket.pir_decision_tree) {
+                      try {
+                        const parsed = JSON.parse(ticket.pir_decision_tree);
+                        if (parsed) {
+                          if (parsed.address) startLoc = parsed.address;
+                          else if (parsed.lat && parsed.lng) startLoc = `${parsed.lat.toFixed(6)}, ${parsed.lng.toFixed(6)}`;
+                        }
+                      } catch (e) {}
+                    }
+                    return (
+                      <div className="space-y-1 mt-1 text-xs text-slate-500 dark:text-slate-400">
+                        {startLoc && (
+                          <p>
+                            Started from: <span className="font-semibold text-slate-700 dark:text-slate-300">{startLoc}</span>
+                          </p>
+                        )}
+                        {ticket.arrival_lat && ticket.arrival_lng && !ticket.arrival_timestamp && (
+                          <p className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
+                            <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-ping" />
+                            Current Live Position: <span className="font-mono font-semibold">{ticket.arrival_lat.toFixed(6)}, {ticket.arrival_lng.toFixed(6)}</span>
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
+                {(() => {
+                  const dest = (ticket.customer_lat && ticket.customer_lng)
+                    ? `${ticket.customer_lat},${ticket.customer_lng}`
+                    : ticket.location ? encodeURIComponent(ticket.location.trim()) : '';
+
+                  const currentPos = (ticket.arrival_lat && ticket.arrival_lng && !ticket.arrival_timestamp)
+                    ? `${ticket.arrival_lat},${ticket.arrival_lng}`
+                    : '';
+
+                  let startLoc = '';
+                  if (ticket.pir_decision_tree) {
+                    try {
+                      const parsed = JSON.parse(ticket.pir_decision_tree);
+                      if (parsed) {
+                        if (parsed.address) startLoc = parsed.address;
+                        else if (parsed.lat && parsed.lng) startLoc = `${parsed.lat},${parsed.lng}`;
+                      }
+                    } catch (e) {}
+                  }
+
+                  if (currentPos && dest) {
+                    return (
+                      <a
+                        href={`https://www.google.com/maps/dir/?api=1&origin=${currentPos}&destination=${dest}&travelmode=driving`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="px-3.5 py-1.5 text-xs font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-100/60 dark:bg-emerald-950/40 hover:bg-emerald-200/80 rounded-lg border border-emerald-200/50 dark:border-emerald-900/50 inline-flex items-center gap-1.5 transition-colors"
+                      >
+                        🚗 Track Current Live Location
+                      </a>
+                    );
+                  } else if (startLoc && dest) {
+                    return (
+                      <a
+                        href={`https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(startLoc)}&destination=${dest}&travelmode=driving`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="px-3.5 py-1.5 text-xs font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-100/60 dark:bg-emerald-950/40 hover:bg-emerald-200/80 rounded-lg border border-emerald-200/50 dark:border-emerald-900/50 inline-flex items-center gap-1.5 transition-colors"
+                      >
+                        🚗 Track Transit Route Proof
+                      </a>
+                    );
+                  }
+                  return null;
+                })()}
+              </div>
+            )}
           </div>
         );
 
@@ -1243,20 +1447,105 @@ const ComplaintDetail = () => {
               </div>
               <div>
                 <span className="text-xs text-muted-foreground block">GPS Coordinates (Proof)</span>
-                <span className="font-medium text-slate-700">
-                  {ticket.arrival_lat && ticket.arrival_lng ? (
-                    <a
-                      href={`https://www.google.com/maps/search/?api=1&query=${ticket.arrival_lat},${ticket.arrival_lng}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-primary hover:underline flex items-center gap-1 inline-flex"
-                    >
-                      <MapPin className="w-3.5 h-3.5" /> {ticket.arrival_lat.toFixed(6)}, {ticket.arrival_lng.toFixed(6)}
-                    </a>
-                  ) : (
-                    'Not recorded'
-                  )}
-                </span>
+                <div className="space-y-1.5 mt-0.5">
+                  {(() => {
+                    let startLat = null;
+                    let startLng = null;
+                    let startAddress = null;
+                    if (ticket.pir_decision_tree) {
+                      try {
+                        const parsed = JSON.parse(ticket.pir_decision_tree);
+                        if (parsed) {
+                          if (typeof parsed.lat === 'number' && typeof parsed.lng === 'number') {
+                            startLat = parsed.lat;
+                            startLng = parsed.lng;
+                          } else if (parsed.address) {
+                            startAddress = parsed.address;
+                          }
+                        }
+                      } catch (e) {}
+                    }
+
+                    const dest = (ticket.customer_lat && ticket.customer_lng)
+                      ? `${ticket.customer_lat},${ticket.customer_lng}`
+                      : ticket.location ? encodeURIComponent(ticket.location.trim()) : '';
+
+                    const startOrigin = (startLat && startLng)
+                      ? `${startLat},${startLng}`
+                      : startAddress
+                        ? encodeURIComponent(startAddress.trim())
+                        : '';
+
+                    return (
+                      <>
+                        {(startLat && startLng) ? (
+                          <div className="text-xs">
+                            <span className="text-muted-foreground">Start: </span>
+                            <a
+                              href={`https://www.google.com/maps/search/?api=1&query=${startLat},${startLng}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-primary hover:underline font-medium inline-flex items-center gap-0.5"
+                            >
+                              <MapPin className="w-3 h-3" /> {startLat.toFixed(6)}, {startLng.toFixed(6)}
+                            </a>
+                          </div>
+                        ) : startAddress ? (
+                          <div className="text-xs">
+                            <span className="text-muted-foreground">Start: </span>
+                            <a
+                              href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(startAddress)}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-primary hover:underline font-medium inline-flex items-center gap-0.5"
+                            >
+                              <MapPin className="w-3 h-3" /> {startAddress}
+                            </a>
+                          </div>
+                        ) : null}
+                        {ticket.arrival_lat && ticket.arrival_lng ? (
+                          <div className="text-xs">
+                            <span className="text-muted-foreground">Arrival: </span>
+                            <a
+                              href={`https://www.google.com/maps/search/?api=1&query=${ticket.arrival_lat},${ticket.arrival_lng}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-primary hover:underline font-medium inline-flex items-center gap-0.5"
+                            >
+                              <MapPin className="w-3 h-3" /> {ticket.arrival_lat.toFixed(6)}, {ticket.arrival_lng.toFixed(6)}
+                            </a>
+                          </div>
+                        ) : (
+                          <div className="text-xs text-muted-foreground">Arrival: Not recorded yet</div>
+                        )}
+                        {startOrigin && (
+                          <div className="pt-1">
+                            <a
+                              href={dest ? `https://www.google.com/maps/dir/?api=1&origin=${startOrigin}&destination=${dest}&travelmode=driving` : `https://www.google.com/maps/search/?api=1&query=${startOrigin}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-xs text-emerald-600 dark:text-emerald-400 hover:underline font-bold inline-flex items-center gap-1 bg-emerald-50 dark:bg-emerald-950/30 px-2 py-1 rounded"
+                            >
+                              🗺️ View Travel Route Proof
+                            </a>
+                          </div>
+                        )}
+                        {!startOrigin && ticket.arrival_lat && ticket.arrival_lng && (
+                          <div className="pt-0.5">
+                            <a
+                              href={dest ? `https://www.google.com/maps/dir/?api=1&origin=${ticket.arrival_lat},${ticket.arrival_lng}&destination=${dest}&travelmode=driving` : `https://www.google.com/maps/search/?api=1&query=${ticket.arrival_lat},${ticket.arrival_lng}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-xs text-primary hover:underline font-medium inline-flex items-center gap-1"
+                            >
+                              🗺️ View Route to Customer
+                            </a>
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
+                </div>
               </div>
             </div>
 
@@ -1485,19 +1774,27 @@ const ComplaintDetail = () => {
             <h1 className="text-xl md:text-2xl font-display font-extrabold text-foreground tracking-tight break-words" title={ticket.title}>
               {ticket.title}
             </h1>
-            <div className="text-xs text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1">
-              <span>
-                Customer: <span className="font-semibold text-foreground">{ticket.customer_name || ticket.profiles?.full_name || ticket.created_by_name || "Customer"}</span>
+            <div className="text-xs text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1.5 min-w-0 w-full">
+              <span className="flex items-center gap-1">
+                Customer: <span className="font-semibold text-foreground break-all">{ticket.customer_name || ticket.profiles?.full_name || ticket.created_by_name || "Customer"}</span>
               </span>
-              <span className="text-muted-foreground/45">•</span>
-              <span>
-                Registered on <span className="font-medium text-foreground">{formatIndianDateTime(ticket.created_at)}</span>
+              <span className="text-muted-foreground/45 hidden sm:inline">•</span>
+              <span className="flex items-center gap-1">
+                Registered: <span className="font-medium text-foreground">{formatIndianDateTime(ticket.created_at)}</span>
               </span>
               {ticket.assigned_supervisor && (
                 <>
-                  <span className="text-muted-foreground/45">•</span>
-                  <span>
-                    Supervisor: <span className="font-semibold text-primary">{ticket.assigned_supervisor}</span>
+                  <span className="text-muted-foreground/45 hidden sm:inline">•</span>
+                  <span className="flex items-center gap-1">
+                    Supervisor: <span className="font-semibold text-primary break-all">{ticket.assigned_supervisor}</span>
+                  </span>
+                </>
+              )}
+              {ticket.assigned_technician && (
+                <>
+                  <span className="text-muted-foreground/45 hidden sm:inline">•</span>
+                  <span className="flex items-center gap-1">
+                    Technician: <span className="font-semibold text-warning break-all">{ticket.assigned_technician}</span>
                   </span>
                 </>
               )}
@@ -1616,12 +1913,19 @@ const ComplaintDetail = () => {
               <p className="text-sm text-muted-foreground">
                 Contact the customer to triage the issue. Choose whether to resolve it remotely or dispatch a technician.
               </p>
-              <div className="flex gap-2">
-                <Button variant="outline" className="flex-1 border-success text-success" onClick={() => handleTriageDecision('remote_fixed')}>
-                  <CheckCircle2 className="w-4 h-4 mr-2" /> 📞 Remote Fix
+              <div className="flex flex-col md:flex-row gap-3 w-full">
+                <Button 
+                  variant="outline" 
+                  className="w-full md:flex-1 border-success text-success whitespace-normal h-auto py-4" 
+                  onClick={() => handleTriageDecision('remote_fixed')}
+                >
+                  <CheckCircle2 className="w-4 h-4 mr-2 shrink-0" /> 📞 Remote Fix
                 </Button>
-                <Button className="flex-1 gradient-primary" onClick={() => handleTriageDecision('field_required')}>
-                  <Wrench className="w-4 h-4 mr-2" /> 🚐 Field Visit Required
+                <Button 
+                  className="w-full md:flex-1 gradient-primary whitespace-normal h-auto py-4" 
+                  onClick={() => handleTriageDecision('field_required')}
+                >
+                  <Wrench className="w-4 h-4 mr-2 shrink-0" /> 🚐 Field Visit Required
                 </Button>
               </div>
             </div>
@@ -2156,23 +2460,23 @@ const ComplaintDetail = () => {
           <motion.div initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-xl p-5 space-y-4">
             <h2 className="font-semibold flex items-center gap-2"><User className="w-4 h-4 text-primary" /> Assigned Team</h2>
             {supervisorName && (
-              <div className="flex items-center gap-3 p-3 rounded-lg bg-muted/50">
-                <div className="w-10 h-10 rounded-full gradient-cool flex items-center justify-center text-white text-xs font-bold">
+              <div className="flex items-center gap-3 p-3 rounded-lg bg-muted/50 min-w-0">
+                <div className="w-10 h-10 rounded-full gradient-cool flex items-center justify-center text-white text-xs font-bold shrink-0">
                   {supervisorName.charAt(0).toUpperCase()}
                 </div>
-                <div>
-                  <p className="font-medium text-sm">{supervisorName}</p>
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium text-sm break-all">{supervisorName}</p>
                   <p className="text-xs text-muted-foreground">Supervisor</p>
                 </div>
               </div>
             )}
             {technicianName ? (
-              <div className="flex items-center gap-3 p-3 rounded-lg bg-muted/50">
-                <div className="w-10 h-10 rounded-full gradient-warm flex items-center justify-center text-white text-xs font-bold">
+              <div className="flex items-center gap-3 p-3 rounded-lg bg-muted/50 min-w-0">
+                <div className="w-10 h-10 rounded-full gradient-warm flex items-center justify-center text-white text-xs font-bold shrink-0">
                   {technicianName.charAt(0).toUpperCase()}
                 </div>
-                <div>
-                  <p className="font-medium text-sm">{technicianName}</p>
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium text-sm break-all">{technicianName}</p>
                   <p className="text-xs text-muted-foreground">Technician</p>
                 </div>
               </div>
@@ -2181,6 +2485,70 @@ const ComplaintDetail = () => {
             )}
           </motion.div>
         </div>
+
+      {showStartJourneyModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="bg-white dark:bg-slate-900 rounded-xl max-w-md w-full p-6 shadow-2xl border border-slate-100 dark:border-slate-800 animate-in fade-in zoom-in duration-200">
+            <h3 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              🚀 Start Journey
+            </h3>
+            <p className="text-sm text-slate-500 dark:text-slate-400 mt-2">
+              Confirm your starting location. This will show on the customer's route map.
+            </p>
+            
+            <div className="mt-4 space-y-3">
+              <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider block">
+                Starting Location / Landmark
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. Shangri-la Plaza, Road No. 2, Banjara Hills"
+                value={typedStartLocation}
+                onChange={(e) => setTypedStartLocation(e.target.value)}
+                className="w-full px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all"
+                disabled={isDetectingGps}
+              />
+              {isDetectingGps ? (
+                <div className="text-xs text-muted-foreground flex items-center gap-1.5 py-1">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
+                  Attempting to detect GPS location...
+                </div>
+              ) : detectedCoords ? (
+                <div className="text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-1 py-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                  GPS coordinates detected: {detectedCoords.lat.toFixed(6)}, {detectedCoords.lng.toFixed(6)}
+                </div>
+              ) : (
+                <div className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1 py-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                  GPS blocked/unavailable. Please type your starting location above.
+                </div>
+              )}
+            </div>
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowStartJourneyModal(false);
+                  setIsDetectingGps(false);
+                }}
+                className="px-4 py-2 text-sm font-medium text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmStartJourney}
+                disabled={isDetectingGps}
+                className="px-4 py-2 text-sm font-semibold text-white bg-primary hover:bg-primary/90 disabled:opacity-50 rounded-lg transition-colors shadow-lg shadow-primary/20 flex items-center gap-1"
+              >
+                Confirm & Start
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       </div>
     </div>
