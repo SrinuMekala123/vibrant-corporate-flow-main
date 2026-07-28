@@ -52,6 +52,7 @@ export default defineConfig(({ mode }) => ({
   server: {
     host: "::",
     port: 8080,
+    allowedHosts: ["support.brihaspathi.in"],
     hmr: {
       overlay: false,
     },
