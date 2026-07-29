@@ -14,6 +14,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import browserImageCompression from "browser-image-compression";
 import { notificationService } from "@/services/notificationService";
+import { clearOfflineDraft } from '@/lib/offlineStorage';
 
 const ComplaintEdit = () => {
   const { id } = useParams();
@@ -638,6 +639,9 @@ const ComplaintEdit = () => {
           customer_lat: form.customerLat,
           customer_lng: form.customerLng,
         } as any);
+        if (!isNew && id) {
+          await clearOfflineDraft(id);
+        }
 
         if (supervisorChanged) {
           const supervisorProfile = await fetchProfileByName(form.assignedSupervisor);
@@ -803,7 +807,7 @@ const ComplaintEdit = () => {
 
           <div className="space-y-2">
             <label className="text-sm font-medium">Location <span className="text-destructive">*</span></label>
-            <div className="flex gap-2">
+            <div className="flex flex-col md:flex-row gap-2">
               <div className="relative flex-1">
                 <Input 
                   value={form.location} 
@@ -847,7 +851,7 @@ const ComplaintEdit = () => {
                   variant="outline" 
                   onClick={handleGetCurrentLocation}
                   disabled={isLocating || isSaving}
-                  className="flex-shrink-0"
+                  className="flex-shrink-0 w-full md:w-auto"
                 >
                   {isLocating ? (
                     <>
@@ -952,37 +956,37 @@ const ComplaintEdit = () => {
                 }} 
                 disabled={isSaving || !supervisors || !isAdmin}
               >
-                <SelectTrigger><SelectValue placeholder="Assign supervisor" /></SelectTrigger>
+                <SelectTrigger>
+                  <SelectValue placeholder="Assign supervisor">{form.assignedSupervisor && <span className="truncate">{form.assignedSupervisor}</span>}</SelectValue>
+                </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="clear_unassigned">None (Unassign)</SelectItem>
                   {matchingSupervisors.length > 0 && (
                     <>
                       <div className="px-2 py-1.5 text-xs font-semibold text-primary uppercase tracking-wider">Matching Expertise {form.fieldOfWork && `(${form.fieldOfWork})`}</div>
-                      {matchingSupervisors.map((s: any) => (
-                        <SelectItem key={s.id} value={s.id}>
-                          <div className="flex flex-col text-left py-0.5">
-                            <span className="font-medium">{s.full_name}</span>
-                            <span className="text-[10px] text-muted-foreground leading-normal">
-                              {s.email}{s.phone ? ` • ${s.phone}` : ''}{s.employeeId ? ` • ID: ${s.employeeId}` : ''}{s.expertise ? ` • ${s.expertise}` : ''}
-                            </span>
-                          </div>
-                        </SelectItem>
-                      ))}
+                       {matchingSupervisors.map((s: any) => (
+                         <SelectItem key={s.id} value={s.id}>
+                           <div className="flex flex-col text-left py-0.5">
+                             <span className="font-semibold truncate">{s.full_name}</span>
+                             <span className="text-xs text-muted-foreground truncate">{s.email}{s.phone ? ` • ${s.phone}` : ''}</span>
+                             <span className="text-xs text-muted-foreground">{s.expertise || ''}</span>
+                           </div>
+                         </SelectItem>
+                       ))}
                     </>
                   )}
                   {nonMatchingSupervisors.length > 0 && (
                     <>
                       <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider border-t mt-1 pt-2">Other Supervisors</div>
-                      {nonMatchingSupervisors.map((s: any) => (
-                        <SelectItem key={s.id} value={s.id}>
-                          <div className="flex flex-col text-left py-0.5">
-                            <span className="font-medium text-muted-foreground">{s.full_name}</span>
-                            <span className="text-[10px] text-muted-foreground leading-normal">
-                              {s.email}{s.phone ? ` • ${s.phone}` : ''}{s.employeeId ? ` • ID: ${s.employeeId}` : ''}{s.expertise ? ` • ${s.expertise}` : ''}
-                            </span>
-                          </div>
-                        </SelectItem>
-                      ))}
+                     {nonMatchingSupervisors.map((s: any) => (
+                       <SelectItem key={s.id} value={s.id}>
+                         <div className="flex flex-col text-left py-0.5">
+                           <span className="font-semibold text-muted-foreground truncate">{s.full_name}</span>
+                           <span className="text-xs text-muted-foreground truncate">{s.email}{s.phone ? ` • ${s.phone}` : ''}</span>
+                           <span className="text-xs text-muted-foreground">{s.expertise || ''}</span>
+                         </div>
+                       </SelectItem>
+                     ))}
                     </>
                   )}
                 </SelectContent>
@@ -1014,44 +1018,44 @@ const ComplaintEdit = () => {
                 }} 
                 disabled={isSaving || !technicians || isAdmin}
               >
-                <SelectTrigger><SelectValue placeholder="Assign technician" /></SelectTrigger>
+                <SelectTrigger>
+                  <SelectValue placeholder="Assign technician">{form.assignedTechnician && <span className="truncate">{form.assignedTechnician}</span>}</SelectValue>
+                </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="clear_unassigned">None (Unassign)</SelectItem>
                   {matchingTechnicians.length > 0 && (
                     <>
                       <div className="px-2 py-1.5 text-xs font-semibold text-primary uppercase tracking-wider">Matching Expertise {form.fieldOfWork && `(${form.fieldOfWork})`}</div>
-                      {matchingTechnicians.map((t: any) => (
-                        <SelectItem key={t.id} value={t.id}>
-                          <div className="flex flex-col text-left py-0.5">
-                            <div className="flex items-center gap-2">
-                              <span className="font-medium">{t.full_name}</span>
-                              <span className={`w-1.5 h-1.5 rounded-full ${t.available ? "bg-success" : "bg-muted-foreground"}`} />
-                              <span className="text-[9px] text-muted-foreground">{t.available ? "Available" : "Busy"}</span>
-                            </div>
-                            <span className="text-[10px] text-muted-foreground leading-normal">
-                              {t.email}{t.phone ? ` • ${t.phone}` : ''}{t.employeeId ? ` • ID: ${t.employeeId}` : ''}{t.expertise ? ` • ${t.expertise}` : ''}
-                            </span>
-                          </div>
-                        </SelectItem>
-                      ))}
+                       {matchingTechnicians.map((t: any) => (
+                         <SelectItem key={t.id} value={t.id}>
+                           <div className="flex flex-col text-left py-0.5">
+                             <div className="flex items-center gap-2">
+                               <span className="font-semibold truncate">{t.full_name}</span>
+                               <span className={`w-1.5 h-1.5 rounded-full ${t.available ? "bg-success" : "bg-muted-foreground"}`} />
+                               <span className="text-[9px] text-muted-foreground">{t.available ? "Available" : "Busy"}</span>
+                             </div>
+                             <span className="text-xs text-muted-foreground truncate">{t.email}{t.phone ? ` • ${t.phone}` : ''}</span>
+                             <span className="text-xs text-muted-foreground">{t.expertise || ''}</span>
+                           </div>
+                         </SelectItem>
+                       ))}
                     </>
                   )}
                   {nonMatchingTechnicians.length > 0 && (
                     <>
                       <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider border-t mt-1 pt-2">Other Technicians</div>
-                      {nonMatchingTechnicians.map((t: any) => (
-                        <SelectItem key={t.id} value={t.id}>
-                          <div className="flex flex-col text-left py-0.5">
-                            <div className="flex items-center gap-2">
-                              <span className="font-medium text-muted-foreground">{t.full_name}</span>
-                              <span className={`w-1.5 h-1.5 rounded-full ${t.available ? "bg-success" : "bg-muted-foreground"}`} />
-                            </div>
-                            <span className="text-[10px] text-muted-foreground leading-normal">
-                              {t.email}{t.phone ? ` • ${t.phone}` : ''}{t.employeeId ? ` • ID: ${t.employeeId}` : ''}{t.expertise ? ` • ${t.expertise}` : ''}
-                            </span>
-                          </div>
-                        </SelectItem>
-                      ))}
+                     {nonMatchingTechnicians.map((t: any) => (
+                       <SelectItem key={t.id} value={t.id}>
+                         <div className="flex flex-col text-left py-0.5">
+                           <div className="flex items-center gap-2">
+                             <span className="font-medium text-muted-foreground truncate">{t.full_name}</span>
+                             <span className={`w-1.5 h-1.5 rounded-full ${t.available ? "bg-success" : "bg-muted-foreground"}`} />
+                           </div>
+                           <span className="text-xs text-muted-foreground truncate">{t.email}{t.phone ? ` • ${t.phone}` : ''}</span>
+                           <span className="text-xs text-muted-foreground">{t.expertise || ''}</span>
+                         </div>
+                       </SelectItem>
+                     ))}
                     </>
                   )}
                 </SelectContent>

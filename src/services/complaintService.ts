@@ -254,4 +254,40 @@ export const complaintService = {
 
     if (error) throw error;
   },
+
+  // Live tracking
+  sendTechnicianLocation: async (complaintId: string, technicianName: string, lat: number, lng: number, accuracy?: number, heading?: number, speed?: number): Promise<void> => {
+    const { error } = await supabase
+      .from("technician_locations")
+      .insert([{ complaint_id: complaintId, technician_name: technicianName, lat, lng, accuracy, heading, speed }]);
+
+    if (error) throw error;
+  },
+
+  getLatestTechnicianLocation: async (complaintId: string) => {
+    const { data, error } = await supabase
+      .from("technician_locations")
+      .select("*")
+      .eq("complaint_id", complaintId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) throw error;
+    return data;
+  },
+
+  subscribeToTechnicianLocation: (complaintId: string, callback: (payload: any) => void) => {
+    const channel = supabase
+      .channel(`technician-location-${complaintId}`)
+      .on("postgres_changes", {
+        event: "INSERT",
+        schema: "public",
+        table: "technician_locations",
+        filter: `complaint_id=eq.${complaintId}`,
+      }, callback)
+      .subscribe();
+
+    return channel;
+  },
 };

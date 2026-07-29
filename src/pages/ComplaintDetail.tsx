@@ -15,9 +15,11 @@ import { complaintService, type Complaint } from "@/services/complaintService";
 import { supabase } from "@/lib/supabase";
 import SignatureCanvas from "react-signature-canvas";
 import browserImageCompression from "browser-image-compression";
-import { saveOfflineDraft, syncOfflineDrafts, getOfflineDraft } from '@/lib/offlineStorage';
+import { saveOfflineDraft, syncOfflineDrafts, getOfflineDraft, clearOfflineDraft } from '@/lib/offlineStorage';
 import ImageGallery from "@/components/ImageGallery";
 import { notificationService } from "@/services/notificationService";
+import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from "react-leaflet";
+import "leaflet/dist/leaflet.css";
 
 type SignatureMode = "draw" | "upload";
 type SatisfactionLevel = "satisfied" | "partially_satisfied" | "unsatisfied" | "";
@@ -95,6 +97,12 @@ const ComplaintDetail = () => {
   const [feedbackContactMethod, setFeedbackContactMethod] = useState("phone");
   const [isCollectingFeedback, setIsCollectingFeedback] = useState(false);
   const [showFeedbackForm, setShowFeedbackForm] = useState(false);
+
+  const [trackingLocation, setTrackingLocation] = useState<{lat: number; lng: number; accuracy?: number; heading?: number; speed?: number; recordedAt?: string} | null>(null);
+  const [isTracking, setIsTracking] = useState(false);
+  const [trackingError, setTrackingError] = useState<string | null>(null);
+  const trackingWatchId = useRef<number | null>(null);
+  const trackingInterval = useRef<number | null>(null);
 
 
 
@@ -256,6 +264,8 @@ const ComplaintDetail = () => {
           if (draft.pir_audio_url) setPirAudioUrl(draft.pir_audio_url);
           if (draft.technician_evidence) setEvidenceUrls(draft.technician_evidence); // ✅ FIXED
           toast.info('Restored offline draft');
+        } else {
+          await clearOfflineDraft(id);
         }
       }
     };
@@ -314,6 +324,56 @@ const ComplaintDetail = () => {
       }
     };
   }, [id, queryClient]);
+
+  useEffect(() => {
+    if (!id) return;
+    let locChannel: any = null;
+
+    const fetchLatest = async () => {
+      try {
+        const latest = await complaintService.getLatestTechnicianLocation(id);
+        if (latest) {
+          setTrackingLocation({
+            lat: latest.lat,
+            lng: latest.lng,
+            accuracy: latest.accuracy,
+            heading: latest.heading,
+            speed: latest.speed,
+            recordedAt: latest.created_at,
+          });
+        }
+      } catch (e) {
+        console.warn("Failed to fetch latest technician location:", e);
+      }
+    };
+
+    fetchLatest();
+
+    locChannel = complaintService.subscribeToTechnicianLocation(id, (payload) => {
+      if (payload.eventType === "INSERT" && payload.new) {
+        setTrackingLocation({
+          lat: payload.new.lat,
+          lng: payload.new.lng,
+          accuracy: payload.new.accuracy,
+          heading: payload.new.heading,
+          speed: payload.new.speed,
+          recordedAt: payload.new.created_at,
+        });
+      }
+    });
+
+    return () => {
+      if (locChannel) {
+        supabase.removeChannel(locChannel);
+      }
+    };
+  }, [id]);
+
+  useEffect(() => {
+    return () => {
+      stopTechnicianTracking();
+    };
+  }, []);
 
   const sendNotification = async (email: string, subject: string, message: string, ticketId?: string) => {
     try {
@@ -398,28 +458,121 @@ const ComplaintDetail = () => {
   };
 
   const verifyGPS = async (): Promise<{ lat: number; lng: number; accuracy: number } | null> => {
-    return new Promise(async (resolve) => {
+    return new Promise((resolve) => {
       if (!navigator.geolocation) {
-        const ipGps = await fetchIPCoordinates();
-        resolve(ipGps);
+        resolve(null);
         return;
       }
       navigator.geolocation.getCurrentPosition(
         (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy }),
-        async () => {
-          const ipGps = await fetchIPCoordinates();
-          resolve(ipGps);
-        },
-        { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+        () => resolve(null),
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
       );
     });
   };
 
+  const startTechnicianTracking = async () => {
+    if (!ticket?.id || !currentUserFullName) {
+      setTrackingError("Unable to start tracking. Missing ticket or user.");
+      return;
+    }
+
+    if (!navigator.geolocation) {
+      setTrackingError("Geolocation is not supported by your browser.");
+      return;
+    }
+
+    try {
+      setTrackingError(null);
+      setIsTracking(true);
+
+      const watchId = navigator.geolocation.watchPosition(
+        async (pos) => {
+          const { latitude, longitude, accuracy, heading, speed } = pos.coords;
+          setTrackingLocation({ lat: latitude, lng: longitude, accuracy, heading, speed, recordedAt: new Date().toISOString() });
+          try {
+            await complaintService.sendTechnicianLocation(ticket.id, currentUserFullName, latitude, longitude, accuracy, heading, speed);
+          } catch (err) {
+            console.warn("Failed to send location update:", err);
+          }
+        },
+        (err) => {
+          console.error("Tracking position error:", err);
+          setTrackingError(err.message || "Unable to get location updates");
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      );
+
+      trackingWatchId.current = watchId;
+
+      const interval = window.setInterval(async () => {
+        try {
+          navigator.geolocation.getCurrentPosition(
+            async (pos) => {
+              const { latitude, longitude, accuracy, heading, speed } = pos.coords;
+              setTrackingLocation({ lat: latitude, lng: longitude, accuracy, heading, speed, recordedAt: new Date().toISOString() });
+              try {
+                await complaintService.sendTechnicianLocation(ticket.id, currentUserFullName, latitude, longitude, accuracy, heading, speed);
+              } catch (err) {
+                console.warn("Failed to send tracked location:", err);
+              }
+            },
+            (err) => {
+              console.error("Periodic location update failed:", err);
+              setTrackingError(err.message || "Periodic location update failed");
+            },
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+          );
+        } catch (e) {
+          console.warn("Periodic tracking error:", e);
+        }
+      }, 8000);
+
+      trackingInterval.current = interval;
+    } catch (e) {
+      console.error("startTechnicianTracking failed:", e);
+      setTrackingError("Failed to initialize tracking");
+      setIsTracking(false);
+    }
+  };
+
+  const stopTechnicianTracking = () => {
+    if (trackingWatchId.current !== null) {
+      navigator.geolocation.clearWatch(trackingWatchId.current);
+      trackingWatchId.current = null;
+    }
+    if (trackingInterval.current !== null) {
+      window.clearInterval(trackingInterval.current);
+      trackingInterval.current = null;
+    }
+    setIsTracking(false);
+  };
+
+  const shareCurrentLocation = async () => {
+    if (!ticket?.id || !currentUserFullName) return;
+    setTrackingError(null);
+    try {
+      const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
+        if (!navigator.geolocation) return reject(new Error("Geolocation not supported"));
+        navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });
+      });
+      const { latitude, longitude, accuracy, heading, speed } = pos.coords;
+      setTrackingLocation({ lat: latitude, lng: longitude, accuracy, heading, speed, recordedAt: new Date().toISOString() });
+      await complaintService.sendTechnicianLocation(ticket.id, currentUserFullName, latitude, longitude, accuracy, heading, speed);
+      toast.success("Location shared successfully");
+    } catch (err: any) {
+      console.error("shareCurrentLocation failed:", err);
+      setTrackingError(err.message || "Failed to share location");
+      toast.error("Failed to share location");
+    }
+  };
+
   const updateMutation = useMutation({
     mutationFn: (updates: any) => complaintService.update(id!, updates),
-    onSuccess: () => {
+    onSuccess: async () => {
       queryClient.invalidateQueries({ queryKey: ['complaint', id] });
       queryClient.invalidateQueries({ queryKey: ['complaints'] });
+      await clearOfflineDraft(id!);
       toast.success("Ticket updated!");
     },
     onError: (err: any) => toast.error(err.message || "Update failed"),
@@ -571,6 +724,10 @@ const ComplaintDetail = () => {
       arrival_lat: gps?.lat || null,
       arrival_lng: gps?.lng || null
     } as any);
+
+    if (isRole("technician") && isAssignedTechnician) {
+      startTechnicianTracking();
+    }
   };
 
   const handleSubmitPIR = async () => {
@@ -1616,11 +1773,11 @@ const ComplaintDetail = () => {
               <p className="text-sm text-muted-foreground">
                 Contact the customer to triage the issue. Choose whether to resolve it remotely or dispatch a technician.
               </p>
-              <div className="flex gap-2">
-                <Button variant="outline" className="flex-1 border-success text-success" onClick={() => handleTriageDecision('remote_fixed')}>
+              <div className="flex flex-col md:flex-row gap-3 w-full">
+                <Button variant="outline" className="w-full whitespace-normal text-center border-success text-success" onClick={() => handleTriageDecision('remote_fixed')}>
                   <CheckCircle2 className="w-4 h-4 mr-2" /> 📞 Remote Fix
                 </Button>
-                <Button className="flex-1 gradient-primary" onClick={() => handleTriageDecision('field_required')}>
+                <Button className="w-full whitespace-normal text-center gradient-primary" onClick={() => handleTriageDecision('field_required')}>
                   <Wrench className="w-4 h-4 mr-2" /> 🚐 Field Visit Required
                 </Button>
               </div>
@@ -1707,6 +1864,31 @@ const ComplaintDetail = () => {
                 <p className="text-sm text-muted-foreground">Document your findings at the site.</p>
               </div>
               <Button onClick={() => setShowPIRForm(true)} variant="outline"><FileText className="w-4 h-4 mr-2" /> Submit PIR</Button>
+            </div>
+          )}
+
+          {/* Technician Live Tracking */}
+          {isRole("technician") && isAssignedTechnician && (ticket.current_phase === 3 || ticket.current_phase === 4 || ticket.current_phase === 5) && (
+            <div className="bg-muted/50 p-4 rounded-lg space-y-3">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Live Technician Tracking</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button size="sm" onClick={isTracking ? stopTechnicianTracking : startTechnicianTracking} className={isTracking ? "bg-destructive text-white" : "bg-success text-success-foreground"}>
+                  {isTracking ? (<><Loader2 className="w-3.5 h-3.5 animate-spin mr-2" /> Stop Sharing Location</>) : (<><MapPin className="w-3.5 h-3.5 mr-2" /> Share My Location</>)}
+                </Button>
+                <Button size="sm" variant="outline" onClick={shareCurrentLocation} disabled={isTracking}>
+                  <MapPin className="w-3.5 h-3.5 mr-2" /> Send Current Location Once
+                </Button>
+              </div>
+              {trackingError && <p className="text-xs text-destructive">{trackingError}</p>}
+              {trackingLocation && (
+                <div className="text-xs text-muted-foreground flex flex-wrap gap-3">
+                  <span>Lat: {trackingLocation.lat.toFixed(6)}</span>
+                  <span>Lng: {trackingLocation.lng.toFixed(6)}</span>
+                  {trackingLocation.accuracy && <span>Acc: ±{trackingLocation.accuracy.toFixed(1)}m</span>}
+                  {trackingLocation.heading && <span>Heading: {trackingLocation.heading.toFixed(0)}°</span>}
+                  {trackingLocation.recordedAt && <span>Updated: {new Date(trackingLocation.recordedAt).toLocaleTimeString()}</span>}
+                </div>
+              )}
             </div>
           )}
 
@@ -2092,14 +2274,64 @@ const ComplaintDetail = () => {
         />
         
         {/* Selected Phase Details Card */}
-        <div className="mt-6 border-t pt-5">
-          <h3 className="font-semibold text-sm text-primary mb-3 flex items-center gap-1.5">
-            🔍 Phase {activePhase} Detail: {phaseLabels[activePhase as keyof typeof phaseLabels]}
-          </h3>
-          <div className="bg-muted/30 border rounded-xl p-4 space-y-3 text-sm">
-            {renderPhaseDetails(activePhase)}
+          <div className="mt-6 border-t pt-5">
+            <h3 className="font-semibold text-sm text-primary mb-3 flex items-center gap-1.5">
+              🔍 Phase {activePhase} Detail: {phaseLabels[activePhase as keyof typeof phaseLabels]}
+            </h3>
+            <div className="bg-muted/30 border rounded-xl p-4 space-y-3 text-sm">
+              {renderPhaseDetails(activePhase)}
+            </div>
           </div>
-        </div>
+
+          {(isRole("customer", "supervisor", "admin") && ticket.assigned_technician && (ticket.current_phase >= 3 || trackingLocation)) && (
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="mt-6 border-t pt-5">
+              <h3 className="font-semibold text-sm text-primary mb-3 flex items-center gap-1.5">
+                🗺️ Live Technician Tracking
+              </h3>
+              <div className="bg-muted/30 border rounded-xl overflow-hidden">
+                <MapContainer
+                  center={trackingLocation ? [trackingLocation.lat, trackingLocation.lng] : (ticket.customer_lat && ticket.customer_lng ? [ticket.customer_lat, ticket.customer_lng] : [17.385044, 78.486671])}
+                  zoom={trackingLocation ? 15 : 12}
+                  style={{ height: 360, width: "100%" }}
+                  scrollWheelZoom={false}
+                >
+                  <TileLayer
+                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                  />
+                  <MapUpdater center={trackingLocation ? [trackingLocation.lat, trackingLocation.lng] : null} />
+                  {ticket.customer_lat && ticket.customer_lng && (
+                    <Marker position={[ticket.customer_lat, ticket.customer_lng]}>
+                      <Popup>
+                        <p className="text-xs font-semibold">Customer Location</p>
+                        <p className="text-[10px] text-muted-foreground">{ticket.location || ticket.customer_lat.toFixed(5)}, {ticket.customer_lng.toFixed(5)}</p>
+                      </Popup>
+                    </Marker>
+                  )}
+                  {trackingLocation && (
+                    <Marker position={[trackingLocation.lat, trackingLocation.lng]}>
+                      <Popup>
+                        <p className="text-xs font-semibold">{ticket.assigned_technician}</p>
+                        <p className="text-[10px] text-muted-foreground">{trackingLocation.lat.toFixed(5)}, {trackingLocation.lng.toFixed(5)}</p>
+                        {trackingLocation.accuracy && <p className="text-[10px]">Accuracy: ±{trackingLocation.accuracy.toFixed(1)}m</p>}
+                        {trackingLocation.heading && <p className="text-[10px]">Heading: {trackingLocation.heading.toFixed(0)}°</p>}
+                        {trackingLocation.speed && <p className="text-[10px]">Speed: {(trackingLocation.speed * 3.6).toFixed(1)} km/h</p>}
+                        {trackingLocation.recordedAt && <p className="text-[10px]">Updated: {new Date(trackingLocation.recordedAt).toLocaleTimeString()}</p>}
+                      </Popup>
+                    </Marker>
+                  )}
+                  {trackingLocation && ticket.customer_lat && ticket.customer_lng && (
+                    <Polyline positions={[[ticket.customer_lat, ticket.customer_lng], [trackingLocation.lat, trackingLocation.lng]]} color="#2563eb" weight={4} opacity={0.7} dashArray="8 8" />
+                  )}
+                </MapContainer>
+                <div className="p-3 border-t flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
+                  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-primary" /> Customer</span>
+                  {trackingLocation && <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-success" /> Technician</span>}
+                  {trackingLocation && <span className="ml-auto">Last updated: {new Date(trackingLocation.recordedAt || Date.now()).toLocaleTimeString()}</span>}
+                </div>
+              </div>
+            </motion.div>
+          )}
       </motion.div>
         </div>
 
@@ -2188,3 +2420,17 @@ const ComplaintDetail = () => {
 };
 
 export default ComplaintDetail;
+
+type MapUpdaterProps = {
+  center: [number, number] | null;
+};
+
+const MapUpdater = ({ center }: MapUpdaterProps) => {
+  const map = useMap();
+  useEffect(() => {
+    if (center) {
+      map.setView(center, 15);
+    }
+  }, [center, map]);
+  return null;
+};

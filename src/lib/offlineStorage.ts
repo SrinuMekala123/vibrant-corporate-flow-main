@@ -90,6 +90,14 @@ export const syncOfflineDrafts = async (): Promise<number> => {
     }
 };
 
+export const clearOfflineDraft = async (complaintId: string): Promise<void> => {
+  try {
+    await localforage.removeItem(`draft-${complaintId}`);
+  } catch (error) {
+    console.error('Failed to clear offline draft:', error);
+  }
+};
+
 // Clear old synced drafts
 export const clearSyncedDrafts = async (): Promise<void> => {
     try {
