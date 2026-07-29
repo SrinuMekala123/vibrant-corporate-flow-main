@@ -756,10 +756,11 @@ const ComplaintDetail = () => {
       pir_findings: pirFindings,
       pir_audio_url: pirAudioUrl || null,
       technician_evidence: evidenceUrls,
-      arrival_timestamp: new Date().toISOString()
+      arrival_timestamp: new Date().toISOString(),
+      status: "pir_pending_approval",
     } as any);
     setShowPIRForm(false);
-    toast.success("PIR submitted");
+    toast.success("PIR submitted - awaiting supervisor approval");
   };
 
   const handleSaveResolution = async () => {
@@ -845,7 +846,8 @@ const ComplaintDetail = () => {
       await updateMutation.mutateAsync({
         pir_findings_severity: pirSeverityInput,
         supervisor_severity: supSeverityInput,
-        target_duration_hours: Number(targetDurationInput)
+        target_duration_hours: Number(targetDurationInput),
+        status: "pir_approved",
       } as any);
 
       // Trigger notification to technician
@@ -1566,10 +1568,10 @@ const ComplaintDetail = () => {
                 </div>
               )}
               {ticket.signature_url && (
-                <div className="bg-white p-3 rounded-lg border flex flex-col justify-between">
-                  <div>
+                <div className="bg-white p-3 rounded-lg border flex flex-col">
+                  <div className="overflow-hidden rounded">
                     <span className="text-xs text-muted-foreground block mb-2 font-medium">✍️ Customer Signature:</span>
-                    <img src={ticket.signature_url} alt="Customer Signature" className="max-h-16 sm:max-h-20 border rounded bg-white p-1 w-auto" />
+                    <img src={ticket.signature_url} alt="Customer Signature" className="w-full h-auto object-contain border rounded bg-white" />
                   </div>
                   <span className="text-[10px] text-muted-foreground mt-2 block">
                     Signed Off At: {ticket.signoff_timestamp ? formatIndianDateTime(ticket.signoff_timestamp) : 'N/A'}
@@ -2009,20 +2011,22 @@ const ComplaintDetail = () => {
                 <label className="text-sm font-medium flex items-center gap-2">
                   <Upload className="w-4 h-4" /> Upload Evidence (Photos/Videos)
                 </label>
-                <input type="file" multiple accept="image/*,video/*,.png,.jpg,.jpeg,.gif,.webp,.mp4,.mov,.avi,.mkv" onChange={async (e) => {
-                  const files = Array.from(e.target.files || []);
-                  const urls: string[] = [];
-                  for (const file of files) {
-                    try {
-                      const url = await uploadToSupabase(file, 'evidence');
-                      urls.push(url);
-                    } catch (err) {
-                      toast.error(`Failed to upload ${file.name}`);
+                <div className="flex items-center gap-2 w-full">
+                  <input type="file" multiple accept="image/*,video/*,.png,.jpg,.jpeg,.gif,.webp,.mp4,.mov,.avi,.mkv" onChange={async (e) => {
+                    const files = Array.from(e.target.files || []);
+                    const urls: string[] = [];
+                    for (const file of files) {
+                      try {
+                        const url = await uploadToSupabase(file, 'evidence');
+                        urls.push(url);
+                      } catch (err) {
+                        toast.error(`Failed to upload ${file.name}`);
+                      }
                     }
-                  }
-                  setEvidenceUrls(prev => [...prev, ...urls]);
-                  if (urls.length > 0) toast.success(`${urls.length} file(s) uploaded`);
-                }} className="text-sm file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary/10 file:text-primary hover:file:bg-primary/20" disabled={isUploading} />
+                    setEvidenceUrls(prev => [...prev, ...urls]);
+                    if (urls.length > 0) toast.success(`${urls.length} file(s) uploaded`);
+                  }} className="text-sm flex-1 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary/10 file:text-primary hover:file:bg-primary/20" disabled={isUploading} />
+                </div>
                 {isUploading && <p className="text-xs text-muted-foreground">Uploading...</p>}
                 {evidenceUrls.length > 0 && (
                   <div className="flex flex-wrap gap-2 mt-2">
@@ -2055,8 +2059,8 @@ const ComplaintDetail = () => {
                 </div>
                 {signatureMode === "draw" && (
                   <div className="space-y-2">
-                    <div className="border-2 border-dashed border-primary/50 rounded-lg p-2 bg-white w-full overflow-hidden">
-                      <SignatureCanvas ref={sigRef} penColor="black" canvasProps={{ width: canvasWidth, height: 200, className: 'signature-canvas rounded max-w-full h-auto' }} />
+                    <div className="border-2 border-dashed border-gray-300 rounded-lg p-2 bg-white w-full overflow-hidden">
+                      <SignatureCanvas ref={sigRef} penColor="black" canvasProps={{ width: canvasWidth, height: 200, className: 'signature-canvas rounded max-w-full h-auto bg-white' }} />
                     </div>
                     <div className="flex items-center justify-between">
                       <Button variant="ghost" size="sm" onClick={() => sigRef.current?.clear()} className="text-xs">Clear Signature</Button>
@@ -2095,13 +2099,13 @@ const ComplaintDetail = () => {
                   </div>
                 )}
               </div>
-              <div className="flex gap-2 justify-end pt-2 border-t">
-                <Button variant="outline" size="sm" onClick={() => setShowSignOff(false)}>Cancel</Button>
-                <Button size="sm" onClick={handleFinalSignOff} disabled={updateMutation.isPending} className="bg-success hover:bg-success/90 text-success-foreground">
-                  {updateMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <CheckCircle2 className="w-4 h-4 mr-2" />}
-                  Finalize & Complete Job
-                </Button>
-              </div>
+               <div className="flex flex-col sm:flex-row gap-2 sm:justify-end w-full mt-4">
+                 <Button variant="outline" size="sm" onClick={() => setShowSignOff(false)} className="w-full sm:w-auto">Cancel</Button>
+                 <Button size="sm" onClick={handleFinalSignOff} disabled={updateMutation.isPending} className="w-full sm:w-auto bg-success hover:bg-success/90 text-success-foreground">
+                   {updateMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <CheckCircle2 className="w-4 h-4 mr-2" />}
+                   Finalize & Complete Job
+                 </Button>
+               </div>
             </motion.div>
           )}
 
@@ -2258,7 +2262,9 @@ const ComplaintDetail = () => {
                 <h3 className="font-semibold text-sm mb-2 flex items-center gap-2">
                   <User className="w-4 h-4" /> Customer Signature
                 </h3>
-                <img src={ticket.signature_url} alt="Signature" className="max-w-xs border rounded bg-white p-2" />
+                <div className="overflow-hidden rounded border bg-white">
+                  <img src={ticket.signature_url} alt="Signature" className="w-full h-auto object-contain" />
+                </div>
               </div>
             )}
           </div>
@@ -2269,20 +2275,14 @@ const ComplaintDetail = () => {
               {updateMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <CheckCircle2 className="w-4 h-4 mr-2" />}
               Confirm & Close Ticket
             </Button>
-            <Button variant="outline" onClick={handleReject} disabled={ticket.feedback_collected || !verificationNote.trim()} className="w-full sm:w-auto border-destructive text-destructive" title={ticket.feedback_collected ? "Feedback has been collected; ticket cannot be rejected" : "Add verification notes to enable rejection"}>
+            <Button variant="outline" onClick={handleReject} disabled={!verificationNote.trim()} className="w-full sm:w-auto border-destructive text-destructive" title="Add verification notes to enable rejection">
               <XCircle className="w-4 h-4 mr-2" /> Reject & Rework
             </Button>
           </div>
           {ticket.feedback_collected && (
-            <p className="text-xs text-warning mt-3 flex items-center gap-1">
+            <p className="text-xs text-muted-foreground mt-3 flex items-center gap-1">
               <AlertTriangle className="w-3 h-3" />
-              Customer feedback collected. Ticket must be closed or returned to rework from dashboard.
-            </p>
-          )}
-          {!ticket.feedback_collected && (
-            <p className="text-xs text-warning mt-3 flex items-center gap-1">
-              <AlertTriangle className="w-3 h-3" />
-              Customer feedback must be collected before closing the ticket
+              Note: Customer feedback has been recorded.
             </p>
           )}
         </motion.div>
