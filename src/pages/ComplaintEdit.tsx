@@ -481,6 +481,11 @@ const ComplaintEdit = () => {
       return;
     }
 
+    if (!form.location && !(form.customerLat && form.customerLng)) {
+      toast.error("Please provide a location by typing or using GPS");
+      return;
+    }
+
     setIsSaving(true);
     try {
       if (isNew) {
@@ -1099,16 +1104,19 @@ const ComplaintEdit = () => {
             {isUploading && <p className="text-xs text-muted-foreground">Uploading...</p>}
             {evidenceUrls.length > 0 && (
               <div className="flex flex-wrap gap-2 mt-2">
-                {evidenceUrls.map((url, i) => (
-                  <div key={i} className="relative group">
-                    <a href={url} target="_blank" rel="noopener noreferrer" className="text-xs text-primary hover:underline bg-primary/10 px-3 py-1.5 rounded-lg inline-flex items-center gap-1">Evidence {i + 1}</a>
-                    {!(!isNew && isRole("supervisor")) && (
-                      <button type="button" onClick={() => setEvidenceUrls(prev => prev.filter((_, idx) => idx !== i))} className="absolute -top-1 -right-1 w-5 h-5 bg-destructive text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                        <X className="w-3 h-3" />
-                      </button>
-                    )}
-                  </div>
-                ))}
+                {evidenceUrls.map((url, i) => {
+                  const filename = decodeURIComponent(url.split('/').pop()?.split('?')[0] || `File ${i + 1}`);
+                  return (
+                    <div key={i} className="relative group">
+                      <a href={url} target="_blank" rel="noopener noreferrer" className="text-xs text-primary hover:underline bg-primary/10 px-2 py-1.5 rounded inline-flex items-center gap-1 max-w-[180px] truncate">{filename}</a>
+                      {!(!isNew && isRole("supervisor")) && (
+                        <button type="button" onClick={() => setEvidenceUrls(prev => prev.filter((_, idx) => idx !== i))} className="absolute -top-1 -right-1 w-5 h-5 bg-destructive text-white rounded-full flex items-center justify-center opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+                          <X className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>

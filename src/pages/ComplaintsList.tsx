@@ -263,9 +263,11 @@ const ComplaintsList = () => {
                       className="rounded-xl border-border/60 text-xs w-full sm:w-[140px] h-10 pl-8 pr-2.5 bg-slate-950/20 cursor-pointer"
                     />
                     <Calendar className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
+                    {!fromDate && (
+                      <span className="absolute left-8 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground pointer-events-none select-none">dd/mm/yyyy</span>
+                    )}
                   </div>
                 </div>
-                <p className="text-[10px] text-muted-foreground md:hidden mt-0.5">dd/mm/yyyy</p>
               </div>
               <div className="w-full sm:w-auto">
                 <div className="flex items-center gap-1.5">
@@ -280,9 +282,11 @@ const ComplaintsList = () => {
                       className="rounded-xl border-border/60 text-xs w-full sm:w-[140px] h-10 pl-8 pr-2.5 bg-slate-950/20 cursor-pointer"
                     />
                     <Calendar className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
+                    {!toDate && (
+                      <span className="absolute left-8 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground pointer-events-none select-none">dd/mm/yyyy</span>
+                    )}
                   </div>
                 </div>
-                <p className="text-[10px] text-muted-foreground md:hidden mt-0.5">dd/mm/yyyy</p>
               </div>
               {(fromDate || toDate) && (
                 <Tooltip>
@@ -353,9 +357,11 @@ const ComplaintsList = () => {
                       className="rounded-xl border-border/60 text-xs w-full sm:w-[140px] h-10 pl-8 pr-2.5 bg-slate-950/20 cursor-pointer"
                     />
                     <Calendar className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
+                    {!fromDate && (
+                      <span className="absolute left-8 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground pointer-events-none select-none">dd/mm/yyyy</span>
+                    )}
                   </div>
                 </div>
-                <p className="text-[10px] text-muted-foreground md:hidden mt-0.5">dd/mm/yyyy</p>
               </div>
               <div className="w-full sm:w-auto">
                 <div className="flex items-center gap-1.5">
@@ -370,9 +376,11 @@ const ComplaintsList = () => {
                       className="rounded-xl border-border/60 text-xs w-full sm:w-[140px] h-10 pl-8 pr-2.5 bg-slate-950/20 cursor-pointer"
                     />
                     <Calendar className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
+                    {!toDate && (
+                      <span className="absolute left-8 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground pointer-events-none select-none">dd/mm/yyyy</span>
+                    )}
                   </div>
                 </div>
-                <p className="text-[10px] text-muted-foreground md:hidden mt-0.5">dd/mm/yyyy</p>
               </div>
               {(fromDate || toDate) && (
                 <Tooltip>

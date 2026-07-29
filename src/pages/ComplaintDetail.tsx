@@ -601,6 +601,9 @@ const ComplaintDetail = () => {
     ticket.status !== "closed" &&
     (ticket.current_phase === 3 || ticket.current_phase === 4 || ticket.current_phase === 5);
 
+  const isPirApproved = Boolean(ticket.pir_findings_severity && ticket.supervisor_severity && ticket.target_duration_hours);
+  const isPirPending = Boolean(ticket.pir_findings && !isPirApproved);
+
   const handleTriageDecision = async (outcome: 'remote_fixed' | 'field_required') => {
     const customerEmail = ticket.profiles?.email || null;
     const supervisorEmail = ticket.assigned_supervisor ? await fetchEmailByName(ticket.assigned_supervisor) : null;
@@ -762,6 +765,11 @@ const ComplaintDetail = () => {
   const handleSaveResolution = async () => {
     if (!resolutionNote.trim()) {
       toast.error("Please add resolution notes");
+      return;
+    }
+
+    if (!isPirApproved) {
+      toast.error("PIR must be approved by supervisor before adding resolution");
       return;
     }
 
@@ -1548,14 +1556,20 @@ const ComplaintDetail = () => {
               {ticket.technician_evidence && ticket.technician_evidence.length > 0 && (
                 <div className="bg-white p-3 rounded-lg border">
                   <span className="text-xs text-muted-foreground block mb-2 font-medium">✅ Technician's Resolution Evidence (After):</span>
-                  {renderEvidenceFiles(ticket.technician_evidence)}
+                  <div className="flex flex-wrap gap-2">
+                    {ticket.technician_evidence.map((url, idx) => (
+                      <a key={idx} href={url} target="_blank" rel="noreferrer" className="block relative w-16 h-16 sm:w-20 sm:h-20 border rounded overflow-hidden hover:opacity-90 bg-white">
+                        <img src={url} alt={`Evidence ${idx + 1}`} className="w-full h-full object-cover" />
+                      </a>
+                    ))}
+                  </div>
                 </div>
               )}
               {ticket.signature_url && (
                 <div className="bg-white p-3 rounded-lg border flex flex-col justify-between">
                   <div>
                     <span className="text-xs text-muted-foreground block mb-2 font-medium">✍️ Customer Signature:</span>
-                    <img src={ticket.signature_url} alt="Customer Signature" className="max-h-16 border rounded bg-white p-1" />
+                    <img src={ticket.signature_url} alt="Customer Signature" className="max-h-16 sm:max-h-20 border rounded bg-white p-1 w-auto" />
                   </div>
                   <span className="text-[10px] text-muted-foreground mt-2 block">
                     Signed Off At: {ticket.signoff_timestamp ? formatIndianDateTime(ticket.signoff_timestamp) : 'N/A'}
@@ -1915,21 +1929,21 @@ const ComplaintDetail = () => {
                   🎵 Audio Note: <a href={pirAudioUrl} target="_blank" rel="noreferrer" className="text-primary hover:underline font-medium">Listen to Audio</a>
                 </div>
               )}
-              {evidenceUrls.length > 0 && (
-                <div className="mt-2">
-                  <p className="text-xs font-medium mb-1">Uploaded Evidence Preview ({evidenceUrls.length} file(s)):</p>
-                  <div className="flex flex-wrap gap-2">
-                    {evidenceUrls.map((url, i) => (
-                      <div key={i} className="relative w-12 h-12 border rounded bg-white overflow-hidden group">
-                        <img src={url} alt="Evidence Preview" className="w-full h-full object-cover" />
-                        <button type="button" onClick={() => setEvidenceUrls(prev => prev.filter((_, idx) => idx !== i))} className="absolute top-0 right-0 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <X className="w-3 h-3" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+               {evidenceUrls.length > 0 && (
+                 <div className="mt-2">
+                   <p className="text-xs font-medium mb-1">Uploaded Evidence Preview ({evidenceUrls.length} file(s)):</p>
+                   <div className="flex flex-wrap gap-2">
+                     {evidenceUrls.map((url, i) => (
+                       <div key={i} className="relative w-12 h-12 border rounded bg-white overflow-hidden group">
+                         <img src={url} alt="Evidence Preview" className="w-full h-full object-cover" />
+                         <button type="button" onClick={() => setEvidenceUrls(prev => prev.filter((_, idx) => idx !== i))} className="absolute top-0 right-0 bg-red-500 text-white rounded-full p-0.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+                           <X className="w-3 h-3" />
+                         </button>
+                       </div>
+                     ))}
+                   </div>
+                 </div>
+               )}
               <div className="flex gap-2 justify-end">
                 <Button variant="outline" size="sm" onClick={() => setShowPIRForm(false)}>Cancel</Button>
                 <Button size="sm" onClick={handleSubmitPIR} disabled={updateMutation.isPending}>
@@ -1943,25 +1957,36 @@ const ComplaintDetail = () => {
           {/* Phase 4: Add Resolution */}
           {ticket.current_phase === 4 && ticket.status === "in-progress" && !showPIRForm && !showSignOff && (
             <div className="space-y-3 bg-muted/50 p-4 rounded-lg mt-3">
-              {showResolution ? (
+              {isPirPending ? (
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <p className="font-medium">Waiting for Supervisor Approval</p>
+                    <p className="text-sm text-muted-foreground">PIR submitted. Please wait for supervisor to verify and approve before adding resolution.</p>
+                  </div>
+                  <div className="flex items-center gap-2 text-warning flex-shrink-0">
+                    <Clock className="w-4 h-4" />
+                    <span className="text-sm font-medium">Pending Approval</span>
+                  </div>
+                </div>
+              ) : showResolution ? (
                 <div className="space-y-2">
                   <label className="text-sm font-medium">Resolution Notes *</label>
                   <Textarea placeholder="Describe work done, parts replaced, tests performed..." value={resolutionNote} onChange={e => setResolutionNote(e.target.value)} rows={3} />
-                  <div className="flex gap-2 justify-end">
-                    <Button variant="outline" size="sm" onClick={() => setShowResolution(false)}>Cancel</Button>
-                    <Button size="sm" onClick={handleSaveResolution} disabled={updateMutation.isPending} className="bg-primary text-primary-foreground">
+                  <div className="flex flex-col sm:flex-row gap-2 sm:justify-end">
+                    <Button variant="outline" size="sm" onClick={() => setShowResolution(false)} className="w-full sm:w-auto">Cancel</Button>
+                    <Button size="sm" onClick={handleSaveResolution} disabled={updateMutation.isPending} className="w-full sm:w-auto bg-primary text-primary-foreground">
                       {updateMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <CheckCircle2 className="w-4 h-4 mr-2" />}
                       Save & Continue to Sign Off
                     </Button>
                   </div>
                 </div>
               ) : (
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
                     <p className="font-medium">Job in progress</p>
                     <p className="text-sm text-muted-foreground">Add resolution notes when work is done.</p>
                   </div>
-                  <Button onClick={() => setShowResolution(true)} variant="outline"><CheckSquare className="w-4 h-4 mr-2" /> Add Resolution</Button>
+                  <Button onClick={() => setShowResolution(true)} variant="outline" className="w-full sm:w-auto"><CheckSquare className="w-4 h-4 mr-2" /> Add Resolution</Button>
                 </div>
               )}
             </div>
@@ -2001,28 +2026,37 @@ const ComplaintDetail = () => {
                 {isUploading && <p className="text-xs text-muted-foreground">Uploading...</p>}
                 {evidenceUrls.length > 0 && (
                   <div className="flex flex-wrap gap-2 mt-2">
-                    {evidenceUrls.map((url, i) => (
-                      <a key={i} href={url} target="_blank" rel="noopener noreferrer" className="text-xs text-primary hover:underline bg-primary/10 px-2 py-1 rounded">
-                        Evidence {i + 1}
-                      </a>
-                    ))}
+                    {evidenceUrls.map((url, i) => {
+                      const filename = decodeURIComponent(url.split('/').pop()?.split('?')[0] || `File ${i + 1}`);
+                      return (
+                        <div key={i} className="relative group">
+                          <a href={url} target="_blank" rel="noopener noreferrer" className="text-xs text-primary hover:underline bg-primary/10 px-2 py-1.5 rounded inline-flex items-center gap-1 max-w-[180px] truncate">
+                            <FileText className="w-3 h-3 flex-shrink-0" />
+                            <span className="truncate">{filename}</span>
+                          </a>
+                          <button type="button" onClick={() => setEvidenceUrls(prev => prev.filter((_, idx) => idx !== i))} className="absolute -top-1 -right-1 w-4 h-4 bg-destructive text-white rounded-full flex items-center justify-center opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+                            <X className="w-2.5 h-2.5" />
+                          </button>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
               <div className="space-y-3">
                 <label className="text-sm font-medium">Customer Signature *</label>
-                <div className="flex gap-2 border-b border-border">
-                  <button type="button" onClick={() => setSignatureMode("draw")} className={`flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${signatureMode === "draw" ? "text-primary border-b-2 border-primary" : "text-muted-foreground hover:text-foreground"}`}>
+                <div className="flex flex-col sm:flex-row gap-2 border-b border-border">
+                  <button type="button" onClick={() => setSignatureMode("draw")} className={`flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium transition-colors w-full sm:w-auto ${signatureMode === "draw" ? "text-primary border-b-2 border-primary" : "text-muted-foreground hover:text-foreground"}`}>
                     <PenTool className="w-4 h-4" /> Draw Signature
                   </button>
-                  <button type="button" onClick={() => setSignatureMode("upload")} className={`flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${signatureMode === "upload" ? "text-primary border-b-2 border-primary" : "text-muted-foreground hover:text-foreground"}`}>
+                  <button type="button" onClick={() => setSignatureMode("upload")} className={`flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium transition-colors w-full sm:w-auto ${signatureMode === "upload" ? "text-primary border-b-2 border-primary" : "text-muted-foreground hover:text-foreground"}`}>
                     <ImageIcon className="w-4 h-4" /> Upload Signature
                   </button>
                 </div>
                 {signatureMode === "draw" && (
                   <div className="space-y-2">
                     <div className="border-2 border-dashed border-primary/50 rounded-lg p-2 bg-white w-full overflow-hidden">
-                      <SignatureCanvas ref={sigRef} penColor="black" canvasProps={{ width: canvasWidth, height: 150, className: 'signature-canvas rounded max-w-full' }} />
+                      <SignatureCanvas ref={sigRef} penColor="black" canvasProps={{ width: canvasWidth, height: 200, className: 'signature-canvas rounded max-w-full h-auto' }} />
                     </div>
                     <div className="flex items-center justify-between">
                       <Button variant="ghost" size="sm" onClick={() => sigRef.current?.clear()} className="text-xs">Clear Signature</Button>
@@ -2089,12 +2123,12 @@ const ComplaintDetail = () => {
           {/* Take Back Button */}
           {ticket.triage_outcome === 'remote_fixed' && isRole("admin", "supervisor") && (
             <div className="mb-4 p-4 rounded-lg bg-warning/10 border-2 border-warning/30">
-              <div className="flex items-start gap-3">
+              <div className="flex flex-col sm:flex-row items-start gap-3">
                 <AlertTriangle className="w-6 h-6 text-warning flex-shrink-0 mt-0.5" />
-                <div className="flex-1">
+                <div className="flex-1 w-full">
                   <p className="font-semibold text-sm text-warning mb-1">⚠️ Remote Fix - Revert Option</p>
                   <p className="text-xs text-muted-foreground mb-3">This ticket was resolved remotely via phone. If this was done by mistake or requires a field visit, you can return it to Phase 2 (Telephonic Triage) for re-evaluation.</p>
-                  <Button variant="outline" size="sm" onClick={handleTakeBack} disabled={updateMutation.isPending} className="border-warning text-warning hover:bg-warning/20 font-medium">
+                  <Button variant="outline" size="sm" onClick={handleTakeBack} disabled={updateMutation.isPending} className="w-full sm:w-auto whitespace-normal text-center border-warning text-warning hover:bg-warning/20 font-medium">
                     {updateMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ArrowLeft className="w-4 h-4 mr-2" />}
                     Return to Phase 2 (Triage)
                   </Button>
@@ -2230,15 +2264,21 @@ const ComplaintDetail = () => {
           </div>
 
           {/* Action Buttons */}
-          <div className="flex gap-3 mt-3 flex-wrap">
-            <Button onClick={handleFinalClosure} disabled={!ticket.feedback_collected || updateMutation.isPending} className="bg-success text-success-foreground hover:bg-success/90" title={!ticket.feedback_collected ? "Please collect customer feedback first" : ""}>
+          <div className="flex flex-col sm:flex-row gap-3 mt-3">
+            <Button onClick={handleFinalClosure} disabled={!ticket.feedback_collected || updateMutation.isPending} className="w-full sm:w-auto bg-success text-success-foreground hover:bg-success/90" title={!ticket.feedback_collected ? "Please collect customer feedback first" : ""}>
               {updateMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <CheckCircle2 className="w-4 h-4 mr-2" />}
               Confirm & Close Ticket
             </Button>
-            <Button variant="outline" onClick={handleReject} disabled={!ticket.feedback_collected || !verificationNote.trim()} className="border-destructive text-destructive" title={!ticket.feedback_collected ? "Please collect customer feedback first" : ""}>
+            <Button variant="outline" onClick={handleReject} disabled={ticket.feedback_collected || !verificationNote.trim()} className="w-full sm:w-auto border-destructive text-destructive" title={ticket.feedback_collected ? "Feedback has been collected; ticket cannot be rejected" : "Add verification notes to enable rejection"}>
               <XCircle className="w-4 h-4 mr-2" /> Reject & Rework
             </Button>
           </div>
+          {ticket.feedback_collected && (
+            <p className="text-xs text-warning mt-3 flex items-center gap-1">
+              <AlertTriangle className="w-3 h-3" />
+              Customer feedback collected. Ticket must be closed or returned to rework from dashboard.
+            </p>
+          )}
           {!ticket.feedback_collected && (
             <p className="text-xs text-warning mt-3 flex items-center gap-1">
               <AlertTriangle className="w-3 h-3" />
