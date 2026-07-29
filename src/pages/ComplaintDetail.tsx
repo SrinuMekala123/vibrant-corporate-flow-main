@@ -487,14 +487,9 @@ const ComplaintDetail = () => {
       setIsTracking(true);
 
       const watchId = navigator.geolocation.watchPosition(
-        async (pos) => {
+        (pos) => {
           const { latitude, longitude, accuracy, heading, speed } = pos.coords;
           setTrackingLocation({ lat: latitude, lng: longitude, accuracy, heading, speed, recordedAt: new Date().toISOString() });
-          try {
-            await complaintService.sendTechnicianLocation(ticket.id, currentUserFullName, latitude, longitude, accuracy, heading, speed);
-          } catch (err) {
-            console.warn("Failed to send location update:", err);
-          }
         },
         (err) => {
           console.error("Tracking position error:", err);
@@ -507,26 +502,21 @@ const ComplaintDetail = () => {
 
       const interval = window.setInterval(async () => {
         try {
-          navigator.geolocation.getCurrentPosition(
-            async (pos) => {
-              const { latitude, longitude, accuracy, heading, speed } = pos.coords;
-              setTrackingLocation({ lat: latitude, lng: longitude, accuracy, heading, speed, recordedAt: new Date().toISOString() });
-              try {
-                await complaintService.sendTechnicianLocation(ticket.id, currentUserFullName, latitude, longitude, accuracy, heading, speed);
-              } catch (err) {
-                console.warn("Failed to send tracked location:", err);
-              }
-            },
-            (err) => {
-              console.error("Periodic location update failed:", err);
-              setTrackingError(err.message || "Periodic location update failed");
-            },
-            { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-          );
+          const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
+            navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });
+          });
+          const { latitude, longitude, accuracy, heading, speed } = pos.coords;
+          setTrackingLocation({ lat: latitude, lng: longitude, accuracy, heading, speed, recordedAt: new Date().toISOString() });
+          try {
+            await complaintService.sendTechnicianLocation(ticket.id, currentUserFullName, latitude, longitude, accuracy, heading, speed);
+          } catch (err) {
+            console.warn("Failed to send tracked location:", err);
+          }
         } catch (e) {
           console.warn("Periodic tracking error:", e);
+          setTrackingError(e instanceof Error ? e.message : "Periodic location update failed");
         }
-      }, 8000);
+      }, 12000);
 
       trackingInterval.current = interval;
     } catch (e) {

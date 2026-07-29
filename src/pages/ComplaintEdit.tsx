@@ -297,10 +297,6 @@ const ComplaintEdit = () => {
 
   const handleGetCurrentLocation = () => {
     setIsLocating(true);
-    // Note: Geolocation APIs are restricted to Secure Contexts (HTTPS or localhost).
-    // In local development over a LAN IP (e.g. http://172.21.6.206:8080), browser security will block
-    // geolocation and trigger isSecureContext = false. This is EXPECTED browser behavior.
-    // For production deployment, HTTPS must be configured to enable geolocation.
     if (!window.isSecureContext) {
       const msg = "Location services require HTTPS. Please use the manual address entry.";
       toast.error(msg);
@@ -320,16 +316,13 @@ const ComplaintEdit = () => {
         async (position) => {
           const lat = position.coords.latitude;
           const lng = position.coords.longitude;
-          
+
           setForm(prev => ({
             ...prev,
             customerLat: lat,
             customerLng: lng
           }));
-          
-          toast.success("Location coordinates captured!");
-          setLocationHelp("");
-          
+
           try {
             const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1&t=${Date.now()}`);
             const data = await res.json();
@@ -338,10 +331,19 @@ const ComplaintEdit = () => {
                 ...prev,
                 location: data.display_name
               }));
-              toast.success("Address auto-populated!");
+              toast.success("Location auto-filled successfully");
+              setLocationHelp("");
+            } else {
+              throw new Error("No display_name in response");
             }
           } catch (e) {
-            console.warn("Reverse geocoding failed:", e);
+            const fallback = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+            setForm(prev => ({
+              ...prev,
+              location: fallback
+            }));
+            toast.warning("Location captured. Address lookup failed, using coordinates.");
+            setLocationHelp(`GPS: ${fallback}`);
           } finally {
             setIsLocating(false);
           }
@@ -968,7 +970,7 @@ const ComplaintEdit = () => {
                          <SelectItem key={s.id} value={s.id}>
                            <div className="flex flex-col text-left py-0.5">
                              <span className="font-semibold truncate">{s.full_name}</span>
-                             <span className="text-xs text-muted-foreground truncate">{s.email}{s.phone ? ` • ${s.phone}` : ''}</span>
+                             <span className="text-xs text-muted-foreground truncate">{s.phone || ''}</span>
                              <span className="text-xs text-muted-foreground">{s.expertise || ''}</span>
                            </div>
                          </SelectItem>
@@ -982,7 +984,7 @@ const ComplaintEdit = () => {
                        <SelectItem key={s.id} value={s.id}>
                          <div className="flex flex-col text-left py-0.5">
                            <span className="font-semibold text-muted-foreground truncate">{s.full_name}</span>
-                           <span className="text-xs text-muted-foreground truncate">{s.email}{s.phone ? ` • ${s.phone}` : ''}</span>
+                           <span className="text-xs text-muted-foreground truncate">{s.phone || ''}</span>
                            <span className="text-xs text-muted-foreground">{s.expertise || ''}</span>
                          </div>
                        </SelectItem>
@@ -1034,7 +1036,7 @@ const ComplaintEdit = () => {
                                <span className={`w-1.5 h-1.5 rounded-full ${t.available ? "bg-success" : "bg-muted-foreground"}`} />
                                <span className="text-[9px] text-muted-foreground">{t.available ? "Available" : "Busy"}</span>
                              </div>
-                             <span className="text-xs text-muted-foreground truncate">{t.email}{t.phone ? ` • ${t.phone}` : ''}</span>
+                             <span className="text-xs text-muted-foreground truncate">{t.phone || ''}</span>
                              <span className="text-xs text-muted-foreground">{t.expertise || ''}</span>
                            </div>
                          </SelectItem>
@@ -1051,7 +1053,7 @@ const ComplaintEdit = () => {
                              <span className="font-medium text-muted-foreground truncate">{t.full_name}</span>
                              <span className={`w-1.5 h-1.5 rounded-full ${t.available ? "bg-success" : "bg-muted-foreground"}`} />
                            </div>
-                           <span className="text-xs text-muted-foreground truncate">{t.email}{t.phone ? ` • ${t.phone}` : ''}</span>
+                           <span className="text-xs text-muted-foreground truncate">{t.phone || ''}</span>
                            <span className="text-xs text-muted-foreground">{t.expertise || ''}</span>
                          </div>
                        </SelectItem>

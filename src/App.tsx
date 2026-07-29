@@ -177,6 +177,7 @@ import UsersPage from "./pages/admin/Users";
 import Profile from "./pages/Profile";
 import UpdatePassword from "./pages/UpdatePassword";
 import NotFound from "./pages/NotFound";
+import LenisProvider from "@/components/LenisProvider";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -371,7 +372,9 @@ const App = () => (
       <Sonner />
       <AuthProvider>
         <BrowserRouter>
-          <AppRoutes />
+          <LenisProvider>
+            <AppRoutes />
+          </LenisProvider>
         </BrowserRouter>
       </AuthProvider>
     </TooltipProvider>
