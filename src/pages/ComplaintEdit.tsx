@@ -135,7 +135,7 @@ const ComplaintEdit = () => {
     customerPhone: "",
     location: "",
     fieldOfWork: "",
-    status: "unassigned",
+    status: "open",
     severity: "minor" as const,
     assignedSupervisor: "",
     assignedTechnician: "",
@@ -236,7 +236,7 @@ const ComplaintEdit = () => {
         customerPhone: existingComplaint.customer_phone || "",
         location: existingComplaint.location || "",
         fieldOfWork: existingComplaint.field_of_work || "",
-        status: existingComplaint.status || "unassigned",
+        status: existingComplaint.status || "open",
         severity: existingComplaint.severity || "minor",
         assignedSupervisor: existingComplaint.assigned_supervisor || "",
         assignedTechnician: existingComplaint.assigned_technician || "",
@@ -524,7 +524,7 @@ const ComplaintEdit = () => {
           phase = 2;
         }
         if (form.assignedTechnician && !isCustomer) {
-          status = "dispatched";
+          status = "in_progress";
           phase = 3;
         }
 
@@ -640,18 +640,18 @@ const ComplaintEdit = () => {
         } else if (!form.assignedSupervisor && !isCustomer) {
           if (existingComplaint?.current_phase === 2) {
             nextPhase = 1;
-            nextStatus = "unassigned";
-            console.log("🚀 Auto-reverting to Phase 1 (Unassigned)");
+            nextStatus = "open";
+            console.log("🚀 Auto-reverting to Phase 1 (Open)");
             toast.success("Supervisor unassigned! Reverting to Phase 1");
           }
         }
 
-        // 🔥 If technician is assigned and we're in Phase 2 or 3, move to Phase 3 (status: 'dispatched')
+        // If technician is assigned and we're in Phase 2 or 3, move to Phase 3 (status: 'in_progress')
         if (form.assignedTechnician && !isCustomer) {
           if (existingComplaint?.current_phase === 2 || existingComplaint?.current_phase === 3) {
             nextPhase = 3;
-            nextStatus = "dispatched";
-            console.log("🚀 Auto-advancing to Phase 3 (Dispatch)");
+            nextStatus = "in_progress";
+            console.log("Auto-advancing to Phase 3 (Dispatch)");
             toast.success("Technician assigned! Moving to Phase 3: Dispatch");
           }
         }
@@ -949,12 +949,15 @@ const ComplaintEdit = () => {
               <Select value={form.status} onValueChange={(v) => setForm({ ...form, status: v })} disabled={isSaving || (!isNew && isRole("supervisor"))}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="unassigned">Unassigned</SelectItem>
+                  <SelectItem value="open">Open</SelectItem>
                   <SelectItem value="assigned">Assigned</SelectItem>
-                  <SelectItem value="dispatched">Dispatched</SelectItem>
-                  <SelectItem value="in-progress">In Progress</SelectItem>
-                  <SelectItem value="completed">Completed</SelectItem>
+                  <SelectItem value="in_progress">In Progress</SelectItem>
+                  <SelectItem value="pir_pending">PIR Pending</SelectItem>
+                  <SelectItem value="pir_approved">PIR Approved</SelectItem>
+                  <SelectItem value="rework_required">Rework Required</SelectItem>
+                  <SelectItem value="pending_verification">Pending Verification</SelectItem>
                   <SelectItem value="closed">Closed</SelectItem>
+                  <SelectItem value="cancelled">Cancelled</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -979,7 +982,7 @@ const ComplaintEdit = () => {
                     setSelectedSupervisorId("");
                     let updatedStatus = form.status;
                     if (form.status === "assigned") {
-                      updatedStatus = "unassigned";
+                      updatedStatus = "open";
                     }
                     setForm({ ...form, assignedSupervisor: "", status: updatedStatus });
                   } else {
@@ -987,7 +990,7 @@ const ComplaintEdit = () => {
                     if (match) {
                       setSelectedSupervisorId(match.id);
                       let updatedStatus = form.status;
-                      if (form.status === "unassigned") {
+                      if (form.status === "open") {
                         updatedStatus = "assigned";
                       }
                       setForm({ ...form, assignedSupervisor: match.full_name, status: updatedStatus });

@@ -28,19 +28,19 @@ interface SeverityBadgeProps {
 }
 
 export function StatusBadge({ status }: StatusBadgeProps) {
-  const statusConfig = {
-    unassigned: { bg: "bg-muted", text: "text-muted-foreground", label: "Unassigned" },
+  const statusConfig: Record<string, { bg: string; text: string; label: string }> = {
+    open: { bg: "bg-gray-100", text: "text-gray-700", label: "Open" },
     assigned: { bg: "bg-blue-100", text: "text-blue-700", label: "Assigned" },
-    dispatched: { bg: "bg-orange-100", text: "text-orange-700", label: "Dispatched" },
-    "in-progress": { bg: "bg-yellow-100", text: "text-yellow-700", label: "In Progress" },
+    in_progress: { bg: "bg-yellow-100", text: "text-yellow-700", label: "In Progress" },
     pir_pending: { bg: "bg-amber-100", text: "text-amber-700", label: "PIR Pending" },
     pir_approved: { bg: "bg-indigo-100", text: "text-indigo-700", label: "PIR Approved" },
     rework_required: { bg: "bg-red-100", text: "text-red-700", label: "Rework Required" },
-    completed: { bg: "bg-green-100", text: "text-green-700", label: "Completed" },
+    pending_verification: { bg: "bg-green-100", text: "text-green-700", label: "Pending Verification" },
     closed: { bg: "bg-gray-100", text: "text-gray-700", label: "Closed" },
+    cancelled: { bg: "bg-gray-100", text: "text-gray-700", label: "Cancelled" },
   };
 
-  const config = statusConfig[status as keyof typeof statusConfig] || statusConfig.unassigned;
+  const config = statusConfig[status] || statusConfig.open;
 
   return (
     <span className={`px-2 py-1 rounded-full text-xs font-medium ${config.bg} ${config.text}`}>

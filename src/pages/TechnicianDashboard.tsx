@@ -81,16 +81,16 @@ const TechnicianDashboard = () => {
 
   // Filter based on active tab
   const filteredComplaints = allComplaints?.filter((c) => {
-    if (activeTab === "active") return c.status !== "completed" && c.status !== "closed";
-    if (activeTab === "completed") return c.status === "completed";
+    if (activeTab === "active") return c.status !== "pending_verification" && c.status !== "closed";
+    if (activeTab === "completed") return c.status === "pending_verification";
     if (activeTab === "closed") return c.status === "closed";
     return true;
   }) || [];
 
   // Calculate Stats
-  const activeJobsCount = allComplaints?.filter(c => c.status !== "completed" && c.status !== "closed").length || 0;
-  const urgentJobsCount = allComplaints?.filter(c => (c.priority === "high" || c.priority === "urgent") && c.status !== "completed" && c.status !== "closed").length || 0;
-  const completedJobsCount = allComplaints?.filter(c => c.status === "completed" || c.status === "closed").length || 0;
+  const activeJobsCount = allComplaints?.filter(c => c.status !== "pending_verification" && c.status !== "closed").length || 0;
+  const urgentJobsCount = allComplaints?.filter(c => (c.priority === "high" || c.priority === "urgent") && c.status !== "pending_verification" && c.status !== "closed").length || 0;
+  const completedJobsCount = allComplaints?.filter(c => c.status === "pending_verification" || c.status === "closed").length || 0;
 
   const getGreetingText = () => {
     const hour = new Date().getHours();
@@ -226,12 +226,12 @@ const TechnicianDashboard = () => {
                         <div className="flex justify-between text-xs font-bold uppercase tracking-wider">
                           <span className="text-muted-foreground">Completion Progress</span>
                           <span className="text-primary">
-                            {ticket.status === "completed" || ticket.status === "closed" ? 100 : Math.round((ticket.current_phase || 1) * (100 / 6))}%
+                            {ticket.status === "pending_verification" || ticket.status === "closed" ? 100 : Math.round((ticket.current_phase || 1) * (100 / 6))}%
                           </span>
                         </div>
-                        <Progress value={ticket.status === "completed" || ticket.status === "closed" ? 100 : (ticket.current_phase || 1) * (100 / 6)} className="h-2 bg-muted/65" />
+                        <Progress value={ticket.status === "pending_verification" || ticket.status === "closed" ? 100 : (ticket.current_phase || 1) * (100 / 6)} className="h-2 bg-muted/65" />
                         <p className="text-[10px] text-muted-foreground truncate font-semibold italic text-center lg:text-right">
-                          {ticket.status === "completed" || ticket.status === "closed" ? "Ticket Signed-off" : (phaseLabels[ticket.current_phase || 1] || "Phase Active")}
+                          {ticket.status === "pending_verification" || ticket.status === "closed" ? "Ticket Signed-off" : (phaseLabels[ticket.current_phase || 1] || "Phase Active")}
                         </p>
                       </div>
 

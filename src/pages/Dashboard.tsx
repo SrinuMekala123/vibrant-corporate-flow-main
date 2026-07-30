@@ -240,13 +240,13 @@ const Dashboard = () => {
   }
 
   // Calculate real stats
-  const openTickets = complaints?.filter((t) => !["completed", "closed"].includes(t.status)).length || 0;
+  const openTickets = complaints?.filter((t) => !["pending_verification", "closed"].includes(t.status)).length || 0;
   const urgentTickets = complaints?.filter((t) => t.severity === "major" && t.status !== "closed").length || 0;
 
   // Completed today (check if updated_at is today)
   const today = new Date().toDateString();
   const completedToday = complaints?.filter((t) =>
-    t.status === "completed" && new Date(t.updated_at).toDateString() === today
+    t.status === "pending_verification" && new Date(t.updated_at).toDateString() === today
   ).length || 0;
 
   const allTechnicians = profiles?.filter((m: any) => m.role === "technician") || [];
@@ -259,13 +259,13 @@ const Dashboard = () => {
   const teamMembers = profiles?.slice(0, 6) || [];
 
   // Calculate KPIs from real data
-  const totalCompleted = complaints?.filter(t => t.status === "completed").length || 0;
+  const totalCompleted = complaints?.filter(t => t.status === "pending_verification").length || 0;
   const totalTickets = complaints?.length || 1;
   const firstTimeFixRate = totalCompleted > 0 ? Math.round((totalCompleted / totalTickets) * 100) : 0;
 
   // Calculate average resolution time (in hours)
   const avgResolutionTime = complaints?.reduce((acc, ticket) => {
-    if (ticket.status === "completed") {
+    if (ticket.status === "pending_verification") {
       const created = new Date(ticket.created_at).getTime();
       const updated = new Date(ticket.updated_at).getTime();
       const hours = (updated - created) / (1000 * 60 * 60);

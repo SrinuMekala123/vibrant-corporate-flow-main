@@ -14,11 +14,13 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 
 const statusFilters = [
   "all",
-  "unassigned",
+  "open",
   "assigned",
-  "in-progress",
-  "dispatched",
-  "completed",
+  "in_progress",
+  "pir_pending",
+  "pir_approved",
+  "rework_required",
+  "pending_verification",
   "closed"
 ];
 
@@ -104,9 +106,9 @@ const ComplaintsList = () => {
     if (statusFilter === "all") {
       matchStatus = true;
     } else if (statusFilter === "active") {
-      matchStatus = t.status !== "completed" && t.status !== "closed";
-    } else if (statusFilter === "completed") {
-      matchStatus = t.status === "completed";
+      matchStatus = t.status !== "pending_verification" && t.status !== "closed";
+    } else if (statusFilter === "pending_verification") {
+      matchStatus = t.status === "pending_verification";
     } else if (statusFilter === "closed") {
       matchStatus = t.status === "closed";
     } else {
@@ -405,7 +407,7 @@ const ComplaintsList = () => {
             {[
               { id: "all", label: "All" },
               { id: "active", label: "Active" },
-              { id: "completed", label: "Completed" },
+              { id: "pending_verification", label: "Completed" },
               { id: "closed", label: "Closed" }
             ].map((tab) => (
               <button

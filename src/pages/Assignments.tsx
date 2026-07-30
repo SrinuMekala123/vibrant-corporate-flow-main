@@ -105,7 +105,7 @@ const Assignments = () => {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredSupervisors.map((member: any, i: number) => {
             const tickets = complaints?.filter((t) => t.assigned_supervisor === member.full_name) || [];
-            const activeTickets = tickets.filter(t => t.status !== 'closed' && t.status !== 'completed');
+            const activeTickets = tickets.filter(t => t.status !== 'closed' && t.status !== 'pending_verification');
             const isExpanded = !!expandedCards[member.id];
             return (
               <motion.div
@@ -186,7 +186,7 @@ const Assignments = () => {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredTechnicians.map((member: any, i: number) => {
             const tickets = complaints?.filter((t) => t.assigned_technician === member.full_name) || [];
-            const activeTickets = tickets.filter(t => t.status !== 'closed' && t.status !== 'completed');
+            const activeTickets = tickets.filter(t => t.status !== 'closed' && t.status !== 'pending_verification');
             const isExpanded = !!expandedCards[member.id];
             return (
               <motion.div

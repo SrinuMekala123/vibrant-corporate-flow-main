@@ -1,4 +1,4 @@
-export type TicketStatus = "unassigned" | "assigned" | "in-progress" | "dispatched" | "pir_pending" | "pir_approved" | "rework_required" | "completed" | "closed";
+export type TicketStatus = "open" | "assigned" | "in_progress" | "pir_pending" | "pir_approved" | "rework_required" | "pending_verification" | "closed" | "cancelled";
 export type SeverityTier = "minor" | "moderate" | "major";
 export type Phase = 1 | 2 | 3 | 4 | 5 | 6;
 
@@ -41,14 +41,14 @@ export interface KPIData {
 }
 
 export const mockTickets: Ticket[] = [
-  { id: "FSM-001", title: "Solar Panel Inverter Failure", customer: "Greenfield Solar Park", customerPhone: "+91 98765 43210", location: "Hyderabad, Telangana", fieldOfWork: "Solar PV", status: "in-progress", severity: "major", currentPhase: 4, assignedSupervisor: "Rajesh Kumar", assignedTechnician: "Anil Reddy", createdAt: "2026-02-20T09:30:00", updatedAt: "2026-02-21T14:20:00", description: "Inverter displaying E-03 error code. Output dropped to 40% capacity.", resolution: null },
-  { id: "FSM-002", title: "Network Switch Configuration", customer: "TechHub IT Solutions", customerPhone: "+91 87654 32109", location: "Bangalore, Karnataka", fieldOfWork: "Networking", status: "dispatched", severity: "moderate", currentPhase: 3, assignedSupervisor: "Priya Sharma", assignedTechnician: "Vikram Singh", createdAt: "2026-02-21T08:00:00", updatedAt: "2026-02-21T11:45:00", description: "Layer 3 switch not routing traffic between VLANs correctly.", resolution: null },
-  { id: "FSM-003", title: "CCTV DVR Replacement", customer: "SecureVision Ltd", customerPhone: "+91 76543 21098", location: "Chennai, Tamil Nadu", fieldOfWork: "Security Systems", status: "completed", severity: "minor", currentPhase: 5, assignedSupervisor: "Arjun Nair", assignedTechnician: "Suresh Babu", createdAt: "2026-02-19T14:00:00", updatedAt: "2026-02-20T16:30:00", description: "DVR hard drive failed. Customer needs replacement and reconfiguration.", resolution: "Replaced 4TB HDD, reconfigured all 16 camera feeds. System operational." },
+  { id: "FSM-001", title: "Solar Panel Inverter Failure", customer: "Greenfield Solar Park", customerPhone: "+91 98765 43210", location: "Hyderabad, Telangana", fieldOfWork: "Solar PV", status: "in_progress", severity: "major", currentPhase: 4, assignedSupervisor: "Rajesh Kumar", assignedTechnician: "Anil Reddy", createdAt: "2026-02-20T09:30:00", updatedAt: "2026-02-21T14:20:00", description: "Inverter displaying E-03 error code. Output dropped to 40% capacity.", resolution: null },
+  { id: "FSM-002", title: "Network Switch Configuration", customer: "TechHub IT Solutions", customerPhone: "+91 87654 32109", location: "Bangalore, Karnataka", fieldOfWork: "Networking", status: "in_progress", severity: "moderate", currentPhase: 3, assignedSupervisor: "Priya Sharma", assignedTechnician: "Vikram Singh", createdAt: "2026-02-21T08:00:00", updatedAt: "2026-02-21T11:45:00", description: "Layer 3 switch not routing traffic between VLANs correctly.", resolution: null },
+  { id: "FSM-003", title: "CCTV DVR Replacement", customer: "SecureVision Ltd", customerPhone: "+91 76543 21098", location: "Chennai, Tamil Nadu", fieldOfWork: "Security Systems", status: "pending_verification", severity: "minor", currentPhase: 5, assignedSupervisor: "Arjun Nair", assignedTechnician: "Suresh Babu", createdAt: "2026-02-19T14:00:00", updatedAt: "2026-02-20T16:30:00", description: "DVR hard drive failed. Customer needs replacement and reconfiguration.", resolution: "Replaced 4TB HDD, reconfigured all 16 camera feeds. System operational." },
   { id: "FSM-004", title: "UPS Battery Bank Failure", customer: "DataCore Systems", customerPhone: "+91 65432 10987", location: "Pune, Maharashtra", fieldOfWork: "Power Systems", status: "assigned", severity: "major", currentPhase: 2, assignedSupervisor: "Rajesh Kumar", assignedTechnician: null, createdAt: "2026-02-21T07:15:00", updatedAt: "2026-02-21T09:00:00", description: "3-phase UPS showing battery fault. Backup time reduced to 5 minutes.", resolution: null },
   { id: "FSM-005", title: "Fiber Optic Cable Repair", customer: "ConnectNet ISP", customerPhone: "+91 54321 09876", location: "Mumbai, Maharashtra", fieldOfWork: "Networking", status: "closed", severity: "moderate", currentPhase: 6, assignedSupervisor: "Priya Sharma", assignedTechnician: "Mohan Das", createdAt: "2026-02-18T10:00:00", updatedAt: "2026-02-19T17:00:00", description: "Fiber cut reported near junction box. Affecting 200+ subscribers.", resolution: "Spliced fiber at two points. Signal restored to -18dBm. All subscribers online." },
-  { id: "FSM-006", title: "Solar Panel Cleaning & Inspection", customer: "SunPower Farms", customerPhone: "+91 43210 98765", location: "Visakhapatnam, AP", fieldOfWork: "Solar PV", status: "unassigned", severity: "minor", currentPhase: 1, assignedSupervisor: "", assignedTechnician: null, createdAt: "2026-02-21T12:00:00", updatedAt: "2026-02-21T12:00:00", description: "Quarterly maintenance - panel cleaning and electrical inspection required.", resolution: null },
-  { id: "FSM-007", title: "Access Control System Malfunction", customer: "Prestige Towers", customerPhone: "+91 32109 87654", location: "Hyderabad, Telangana", fieldOfWork: "Security Systems", status: "in-progress", severity: "moderate", currentPhase: 4, assignedSupervisor: "Arjun Nair", assignedTechnician: "Karthik Rao", createdAt: "2026-02-20T16:00:00", updatedAt: "2026-02-21T10:30:00", description: "Biometric readers on floors 5-8 not communicating with central controller.", resolution: null },
-  { id: "FSM-008", title: "Generator Auto-Start Failure", customer: "MedLife Hospital", customerPhone: "+91 21098 76543", location: "Delhi NCR", fieldOfWork: "Power Systems", status: "dispatched", severity: "major", currentPhase: 3, assignedSupervisor: "Rajesh Kumar", assignedTechnician: "Anil Reddy", createdAt: "2026-02-21T06:00:00", updatedAt: "2026-02-21T08:30:00", description: "500KVA DG set not auto-starting on mains failure. Critical healthcare facility.", resolution: null },
+  { id: "FSM-006", title: "Solar Panel Cleaning & Inspection", customer: "SunPower Farms", customerPhone: "+91 43210 98765", location: "Visakhapatnam, AP", fieldOfWork: "Solar PV", status: "open", severity: "minor", currentPhase: 1, assignedSupervisor: "", assignedTechnician: null, createdAt: "2026-02-21T12:00:00", updatedAt: "2026-02-21T12:00:00", description: "Quarterly maintenance - panel cleaning and electrical inspection required.", resolution: null },
+  { id: "FSM-007", title: "Access Control System Malfunction", customer: "Prestige Towers", customerPhone: "+91 32109 87654", location: "Hyderabad, Telangana", fieldOfWork: "Security Systems", status: "in_progress", severity: "moderate", currentPhase: 4, assignedSupervisor: "Arjun Nair", assignedTechnician: "Karthik Rao", createdAt: "2026-02-20T16:00:00", updatedAt: "2026-02-21T10:30:00", description: "Biometric readers on floors 5-8 not communicating with central controller.", resolution: null },
+  { id: "FSM-008", title: "Generator Auto-Start Failure", customer: "MedLife Hospital", customerPhone: "+91 21098 76543", location: "Delhi NCR", fieldOfWork: "Power Systems", status: "in_progress", severity: "major", currentPhase: 3, assignedSupervisor: "Rajesh Kumar", assignedTechnician: "Anil Reddy", createdAt: "2026-02-21T06:00:00", updatedAt: "2026-02-21T08:30:00", description: "500KVA DG set not auto-starting on mains failure. Critical healthcare facility.", resolution: null },
 ];
 
 export const mockTeam: TeamMember[] = [
@@ -81,15 +81,15 @@ export const phaseLabels: Record<Phase, string> = {
 };
 
 export const statusColors: Record<TicketStatus, string> = {
-  unassigned: "bg-muted text-muted-foreground",
+  open: "bg-muted text-muted-foreground",
   assigned: "bg-info/15 text-info",
-  "in-progress": "bg-warning/15 text-warning",
-  dispatched: "bg-primary/15 text-primary",
+  in_progress: "bg-warning/15 text-warning",
   pir_pending: "bg-amber-100 text-amber-700",
   pir_approved: "bg-indigo-100 text-indigo-700",
   rework_required: "bg-red-100 text-red-700",
-  completed: "bg-success/15 text-success",
+  pending_verification: "bg-success/15 text-success",
   closed: "bg-muted text-muted-foreground",
+  cancelled: "bg-muted text-muted-foreground",
 };
 
 export const severityColors: Record<SeverityTier, string> = {

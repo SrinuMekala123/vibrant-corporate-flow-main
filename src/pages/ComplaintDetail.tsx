@@ -634,7 +634,7 @@ const ComplaintDetail = () => {
   const technicianName = ticket.assigned_technician;
 
   const canVerify = isRole("admin", "supervisor") &&
-    ticket.status === "completed" &&
+    ticket.status === "pending_verification" &&
     ticket.current_phase === 6;
 
   const canEdit = isRole("admin", "supervisor");
@@ -706,7 +706,7 @@ const ComplaintDetail = () => {
     }
 
     updateMutation.mutate({
-      status: outcome === 'remote_fixed' ? 'completed' : 'assigned',
+      status: outcome === 'remote_fixed' ? 'pending_verification' : 'assigned',
       current_phase: outcome === 'remote_fixed' ? 6 : 3,
       triage_outcome: outcome,
       resolution: outcome === 'remote_fixed' ? 'Resolved remotely via telephonic triage.' : null,
@@ -754,7 +754,7 @@ const ComplaintDetail = () => {
     );
 
     updateMutation.mutate({
-      status: "in-progress",
+      status: "in_progress",
       current_phase: 4,
       start_journey_timestamp: new Date().toISOString(),
       arrival_lat: gps?.lat || null,
@@ -1018,7 +1018,7 @@ const ComplaintDetail = () => {
     }
 
     updateMutation.mutate({
-      status: "completed",
+      status: "pending_verification",
       current_phase: 6,
       resolution: resolutionNote,
       technician_evidence: evidenceUrls,
@@ -1969,7 +1969,7 @@ const ComplaintDetail = () => {
           <h2 className="font-semibold mb-3 flex items-center gap-2 text-primary"><Wrench className="w-5 h-5" /> Technician Actions</h2>
 
           {/* Navigate to Customer Button */}
-          {ticket.current_phase === 4 && ticket.status === "in-progress" && ticket.location && (
+          {ticket.current_phase === 4 && ticket.status === "in_progress" && ticket.location && (
             <div className="mb-4 p-4 rounded-lg bg-primary/5 border border-primary/20">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -1987,7 +1987,7 @@ const ComplaintDetail = () => {
           )}
 
           {/* Phase 3: Start Journey */}
-          {ticket.current_phase === 3 && (ticket.status === "assigned" || ticket.status === "dispatched") && (
+          {ticket.current_phase === 3 && (ticket.status === "assigned" || ticket.status === "in_progress") && (
             <div className="flex items-center justify-between bg-muted/50 p-4 rounded-lg">
               <div>
                 <p className="font-medium">Ready to start journey?</p>
@@ -2001,7 +2001,7 @@ const ComplaintDetail = () => {
           )}
 
           {/* Phase 4: Submit PIR */}
-          {ticket.current_phase === 4 && ticket.status === "in-progress" && !showPIRForm && !showResolution && !showSignOff && (
+          {ticket.current_phase === 4 && ticket.status === "in_progress" && !showPIRForm && !showResolution && !showSignOff && (
             <div className="flex items-center justify-between bg-muted/50 p-4 rounded-lg">
               <div>
                 <p className="font-medium">Submit Primary Information Report (PIR)</p>
