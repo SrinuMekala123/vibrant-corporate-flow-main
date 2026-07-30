@@ -176,6 +176,8 @@ const ComplaintDetail = () => {
     queryKey: ['complaint', id],
     queryFn: () => complaintService.getById(id!),
     enabled: !!id && !!user,
+    refetchInterval: 15000,
+    refetchIntervalInBackground: false,
   });
 
   useEffect(() => {
@@ -311,19 +313,29 @@ const ComplaintDetail = () => {
           const newStatus = payload.new?.status;
           if (oldStatus !== newStatus) {
             toast.info(`Ticket status changed to: ${newStatus}`);
-          } else {
-            toast.info(`Ticket has been updated`);
+          }
+          if (
+            payload.new?.pir_findings_severity !== payload.old?.pir_findings_severity ||
+            payload.new?.status !== payload.old?.status
+          ) {
+            refetch();
           }
         }
       })
-      .subscribe();
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          if (import.meta.env.DEV) console.log('✅ Realtime subscribed');
+        } else if (status === 'CHANNEL_ERROR') {
+          console.warn('⚠️ Realtime channel error, falling back to polling');
+        }
+      });
     channelRef.current = channel;
     return () => {
       if (channelRef.current) {
         supabase.removeChannel(channelRef.current);
       }
     };
-  }, [id, queryClient]);
+  }, [id, queryClient, refetch]);
 
   useEffect(() => {
     if (!id) return;
@@ -374,6 +386,16 @@ const ComplaintDetail = () => {
       stopTechnicianTracking();
     };
   }, []);
+
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        refetch();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, [refetch]);
 
   const sendNotification = async (email: string, subject: string, message: string, ticketId?: string) => {
     try {
@@ -1966,6 +1988,15 @@ const ComplaintDetail = () => {
                   <p className="text-sm text-muted-foreground">PIR submitted. Supervisor review in progress.</p>
                 </div>
               </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => refetch()}
+                className="shrink-0 whitespace-nowrap"
+              >
+                <Clock className="w-3.5 h-3.5 mr-1.5" />
+                Refresh Status
+              </Button>
             </div>
           )}
 

@@ -1,52 +1,50 @@
-// import { createRoot } from "react-dom/client";
-// import App from "./App.tsx";
-// import "./index.css";
-
-// createRoot(document.getElementById("root")!).render(<App />);
-
-
 import { createRoot } from "react-dom/client";
 import App from "./App.tsx";
 import "./index.css";
 
-// Register Service Worker with immediate activation
 if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/sw.js')
-            .then(registration => {
-                console.log('✅ Service Worker registered:', registration);
+  let swRegistration: ServiceWorkerRegistration | null = null;
 
-                // Force immediate activation
-                if (registration.waiting) {
-                    registration.waiting.postMessage({ type: 'SKIP_WAITING' });
-                }
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js')
+      .then(registration => {
+        swRegistration = registration;
+        console.log('✅ Service Worker registered:', registration);
 
-                // Handle updates
-                registration.addEventListener('updatefound', () => {
-                    const newWorker = registration.installing;
-                    if (newWorker) {
-                        newWorker.addEventListener('statechange', () => {
-                            if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-                                console.log('🔄 New update available - refresh to update');
-                            }
-                        });
-                    }
-                });
-            })
-            .catch(error => {
-                console.log('❌ Service Worker registration failed:', error);
+        registration.addEventListener('updatefound', () => {
+          const newWorker = registration.installing;
+          if (newWorker) {
+            newWorker.addEventListener('statechange', () => {
+              if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                window.dispatchEvent(new CustomEvent('sw-update-available', {
+                  detail: { registration }
+                }));
+              }
             });
-    });
+          }
+        });
+      })
+      .catch(error => {
+        console.log('❌ Service Worker registration failed:', error);
+      });
+  });
+
+  let refreshing = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (refreshing) return;
+    refreshing = true;
+    console.log('🔄 Service Worker updated - reloading...');
+    window.location.reload();
+  });
 }
 
-// Listen for messages from service worker
 if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.addEventListener('message', (event) => {
-        if (event.data.type === 'ONLINE') {
-            console.log('🟢 Back online - reloading...');
-            window.location.reload();
-        }
-    });
+  navigator.serviceWorker.addEventListener('message', (event) => {
+    if (event.data?.type === 'ONLINE') {
+      console.log('🟢 Back online - reloading...');
+      window.location.reload();
+    }
+  });
 }
 
 createRoot(document.getElementById("root")!).render(<App />);

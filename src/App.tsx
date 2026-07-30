@@ -272,6 +272,20 @@ const AppRoutes = () => {
     return () => subscription.unsubscribe();
   }, [navigate]);
 
+  useEffect(() => {
+    const handler = () => {
+      toast.info('New version available! Refreshing to update...', {
+        duration: 8000,
+        action: {
+          label: 'Refresh Now',
+          onClick: () => window.location.reload()
+        }
+      });
+    };
+    window.addEventListener('sw-update-available', handler);
+    return () => window.removeEventListener('sw-update-available', handler);
+  }, []);
+
   return (
     <Routes>
       {/* Public Routes */}
