@@ -15,6 +15,7 @@ import { supabase } from "@/lib/supabase";
 import browserImageCompression from "browser-image-compression";
 import { notificationService } from "@/services/notificationService";
 import { clearOfflineDraft } from '@/lib/offlineStorage';
+import { useDebounce } from "@/hooks/useDebounce";
 
 const ComplaintEdit = () => {
   const { id } = useParams();
@@ -155,6 +156,31 @@ const ComplaintEdit = () => {
   const [showLocationSuggestions, setShowLocationSuggestions] = useState(false);
   const [locationHelp, setLocationHelp] = useState("");
   const [locationSuggestions, setLocationSuggestions] = useState<string[]>([]);
+  const [isManuallyTyping, setIsManuallyTyping] = useState(false);
+  const debouncedLocation = useDebounce(form.location, 800);
+
+  useEffect(() => {
+    if (!debouncedLocation || debouncedLocation.length < 3 || !isManuallyTyping) return;
+    const fetchCoordinates = async () => {
+      try {
+        const res = await fetch(
+          `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(debouncedLocation)}&format=json&limit=1`,
+          { headers: { 'Accept-Language': 'en' } }
+        );
+        const data = await res.json();
+        if (data && data.length > 0) {
+          setForm(prev => ({
+            ...prev,
+            customerLat: parseFloat(data[0].lat),
+            customerLng: parseFloat(data[0].lon),
+          }));
+        }
+      } catch (e) {
+        console.warn("Forward geocoding failed:", e);
+      }
+    };
+    fetchCoordinates();
+  }, [debouncedLocation, isManuallyTyping]);
 
   useEffect(() => {
     // Note: Geolocation APIs are restricted to Secure Contexts (HTTPS or localhost).
@@ -296,6 +322,7 @@ const ComplaintEdit = () => {
   }, [supervisors, matchingSupervisors]);
 
   const handleGetCurrentLocation = () => {
+    setIsManuallyTyping(false);
     setIsLocating(true);
     if (!window.isSecureContext) {
       const msg = "Location services require HTTPS. Please use the manual address entry.";
@@ -821,10 +848,10 @@ const ComplaintEdit = () => {
                   onChange={(e) => {
                     setForm({ ...form, location: e.target.value });
                     setShowLocationSuggestions(true);
+                    setIsManuallyTyping(true);
                   }}
                   onFocus={() => setShowLocationSuggestions(true)}
                   onBlur={() => {
-                    // A brief timeout allows the click event on the suggestion button to register first
                     setTimeout(() => setShowLocationSuggestions(false), 200);
                   }}
                   placeholder="Site address..." 
@@ -852,12 +879,12 @@ const ComplaintEdit = () => {
                   </div>
                 )}
               </div>
-              {isCustomer && (
+              {isNew && (
                 <Button 
                   type="button" 
                   variant="outline" 
                   onClick={handleGetCurrentLocation}
-                  disabled={isLocating || isSaving}
+                  disabled={isLocating || isSaving || isManuallyTyping}
                   className="flex-shrink-0 w-full md:w-auto"
                 >
                   {isLocating ? (
@@ -878,6 +905,11 @@ const ComplaintEdit = () => {
               <p className="text-xs text-success flex items-center gap-1 mt-1">
                 <ShieldCheck className="w-3.5 h-3.5" />
                 GPS Coordinates Captured: {form.customerLat.toFixed(6)}, {form.customerLng.toFixed(6)}
+              </p>
+            )}
+            {isManuallyTyping && (
+              <p className="text-xs text-muted-foreground mt-1">
+                Use current location button if you are physically at the field.
               </p>
             )}
             {locationHelp && (

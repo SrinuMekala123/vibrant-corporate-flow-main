@@ -82,7 +82,7 @@ const SupervisorDashboard = () => {
 
   // Filter Logic using Real Data
   const myTickets = allComplaints?.filter((t) => t.assigned_supervisor === supervisorName) || [];
-  const pendingVerification = myTickets.filter((t) => t.status === "completed");
+  const pendingVerification = myTickets.filter((t) => t.status === "completed" || t.status === "pir_pending");
   const activeTickets = myTickets.filter((t) => !["completed", "closed"].includes(t.status));
   const urgentTickets = myTickets.filter((t) => t.severity === "major" && t.status !== "closed");
 
@@ -166,12 +166,16 @@ const SupervisorDashboard = () => {
                     <span className="font-bold text-sm text-foreground truncate max-w-[200px] sm:max-w-[400px] inline-block" title={t.title}>{t.title}</span>
                   </div>
                   <p className="text-xs text-muted-foreground mt-1">
-                    Completed by <span className="font-semibold text-foreground">{t.assigned_technician || 'Technician'}</span> • Customer: <span className="font-semibold text-primary">{t.customer_name || t.profiles?.full_name || t.created_by_name || 'Customer'}</span>
+                    {t.status === "pir_pending" ? (
+                      <>PIR submitted by <span className="font-semibold text-foreground">{t.assigned_technician || 'Technician'}</span> — pending approval</>
+                    ) : (
+                      <>Completed by <span className="font-semibold text-foreground">{t.assigned_technician || 'Technician'}</span></>
+                    )} • Customer: <span className="font-semibold text-primary">{t.customer_name || t.profiles?.full_name || t.created_by_name || 'Customer'}</span>
                   </p>
                 </div>
                 <Link to={`/complaints/${t.id}`} className="shrink-0 self-end sm:self-auto">
                   <Button size="sm" className="gradient-primary text-white text-xs font-bold rounded-lg h-9 shadow-sm">
-                    Review & Verify
+                    {t.status === "pir_pending" ? "Review & Approve PIR" : "Review & Verify"}
                   </Button>
                 </Link>
               </div>

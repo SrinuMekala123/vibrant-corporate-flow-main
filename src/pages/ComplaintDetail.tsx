@@ -757,7 +757,7 @@ const ComplaintDetail = () => {
       pir_audio_url: pirAudioUrl || null,
       technician_evidence: evidenceUrls,
       arrival_timestamp: new Date().toISOString(),
-      status: "pir_pending_approval",
+      status: "pir_pending",
     } as any);
     setShowPIRForm(false);
     toast.success("PIR submitted - awaiting supervisor approval");
@@ -1877,11 +1877,11 @@ const ComplaintDetail = () => {
           {isRole("technician") && isAssignedTechnician && (ticket.current_phase === 3 || ticket.current_phase === 4 || ticket.current_phase === 5) && (
             <div className="bg-muted/50 p-4 rounded-lg space-y-3">
               <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Live Technician Tracking</p>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button size="sm" onClick={isTracking ? stopTechnicianTracking : startTechnicianTracking} className={isTracking ? "bg-destructive text-white" : "bg-success text-success-foreground"}>
+              <div className="flex flex-col gap-2 w-full">
+                <Button size="sm" onClick={isTracking ? stopTechnicianTracking : startTechnicianTracking} className={`w-full p-3 whitespace-normal h-auto ${isTracking ? "bg-destructive text-white" : "bg-success text-success-foreground"}`}>
                   {isTracking ? (<><Loader2 className="w-3.5 h-3.5 animate-spin mr-2" /> Stop Sharing Location</>) : (<><MapPin className="w-3.5 h-3.5 mr-2" /> Share My Location</>)}
                 </Button>
-                <Button size="sm" variant="outline" onClick={shareCurrentLocation} disabled={isTracking}>
+                <Button size="sm" variant="outline" onClick={shareCurrentLocation} disabled={isTracking} className="w-full p-3 whitespace-normal h-auto">
                   <MapPin className="w-3.5 h-3.5 mr-2" /> Send Current Location Once
                 </Button>
               </div>
@@ -1948,7 +1948,7 @@ const ComplaintDetail = () => {
                )}
               <div className="flex gap-2 justify-end">
                 <Button variant="outline" size="sm" onClick={() => setShowPIRForm(false)}>Cancel</Button>
-                <Button size="sm" onClick={handleSubmitPIR} disabled={updateMutation.isPending}>
+                <Button size="sm" onClick={handleSubmitPIR} disabled={updateMutation.isPending || !pirFindings.trim()}>
                   {updateMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <CheckCircle2 className="w-4 h-4 mr-2" />}
                   Submit PIR
                 </Button>
@@ -1956,21 +1956,23 @@ const ComplaintDetail = () => {
             </div>
           )}
 
-          {/* Phase 4: Add Resolution */}
-          {ticket.current_phase === 4 && ticket.status === "in-progress" && !showPIRForm && !showSignOff && (
-            <div className="space-y-3 bg-muted/50 p-4 rounded-lg mt-3">
-              {isPirPending ? (
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div>
-                    <p className="font-medium">Waiting for Supervisor Approval</p>
-                    <p className="text-sm text-muted-foreground">PIR submitted. Please wait for supervisor to verify and approve before adding resolution.</p>
-                  </div>
-                  <div className="flex items-center gap-2 text-warning flex-shrink-0">
-                    <Clock className="w-4 h-4" />
-                    <span className="text-sm font-medium">Pending Approval</span>
-                  </div>
+          {/* PIR submitted - waiting for supervisor approval */}
+          {ticket.current_phase === 4 && ticket.status === "pir_pending" && !showPIRForm && (
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-amber-500/10 p-4 rounded-lg mt-3 border border-amber-500/30">
+              <div className="flex items-center gap-3">
+                <Clock className="w-5 h-5 text-amber-500 animate-pulse shrink-0" />
+                <div>
+                  <p className="font-medium text-amber-700">⏳ Waiting for Supervisor PIR Approval</p>
+                  <p className="text-sm text-muted-foreground">PIR submitted. Supervisor review in progress.</p>
                 </div>
-              ) : showResolution ? (
+              </div>
+            </div>
+          )}
+
+          {/* Phase 4: Add Resolution */}
+          {ticket.current_phase === 4 && (ticket.status === "pir_approved" || isPirApproved) && !showPIRForm && !showSignOff && (
+            <div className="space-y-3 bg-muted/50 p-4 rounded-lg mt-3">
+              {showResolution ? (
                 <div className="space-y-2">
                   <label className="text-sm font-medium">Resolution Notes *</label>
                   <Textarea placeholder="Describe work done, parts replaced, tests performed..." value={resolutionNote} onChange={e => setResolutionNote(e.target.value)} rows={3} />

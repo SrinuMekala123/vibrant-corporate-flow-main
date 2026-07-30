@@ -264,7 +264,7 @@ const ComplaintsList = () => {
                     />
                     <Calendar className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
                     {!fromDate && (
-                      <span className="absolute left-8 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground pointer-events-none select-none">dd/mm/yyyy</span>
+                      <span className="absolute left-8 top-1/2 -translate-y-1/2 text-[11px] text-muted-foreground pointer-events-none select-none z-10 bg-background px-1">dd/mm/yyyy</span>
                     )}
                   </div>
                 </div>
@@ -283,7 +283,7 @@ const ComplaintsList = () => {
                     />
                     <Calendar className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
                     {!toDate && (
-                      <span className="absolute left-8 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground pointer-events-none select-none">dd/mm/yyyy</span>
+                      <span className="absolute left-8 top-1/2 -translate-y-1/2 text-[11px] text-muted-foreground pointer-events-none select-none z-10 bg-background px-1">dd/mm/yyyy</span>
                     )}
                   </div>
                 </div>
@@ -358,7 +358,7 @@ const ComplaintsList = () => {
                     />
                     <Calendar className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
                     {!fromDate && (
-                      <span className="absolute left-8 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground pointer-events-none select-none">dd/mm/yyyy</span>
+                      <span className="absolute left-8 top-1/2 -translate-y-1/2 text-[11px] text-muted-foreground pointer-events-none select-none z-10 bg-background px-1">dd/mm/yyyy</span>
                     )}
                   </div>
                 </div>
@@ -377,7 +377,7 @@ const ComplaintsList = () => {
                     />
                     <Calendar className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
                     {!toDate && (
-                      <span className="absolute left-8 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground pointer-events-none select-none">dd/mm/yyyy</span>
+                      <span className="absolute left-8 top-1/2 -translate-y-1/2 text-[11px] text-muted-foreground pointer-events-none select-none z-10 bg-background px-1">dd/mm/yyyy</span>
                     )}
                   </div>
                 </div>
