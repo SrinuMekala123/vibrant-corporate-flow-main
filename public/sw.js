@@ -22,6 +22,8 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
+  if (!event.request.url.startsWith('http')) return;
+
   const url = new URL(event.request.url);
 
   if (url.hostname.includes('supabase.co') ||

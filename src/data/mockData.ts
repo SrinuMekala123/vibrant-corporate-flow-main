@@ -1,4 +1,4 @@
-export type TicketStatus = "unassigned" | "assigned" | "in-progress" | "dispatched" | "completed" | "closed";
+export type TicketStatus = "unassigned" | "assigned" | "in-progress" | "dispatched" | "pir_pending" | "pir_approved" | "rework_required" | "completed" | "closed";
 export type SeverityTier = "minor" | "moderate" | "major";
 export type Phase = 1 | 2 | 3 | 4 | 5 | 6;
 
@@ -85,6 +85,9 @@ export const statusColors: Record<TicketStatus, string> = {
   assigned: "bg-info/15 text-info",
   "in-progress": "bg-warning/15 text-warning",
   dispatched: "bg-primary/15 text-primary",
+  pir_pending: "bg-amber-100 text-amber-700",
+  pir_approved: "bg-indigo-100 text-indigo-700",
+  rework_required: "bg-red-100 text-red-700",
   completed: "bg-success/15 text-success",
   closed: "bg-muted text-muted-foreground",
 };

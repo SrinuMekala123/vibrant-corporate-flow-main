@@ -18,7 +18,6 @@
 // }
 
 
-import { TicketStatus } from "@/data/mockData";
 
 interface StatusBadgeProps {
   status: string; // 🔥 Changed from TicketStatus to string
@@ -34,6 +33,9 @@ export function StatusBadge({ status }: StatusBadgeProps) {
     assigned: { bg: "bg-blue-100", text: "text-blue-700", label: "Assigned" },
     dispatched: { bg: "bg-orange-100", text: "text-orange-700", label: "Dispatched" },
     "in-progress": { bg: "bg-yellow-100", text: "text-yellow-700", label: "In Progress" },
+    pir_pending: { bg: "bg-amber-100", text: "text-amber-700", label: "PIR Pending" },
+    pir_approved: { bg: "bg-indigo-100", text: "text-indigo-700", label: "PIR Approved" },
+    rework_required: { bg: "bg-red-100", text: "text-red-700", label: "Rework Required" },
     completed: { bg: "bg-green-100", text: "text-green-700", label: "Completed" },
     closed: { bg: "bg-gray-100", text: "text-gray-700", label: "Closed" },
   };

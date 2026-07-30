@@ -7,7 +7,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { StatusBadge, SeverityBadge } from "@/components/Badges";
 import { PhaseTimeline } from "@/components/PhaseTimeline";
-import { phaseLabels } from "@/data/mockData";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -23,6 +22,15 @@ import "leaflet/dist/leaflet.css";
 
 type SignatureMode = "draw" | "upload";
 type SatisfactionLevel = "satisfied" | "partially_satisfied" | "unsatisfied" | "";
+
+const phaseLabels: Record<number, string> = {
+  1: "Complaint Intake",
+  2: "Telephonic Triage",
+  3: "Dispatch & Journey",
+  4: "Field Execution",
+  5: "Completion & Sign-off",
+  6: "QA & Closing",
+};
 
 const formatIndianDateTime = (dateString?: string) => {
   if (!dateString) return "N/A";
@@ -91,6 +99,11 @@ const ComplaintDetail = () => {
   const [supSeverityInput, setSupSeverityInput] = useState("medium");
   const [targetDurationInput, setTargetDurationInput] = useState("4");
   const [isApprovingPir, setIsApprovingPir] = useState(false);
+  const [pirRejectReason, setPirRejectReason] = useState("");
+  const [isRejectingPir, setIsRejectingPir] = useState(false);
+  const [showPIRRejectForm, setShowPIRRejectForm] = useState(false);
+  const [feedbackHistory, setFeedbackHistory] = useState<any[]>([]);
+  const [loadingFeedbackHistory, setLoadingFeedbackHistory] = useState(false);
 
   const [feedbackSatisfaction, setFeedbackSatisfaction] = useState<SatisfactionLevel>("");
   const [feedbackComments, setFeedbackComments] = useState("");
@@ -336,6 +349,14 @@ const ComplaintDetail = () => {
       }
     };
   }, [id, queryClient, refetch]);
+
+  useEffect(() => {
+    if (!ticket?.feedback_history) {
+      setFeedbackHistory([]);
+      return;
+    }
+    setFeedbackHistory(ticket.feedback_history);
+  }, [ticket?.feedback_history]);
 
   useEffect(() => {
     if (!id) return;
@@ -897,6 +918,53 @@ const ComplaintDetail = () => {
     }
   };
 
+  const handleRejectPIR = async () => {
+    if (!pirRejectReason.trim()) {
+      toast.error("Please provide a reason for rejection");
+      return;
+    }
+    setIsRejectingPir(true);
+    try {
+      // Notify technician
+      if (ticket.assigned_technician) {
+        const technicianProfile = await fetchProfileByName(ticket.assigned_technician);
+        if (technicianProfile) {
+          await notificationService.insertNotification(
+            technicianProfile.id,
+            ticket.id,
+            'warning',
+            '🔄 PIR Rejected - Rework Required',
+            `PIR rejected for Ticket #${ticket.id.slice(0, 8)}. Reason: ${pirRejectReason}`,
+            4,
+            undefined,
+            user?.id
+          );
+        }
+      }
+
+      await updateMutation.mutateAsync({
+        status: "rework_required",
+        current_phase: 4,
+        resolution: `PIR Rejected: ${pirRejectReason}`,
+        feedback_history: [...(ticket.feedback_history || []), {
+          type: 'pir_rejection' as const,
+          reason: pirRejectReason,
+          created_at: new Date().toISOString(),
+          created_by: currentUserFullName
+        }]
+      } as any);
+
+      toast.success("PIR rejected — ticket moved to rework_required");
+      setShowPIRRejectForm(false);
+      setPirRejectReason("");
+    } catch (err) {
+      console.error("Failed to reject PIR:", err);
+      toast.error("Failed to reject PIR");
+    } finally {
+      setIsRejectingPir(false);
+    }
+  };
+
   const handleFinalSignOff = async () => {
     let signatureUrl = null;
     if (signatureMode === "draw") {
@@ -1102,22 +1170,28 @@ const ComplaintDetail = () => {
       recipientIds,
       ticket.id,
       'warning',
-      '🔄 Returned to Triage',
-      `Ticket #${ticket.id.slice(0, 8)} has been sent back to Phase 2 for re-evaluation.`,
-      2,
+      '🔄 Rework Required',
+      `Ticket #${ticket.id.slice(0, 8)} failed QA verification. Reason: ${verificationNote}`,
+      4,
       undefined,
       user?.id
     );
 
     updateMutation.mutate({
-      status: "in-progress",
+      status: "rework_required",
       current_phase: 4,
-      resolution: `Rejected: ${verificationNote}`,
+      resolution: `QA Rejected: ${verificationNote}`,
       feedback_collected: false,
       customer_satisfaction: null,
       feedback_comments: null,
       feedback_timestamp: null,
-      feedback_contact_method: 'phone'
+      feedback_contact_method: 'phone',
+      feedback_history: [...(ticket.feedback_history || []), {
+        type: 'qa_rejection' as const,
+        reason: verificationNote,
+        created_at: new Date().toISOString(),
+        created_by: currentUserFullName
+      }]
     } as any);
     setFeedbackSatisfaction("");
     setFeedbackComments("");
@@ -1533,24 +1607,66 @@ const ComplaintDetail = () => {
                   </div>
                 </div>
 
-                <div className="flex justify-end pt-2">
-                  <Button
-                    onClick={handleApprovePIR}
-                    disabled={isApprovingPir}
-                    className="bg-indigo-600 hover:bg-indigo-700 text-white flex items-center gap-1.5 text-xs h-9 px-4 rounded shadow-sm transition-all"
-                  >
-                    {isApprovingPir ? (
-                      <>
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        Verifying...
-                      </>
-                    ) : (
-                      <>
-                        <ShieldCheck className="w-4 h-4" />
-                        Verify & Approve PIR
-                      </>
-                    )}
-                  </Button>
+                <div className="flex flex-col gap-3 pt-2">
+                  <div className="flex justify-end gap-2">
+                    <Button
+                      variant="outline"
+                      onClick={() => setShowPIRRejectForm(!showPIRRejectForm)}
+                      className="border-destructive text-destructive hover:bg-destructive/10 flex items-center gap-1.5 text-xs h-9 px-4 rounded"
+                    >
+                      <XCircle className="w-4 h-4" />
+                      Reject PIR
+                    </Button>
+                    <Button
+                      onClick={handleApprovePIR}
+                      disabled={isApprovingPir}
+                      className="bg-indigo-600 hover:bg-indigo-700 text-white flex items-center gap-1.5 text-xs h-9 px-4 rounded shadow-sm transition-all"
+                    >
+                      {isApprovingPir ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          Verifying...
+                        </>
+                      ) : (
+                        <>
+                          <ShieldCheck className="w-4 h-4" />
+                          Verify & Approve PIR
+                        </>
+                      )}
+                    </Button>
+                  </div>
+
+                  {showPIRRejectForm && (
+                    <div className="border-2 border-dashed border-red-200 p-4 rounded-lg space-y-3 bg-red-50/30">
+                      <label className="text-xs font-semibold text-red-700 flex items-center gap-1.5">
+                        <AlertTriangle className="w-3.5 h-3.5" />
+                        Reason for Rejection *
+                      </label>
+                      <Textarea
+                        value={pirRejectReason}
+                        onChange={(e) => setPirRejectReason(e.target.value)}
+                        placeholder="Explain why the PIR is rejected and what rework is needed..."
+                        rows={2}
+                      />
+                      <div className="flex justify-end gap-2">
+                        <Button variant="outline" size="sm" onClick={() => { setShowPIRRejectForm(false); setPirRejectReason(""); }}>
+                          Cancel
+                        </Button>
+                        <Button
+                          size="sm"
+                          onClick={handleRejectPIR}
+                          disabled={isRejectingPir || !pirRejectReason.trim()}
+                          className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                        >
+                          {isRejectingPir ? (
+                            <><Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> Rejecting...</>
+                          ) : (
+                            <><XCircle className="w-3.5 h-3.5 mr-1" /> Confirm Rejection</>
+                          )}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -2000,6 +2116,37 @@ const ComplaintDetail = () => {
             </div>
           )}
 
+          {/* Rework Required Banner */}
+          {ticket.current_phase === 4 && ticket.status === "rework_required" && !showPIRForm && (
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-red-500/10 p-4 rounded-lg mt-3 border border-red-500/30">
+              <div className="flex items-center gap-3">
+                <AlertTriangle className="w-5 h-5 text-red-500 shrink-0" />
+                <div>
+                  <p className="font-medium text-red-700">🔄 Rework Required</p>
+                  <p className="text-sm text-muted-foreground">
+                    {ticket.resolution?.startsWith("PIR Rejected:")
+                      ? ticket.resolution
+                      : "PIR was rejected by supervisor. Please review the feedback and resubmit."}
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-2 shrink-0">
+                <Button variant="outline" size="sm" onClick={() => refetch()} className="shrink-0 whitespace-nowrap">
+                  <Clock className="w-3.5 h-3.5 mr-1.5" />
+                  Refresh
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => setShowPIRForm(true)}
+                  className="bg-primary text-primary-foreground shrink-0 whitespace-nowrap"
+                >
+                  <FileText className="w-3.5 h-3.5 mr-1.5" />
+                  Resubmit PIR
+                </Button>
+              </div>
+            </div>
+          )}
+
           {/* Phase 4: Add Resolution */}
           {ticket.current_phase === 4 && (ticket.status === "pir_approved" || isPirApproved) && !showPIRForm && !showSignOff && (
             <div className="space-y-3 bg-muted/50 p-4 rounded-lg mt-3">
@@ -2267,6 +2414,37 @@ const ComplaintDetail = () => {
               </motion.div>
             )}
           </div>
+
+          {/* Feedback History */}
+          {feedbackHistory.length > 0 && (
+            <div className="mb-4 p-4 rounded-lg bg-muted/30 border border-border/60">
+              <div className="flex items-center gap-2 mb-3">
+                <MessageSquare className="w-4 h-4 text-primary" />
+                <h3 className="font-semibold text-sm text-primary">📋 Feedback History</h3>
+              </div>
+              <div className="space-y-3 max-h-64 overflow-y-auto pr-1">
+                {feedbackHistory.map((entry: any, idx: number) => (
+                  <div key={entry.created_at || idx} className="p-3 rounded-lg bg-white border text-xs space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className={`font-semibold px-1.5 py-0.5 rounded text-[10px] ${
+                        entry.type === 'pir_rejection' ? 'bg-orange-100 text-orange-700' :
+                        'bg-red-100 text-red-700'
+                      }`}>
+                        {entry.type === 'pir_rejection' ? 'PIR Rejected' : 'QA Rejected'}
+                      </span>
+                      <span className="text-muted-foreground">{entry.created_at ? formatIndianDateTime(entry.created_at) : ''}</span>
+                    </div>
+                    {entry.reason && <p className="text-slate-700">{entry.reason}</p>}
+                    {entry.created_by && (
+                      <div className="text-muted-foreground">
+                        👤 {entry.created_by}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Resolution Display */}
           {ticket.resolution && (

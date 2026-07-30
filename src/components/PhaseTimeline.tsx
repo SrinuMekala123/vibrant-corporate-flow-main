@@ -1,6 +1,16 @@
 import { cn } from "@/lib/utils";
-import { Phase, phaseLabels } from "@/data/mockData";
 import { Check } from "lucide-react";
+
+type Phase = 1 | 2 | 3 | 4 | 5 | 6;
+
+const phaseLabels: Record<Phase, string> = {
+  1: "Complaint Intake",
+  2: "Telephonic Triage",
+  3: "Dispatch & Journey",
+  4: "Field Execution",
+  5: "Completion & Sign-off",
+  6: "QA & Closing",
+};
 
 interface PhaseTimelineProps {
   currentPhase: Phase;

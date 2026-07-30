@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { SeverityTier } from "@/data/mockData";
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 import { complaintService } from "@/services/complaintService";
@@ -137,7 +136,7 @@ const ComplaintEdit = () => {
     location: "",
     fieldOfWork: "",
     status: "unassigned",
-    severity: "minor" as SeverityTier,
+    severity: "minor" as const,
     assignedSupervisor: "",
     assignedTechnician: "",
     description: "",
@@ -238,7 +237,7 @@ const ComplaintEdit = () => {
         location: existingComplaint.location || "",
         fieldOfWork: existingComplaint.field_of_work || "",
         status: existingComplaint.status || "unassigned",
-        severity: existingComplaint.severity as SeverityTier || "minor",
+        severity: existingComplaint.severity || "minor",
         assignedSupervisor: existingComplaint.assigned_supervisor || "",
         assignedTechnician: existingComplaint.assigned_technician || "",
         description: existingComplaint.description || "",
@@ -932,7 +931,7 @@ const ComplaintEdit = () => {
 
           <div className="space-y-2">
             <label className="text-sm font-medium">Severity Level <span className="text-destructive">*</span></label>
-            <Select value={form.severity} onValueChange={(v) => setForm({ ...form, severity: v as SeverityTier })} disabled={isSaving || (!isNew && isRole("supervisor"))}>
+            <Select value={form.severity} onValueChange={(v) => setForm({ ...form, severity: v })} disabled={isSaving || (!isNew && isRole("supervisor"))}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="minor">Minor - Low priority</SelectItem>

@@ -65,14 +65,18 @@ export const notificationService = {
 
       if (profile?.email) {
         // Send email via the Edge Function
-        await supabase.functions.invoke("send-notification", {
-          body: {
-            email: profile.email,
-            subject: title,
-            message,
-            ticketId
-          }
-        });
+        try {
+          await supabase.functions.invoke("send-notification", {
+            body: {
+              email: profile.email,
+              subject: title,
+              message,
+              ticketId
+            }
+          });
+        } catch (fnErr: any) {
+          console.warn('send-notification edge function may not exist:', fnErr?.message || fnErr);
+        }
       }
 
       return null;

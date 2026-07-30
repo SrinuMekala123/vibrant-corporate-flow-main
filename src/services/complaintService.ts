@@ -172,6 +172,12 @@ export interface Complaint {
   feedback_comments?: string;
   feedback_contact_method?: 'phone' | 'email' | 'whatsapp' | 'sms' | 'in_person';
   feedback_timestamp?: string;
+  feedback_history?: {
+    type: 'pir_rejection' | 'qa_rejection';
+    reason: string;
+    created_at: string;
+    created_by: string;
+  }[];
   closure_timestamp?: string;
   closed_by?: string;
   
@@ -257,37 +263,56 @@ export const complaintService = {
 
   // Live tracking
   sendTechnicianLocation: async (complaintId: string, technicianName: string, lat: number, lng: number, accuracy?: number, heading?: number, speed?: number): Promise<void> => {
-    const { error } = await supabase
-      .from("technician_locations")
-      .insert([{ complaint_id: complaintId, technician_name: technicianName, lat, lng, accuracy, heading, speed }]);
+    try {
+      const { error } = await supabase
+        .from("technician_locations")
+        .insert([{ complaint_id: complaintId, technician_name: technicianName, lat, lng, accuracy, heading, speed }]);
 
-    if (error) throw error;
+      if (error) {
+        console.warn('technician_locations table may not exist:', error.message);
+      }
+    } catch (err: any) {
+      console.warn('Failed to send technician location (table may not exist):', err?.message || err);
+    }
   },
 
   getLatestTechnicianLocation: async (complaintId: string) => {
-    const { data, error } = await supabase
-      .from("technician_locations")
-      .select("*")
-      .eq("complaint_id", complaintId)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    try {
+      const { data, error } = await supabase
+        .from("technician_locations")
+        .select("*")
+        .eq("complaint_id", complaintId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-    if (error) throw error;
-    return data;
+      if (error) {
+        console.warn('technician_locations table may not exist:', error.message);
+        return null;
+      }
+      return data;
+    } catch (err: any) {
+      console.warn('Failed to get technician location (table may not exist):', err?.message || err);
+      return null;
+    }
   },
 
   subscribeToTechnicianLocation: (complaintId: string, callback: (payload: any) => void) => {
-    const channel = supabase
-      .channel(`technician-location-${complaintId}`)
-      .on("postgres_changes", {
-        event: "INSERT",
-        schema: "public",
-        table: "technician_locations",
-        filter: `complaint_id=eq.${complaintId}`,
-      }, callback)
-      .subscribe();
+    try {
+      const channel = supabase
+        .channel(`technician-location-${complaintId}`)
+        .on("postgres_changes", {
+          event: "INSERT",
+          schema: "public",
+          table: "technician_locations",
+          filter: `complaint_id=eq.${complaintId}`,
+        }, callback)
+        .subscribe();
 
-    return channel;
+      return channel;
+    } catch (err: any) {
+      console.warn('Failed to subscribe to technician location (table may not exist):', err?.message || err);
+      return null;
+    }
   },
 };
