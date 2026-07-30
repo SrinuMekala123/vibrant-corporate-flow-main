@@ -376,11 +376,13 @@ const ComplaintEdit = () => {
         },
         (error) => {
           console.error("Browser Geolocation failed:", error);
-          let errorMsg = "Unable to detect location. Please check your GPS or enter the address manually.";
+          let errorMsg;
           if (error.code === 1) {
             errorMsg = "Location access denied. Please enable location services in your browser or enter the address manually.";
-          } else if (error.code === 2 || error.code === 3) {
-            errorMsg = "Unable to detect location. Please check your GPS or enter the address manually.";
+          } else if (error.code === 3) {
+            errorMsg = "Location timeout. Please enter your address manually.";
+          } else {
+            errorMsg = "Unable to detect location. Please enter your address manually.";
           }
           toast.error(errorMsg);
           setLocationHelp(errorMsg);
@@ -508,14 +510,14 @@ const ComplaintEdit = () => {
     }
 
     if (!form.location && !(form.customerLat && form.customerLng)) {
-      toast.error("Please provide a location by typing or using GPS");
+      toast.error("Please provide a location by typing your address or using the Detect Location button");
       return;
     }
 
     setIsSaving(true);
     try {
       if (isNew) {
-        let status = "unassigned";
+        let status = "open";
         let phase = 1;
         if (form.assignedSupervisor && !isCustomer) {
           status = "assigned";
