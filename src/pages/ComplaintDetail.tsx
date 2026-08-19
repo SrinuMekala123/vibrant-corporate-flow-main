@@ -1,7 +1,7 @@
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { useState, useEffect, useRef } from "react";
-import { motion } from "framer-motion";
-import { ArrowLeft, Edit, Phone, MapPin, Clock, User, Wrench, FileText, ShieldCheck, CheckCircle2, XCircle, X, Loader2, Play, CheckSquare, Upload, PenTool, Image as ImageIcon, AlertTriangle, MessageSquare, Star, ThumbsUp, ThumbsDown } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import { ArrowLeft, Edit, Phone, MapPin, Clock, User, Wrench, FileText, ShieldCheck, CheckCircle2, XCircle, X, Loader2, Play, CheckSquare, Upload, PenTool, Image as ImageIcon, AlertTriangle, MessageSquare, Star, ThumbsUp, ThumbsDown, RotateCcw, ZoomIn, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -12,12 +12,13 @@ import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { complaintService, type Complaint } from "@/services/complaintService";
-import { supabase } from "@/lib/supabase";
+import { supabase, resolveSupabaseUrl } from "@/lib/supabase";
 import SignatureCanvas from "react-signature-canvas";
 import browserImageCompression from "browser-image-compression";
 import { saveOfflineDraft, syncOfflineDrafts, getOfflineDraft } from '@/lib/offlineStorage';
 import ImageGallery from "@/components/ImageGallery";
 import { notificationService } from "@/services/notificationService";
+import LiveRouteTrackingModal from "@/components/LiveRouteTrackingModal";
 
 type SignatureMode = "draw" | "upload";
 type SatisfactionLevel = "satisfied" | "partially_satisfied" | "unsatisfied" | "";
@@ -67,16 +68,32 @@ const ComplaintDetail = () => {
   const [evidenceUrls, setEvidenceUrls] = useState<string[]>([]);
   const [activePhase, setActivePhase] = useState<number>(1);
   const [canvasWidth, setCanvasWidth] = useState(750);
+  const [selectedMedia, setSelectedMedia] = useState<string | null>(null);
 
   useEffect(() => {
     const handleResize = () => {
-      const width = Math.min(750, window.innerWidth - 64);
+      const padding = window.innerWidth < 640 ? 40 : 64;
+      const width = Math.min(750, window.innerWidth - padding);
       setCanvasWidth(width);
     };
     handleResize();
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
+
+  const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
+    const R = 6371; // Radius of the Earth in km
+    const dLat = ((lat2 - lat1) * Math.PI) / 180;
+    const dLon = ((lon2 - lon1) * Math.PI) / 180;
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos((lat1 * Math.PI) / 180) *
+        Math.cos((lat2 * Math.PI) / 180) *
+        Math.sin(dLon / 2) *
+        Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  };
 
   const [showVerification, setShowVerification] = useState(false);
   const [showResolution, setShowResolution] = useState(false);
@@ -100,6 +117,8 @@ const ComplaintDetail = () => {
   const [feedbackContactMethod, setFeedbackContactMethod] = useState("phone");
   const [isCollectingFeedback, setIsCollectingFeedback] = useState(false);
   const [showFeedbackForm, setShowFeedbackForm] = useState(false);
+  const [showTrackingModal, setShowTrackingModal] = useState(false);
+  const [timeLeft, setTimeLeft] = useState("");
 
 
 
@@ -175,6 +194,58 @@ const ComplaintDetail = () => {
     enabled: !!id && !!user,
   });
 
+  // Automated background GPS tracking for technicians on active journeys
+  useEffect(() => {
+    if (!id || !ticket || ticket.status !== 'in-progress' || ticket.current_phase !== 4 || !isRole('technician')) {
+      return;
+    }
+
+    console.log("📡 Starting automated 30-second location tracking for active journey...");
+    
+    const trackLocation = async () => {
+      if (!navigator.geolocation) return;
+      
+      navigator.geolocation.getCurrentPosition(
+        async (position) => {
+          const lat = position.coords.latitude;
+          const lng = position.coords.longitude;
+          const accuracy = position.coords.accuracy;
+          
+          try {
+            const { error } = await supabase.from("location_tracking").insert({
+              complaint_id: id,
+              latitude: lat,
+              longitude: lng,
+              accuracy: accuracy || null,
+              timestamp: new Date().toISOString()
+            });
+            if (error) {
+              console.warn("Failed to insert location tracking point:", error.message);
+            } else {
+              console.log(`📡 Logged location point: ${lat.toFixed(6)}, ${lng.toFixed(6)}`);
+            }
+          } catch (err) {
+            console.warn("Error inserting location tracking point:", err);
+          }
+        },
+        (error) => {
+          console.warn("Failed to get geolocation for automated tracking:", error.message);
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      );
+    };
+
+    // Log immediately on start
+    trackLocation();
+    
+    const interval = setInterval(trackLocation, 30000);
+    return () => {
+      console.log("📡 Stopping automated location tracking.");
+      clearInterval(interval);
+    };
+  }, [id, ticket?.status, ticket?.current_phase]);
+
+
   useEffect(() => {
     if (user?.id) {
       supabase.from('profiles').select('full_name, role, phone').eq('id', user.id).single()
@@ -229,6 +300,26 @@ const ComplaintDetail = () => {
     };
     fetchCustomerPhone();
   }, [ticket?.customer_id, ticket?.customer_name]);
+
+  useEffect(() => {
+    if (!ticket?.target_end_time) return;
+    const updateTimer = () => {
+      const end = new Date(ticket.target_end_time).getTime();
+      const now = new Date().getTime();
+      const diff = end - now;
+      if (diff <= 0) {
+        setTimeLeft("Target Time Passed");
+        return;
+      }
+      const hours = Math.floor(diff / (1000 * 60 * 60));
+      const mins = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+      const secs = Math.floor((diff % (1000 * 60)) / 1000);
+      setTimeLeft(`${hours}h ${mins}m ${secs}s remaining`);
+    };
+    updateTimer();
+    const interval = setInterval(updateTimer, 1000);
+    return () => clearInterval(interval);
+  }, [ticket?.target_end_time]);
 
   // OFFLINE STORAGE - Auto-save draft every 30 seconds
   useEffect(() => {
@@ -586,17 +677,26 @@ const ComplaintDetail = () => {
 
     try {
       const gps = await verifyGPS();
+      setIsDetectingGps(false);
       if (gps) {
-        setIsDetectingGps(false);
+        // Distance check:
+        if (ticket.customer_lat && ticket.customer_lng) {
+          const dist = calculateDistance(gps.lat, gps.lng, Number(ticket.customer_lat), Number(ticket.customer_lng));
+          if (dist > 50) {
+            const isConfirmed = window.confirm(`Target destination is more than 50km away (${dist.toFixed(1)}km). Are you sure you are traveling to the correct site?`);
+            if (!isConfirmed) {
+              return;
+            }
+          }
+        }
         await confirmStartJourneyWithCoords(gps.lat, gps.lng);
       } else {
-        setIsDetectingGps(false);
-        setShowStartJourneyModal(true);
+        toast.error("GPS location access is required to start your journey");
       }
     } catch (e) {
       console.warn("GPS detection failed:", e);
       setIsDetectingGps(false);
-      setShowStartJourneyModal(true);
+      toast.error("GPS location access is required to start your journey");
     }
   };
 
@@ -615,6 +715,19 @@ const ComplaintDetail = () => {
       toast.warning("📍 Customer location address not available, starting journey anyway...");
     }
 
+    try {
+      await supabase.from("location_tracking").insert({
+        complaint_id: ticket.id,
+        latitude: lat,
+        longitude: lng,
+        accuracy: 10,
+        timestamp: new Date().toISOString()
+      });
+      console.log("Recorded start location in location_tracking");
+    } catch (dbErr) {
+      console.warn("Failed to record journey start location in tracking table:", dbErr);
+    }
+
     await saveJourneyStart(startLocJson);
   };
 
@@ -622,10 +735,25 @@ const ComplaintDetail = () => {
     setShowStartJourneyModal(false);
 
     let startLocJson = null;
+    let lat = null;
+    let lng = null;
+
     if (typedStartLocation.trim()) {
       startLocJson = JSON.stringify({ address: typedStartLocation.trim() });
     } else if (detectedCoords) {
-      startLocJson = JSON.stringify({ lat: detectedCoords.lat, lng: detectedCoords.lng });
+      lat = detectedCoords.lat;
+      lng = detectedCoords.lng;
+      startLocJson = JSON.stringify({ lat, lng });
+    }
+
+    if (lat && lng && ticket.customer_lat && ticket.customer_lng) {
+      const dist = calculateDistance(lat, lng, Number(ticket.customer_lat), Number(ticket.customer_lng));
+      if (dist > 50) {
+        const isConfirmed = window.confirm(`Target destination is more than 50km away (${dist.toFixed(1)}km). Are you sure you are traveling to the correct site?`);
+        if (!isConfirmed) {
+          return;
+        }
+      }
     }
 
     const destination = (ticket.customer_lat && ticket.customer_lng)
@@ -643,6 +771,20 @@ const ComplaintDetail = () => {
       toast.success("🗺️ Opening navigation to customer location...");
     } else {
       toast.warning("📍 Customer location address not available, starting journey anyway...");
+    }
+
+    if (lat && lng) {
+      try {
+        await supabase.from("location_tracking").insert({
+          complaint_id: ticket.id,
+          latitude: lat,
+          longitude: lng,
+          accuracy: 10,
+          timestamp: new Date().toISOString()
+        });
+      } catch (dbErr) {
+        console.warn("Failed to record journey start location in tracking table:", dbErr);
+      }
     }
 
     await saveJourneyStart(startLocJson);
@@ -717,7 +859,9 @@ const ComplaintDetail = () => {
       technician_evidence: evidenceUrls,
       arrival_timestamp: new Date().toISOString(),
       arrival_lat: gps?.lat || null,
-      arrival_lng: gps?.lng || null
+      arrival_lng: gps?.lng || null,
+      status: "pir_submitted_awaiting_approval",
+      pir_status: "pending"
     } as any);
     setShowPIRForm(false);
     toast.success("PIR submitted");
@@ -753,7 +897,8 @@ const ComplaintDetail = () => {
     );
 
     await updateMutation.mutateAsync({
-      resolution: resolutionNote
+      resolution: resolutionNote,
+      current_phase: 5
     } as any);
     setShowResolution(false);
     setShowSignOff(true);
@@ -798,10 +943,19 @@ const ComplaintDetail = () => {
     }
     setIsApprovingPir(true);
     try {
+      const targetDuration = Number(targetDurationInput);
+      const targetEndTime = new Date();
+      targetEndTime.setHours(targetEndTime.getHours() + targetDuration);
+
       await updateMutation.mutateAsync({
         pir_findings_severity: pirSeverityInput,
         supervisor_severity: supSeverityInput,
-        target_duration_hours: Number(targetDurationInput)
+        target_duration_hours: targetDuration,
+        status: "pir_approved_work_in_progress",
+        pir_status: "approved",
+        pir_approved_by: user?.id,
+        pir_approved_at: new Date().toISOString(),
+        target_end_time: targetEndTime.toISOString()
       } as any);
 
       // Trigger notification to technician
@@ -824,6 +978,39 @@ const ComplaintDetail = () => {
     } catch (err) {
       console.error("Failed to approve PIR:", err);
       toast.error("Failed to approve PIR");
+    } finally {
+      setIsApprovingPir(false);
+    }
+  };
+
+  const handleRequestRevisionPIR = async () => {
+    setIsApprovingPir(true);
+    try {
+      await updateMutation.mutateAsync({
+        status: "rework_required",
+        pir_status: "revision_requested"
+      } as any);
+
+      // Trigger notification to technician
+      if (ticket.assigned_technician) {
+        const technicianProfile = await fetchProfileByName(ticket.assigned_technician);
+        if (technicianProfile) {
+          await notificationService.insertNotification(
+            technicianProfile.id,
+            ticket.id,
+            'warning',
+            '⚠️ PIR Revision Requested',
+            `Supervisor requested revisions on the PIR for Ticket #${ticket.id.slice(0, 8)}. Please review and resubmit.`,
+            4,
+            undefined,
+            user?.id
+          );
+        }
+      }
+      toast.success("Revision requested successfully");
+    } catch (err) {
+      console.error("Failed to request revision:", err);
+      toast.error("Failed to request revision");
     } finally {
       setIsApprovingPir(false);
     }
@@ -1135,18 +1322,18 @@ const ComplaintDetail = () => {
         lowercaseUrl.endsWith('.m4a') ||
         lowercaseUrl.endsWith('.ogg') ||
         lowercaseUrl.endsWith('.aac') ||
-        lowercaseUrl.includes('/audios/')
+        lowercaseUrl.includes('/audios/') ||
+        lowercaseUrl.includes('/pir-audio/')
       ) {
         return 'audio';
       }
       if (
         lowercaseUrl.endsWith('.mp4') ||
-        lowercaseUrl.endsWith('.mov') ||
-        lowercaseUrl.endsWith('.avi') ||
-        lowercaseUrl.endsWith('.mkv') ||
         lowercaseUrl.endsWith('.webm') ||
-        lowercaseUrl.endsWith('.3gp') ||
-        lowercaseUrl.includes('/videos/')
+        lowercaseUrl.endsWith('.ogg') ||
+        lowercaseUrl.endsWith('.mov') ||
+        lowercaseUrl.endsWith('.quicktime') ||
+        lowercaseUrl.includes('video')
       ) {
         return 'video';
       }
@@ -1157,71 +1344,70 @@ const ComplaintDetail = () => {
         lowercaseUrl.endsWith('.gif') ||
         lowercaseUrl.endsWith('.webp') ||
         lowercaseUrl.endsWith('.svg') ||
-        lowercaseUrl.includes('/images/')
+        lowercaseUrl.includes('/images/') ||
+        lowercaseUrl.includes('/evidence/')
       ) {
         return 'image';
       }
       return 'document';
     };
 
+    const mediaUrls = urls.filter(url => {
+      const type = getFileType(url);
+      return type === 'image' || type === 'video';
+    });
+
+    const audioUrls = urls.filter(url => getFileType(url) === 'audio');
+    const docUrls = urls.filter(url => getFileType(url) === 'document');
+
     return (
-      <div className="flex flex-wrap gap-3 mt-2">
-        {urls.map((url, idx) => {
-          const type = getFileType(url);
-          if (type === 'image') {
-            return (
-              <a
-                key={idx}
-                href={url}
-                target="_blank"
-                rel="noreferrer"
-                className="block relative w-20 h-20 border rounded overflow-hidden hover:opacity-90 transition-all bg-muted shadow-sm"
-              >
-                <img src={url} alt={`Evidence Image ${idx + 1}`} className="w-full h-full object-cover" />
-              </a>
-            );
-          } else if (type === 'video') {
-            return (
-              <div key={idx} className="relative w-48 border rounded overflow-hidden bg-slate-900 shadow-sm flex flex-col">
-                <video src={url} controls className="w-full aspect-video object-cover" />
+      <div className="space-y-3 mt-2 w-full">
+        {mediaUrls.length > 0 && (
+          <ImageGallery
+            images={mediaUrls}
+            title="Attached Media"
+            uploader="technician"
+            emptyMessage="No media files attached"
+          />
+        )}
+
+        {audioUrls.map((url, idx) => {
+          const resolved = resolveSupabaseUrl(url);
+          return (
+            <div key={idx} className="w-full max-w-md border rounded-xl p-3.5 bg-slate-100/60 flex flex-col gap-2 shadow-sm">
+              <span className="text-xs font-bold text-[#0083a2] flex items-center gap-1.5">
+                🎵 Audio Note {idx + 1}
+              </span>
+              <audio src={resolved} controls className="w-full h-9 rounded-lg animate-fade-in" />
+            </div>
+          );
+        })}
+
+        {docUrls.length > 0 && (
+          <div className="flex flex-wrap gap-2.5">
+            {docUrls.map((url, idx) => {
+              const resolved = resolveSupabaseUrl(url);
+              const filename = decodeURIComponent(url.split('/').pop() || 'File').split('?')[0];
+              return (
                 <a
-                  href={url}
+                  key={idx}
+                  href={resolved}
                   target="_blank"
                   rel="noreferrer"
-                  className="text-[10px] text-white bg-black/50 py-0.5 px-1.5 absolute top-1 right-1 rounded hover:bg-black/70 font-medium"
+                  className="flex items-center gap-2.5 p-3 border border-slate-200 rounded-xl hover:bg-slate-50 transition-all bg-white shadow-sm max-w-xs w-full"
                 >
-                  Full
+                  <div className="p-2 rounded bg-primary/10 text-primary shrink-0">
+                    <FileText className="w-4.5 h-4.5" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-bold text-slate-800 truncate">{filename}</p>
+                    <p className="text-[10px] text-muted-foreground font-semibold">Click to view/download</p>
+                  </div>
                 </a>
-              </div>
-            );
-          } else if (type === 'audio') {
-            return (
-              <div key={idx} className="w-full max-w-sm border rounded p-2 bg-slate-50 flex flex-col gap-1 shadow-sm">
-                <span className="text-[10px] text-muted-foreground font-medium">🎵 Audio Note {idx + 1}:</span>
-                <audio src={url} controls className="w-full h-8" />
-              </div>
-            );
-          } else {
-            const filename = decodeURIComponent(url.split('/').pop() || 'File').split('?')[0];
-            return (
-              <a
-                key={idx}
-                href={url}
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center gap-2 p-2 border rounded hover:bg-slate-50 transition-all bg-white shadow-sm max-w-xs"
-              >
-                <div className="p-2 rounded bg-primary/10 text-primary">
-                  <FileText className="w-4 h-4" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs font-medium text-slate-700 truncate">{filename}</p>
-                  <p className="text-[10px] text-muted-foreground">Click to view/download</p>
-                </div>
-              </a>
-            );
-          }
-        })}
+              );
+            })}
+          </div>
+        )}
       </div>
     );
   };
@@ -1396,27 +1582,15 @@ const ComplaintDetail = () => {
                     } catch (e) {}
                   }
 
-                  if (currentPos && dest) {
+                  if (currentPos || startLoc) {
                     return (
-                      <a
-                        href={`https://www.google.com/maps/dir/?api=1&origin=${currentPos}&destination=${dest}&travelmode=driving`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="px-3.5 py-1.5 text-xs font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-100/60 dark:bg-emerald-950/40 hover:bg-emerald-200/80 rounded-lg border border-emerald-200/50 dark:border-emerald-900/50 inline-flex items-center gap-1.5 transition-colors"
-                      >
-                        🚗 Track Current Live Location
-                      </a>
-                    );
-                  } else if (startLoc && dest) {
-                    return (
-                      <a
-                        href={`https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(startLoc)}&destination=${dest}&travelmode=driving`}
-                        target="_blank"
-                        rel="noreferrer"
+                      <button
+                        type="button"
+                        onClick={() => setShowTrackingModal(true)}
                         className="px-3.5 py-1.5 text-xs font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-100/60 dark:bg-emerald-950/40 hover:bg-emerald-200/80 rounded-lg border border-emerald-200/50 dark:border-emerald-900/50 inline-flex items-center gap-1.5 transition-colors"
                       >
                         🚗 Track Transit Route Proof
-                      </a>
+                      </button>
                     );
                   }
                   return null;
@@ -1518,28 +1692,15 @@ const ComplaintDetail = () => {
                         ) : (
                           <div className="text-xs text-muted-foreground">Arrival: Not recorded yet</div>
                         )}
-                        {startOrigin && (
+                        {(startOrigin || (ticket.arrival_lat && ticket.arrival_lng)) && (
                           <div className="pt-1">
-                            <a
-                              href={dest ? `https://www.google.com/maps/dir/?api=1&origin=${startOrigin}&destination=${dest}&travelmode=driving` : `https://www.google.com/maps/search/?api=1&query=${startOrigin}`}
-                              target="_blank"
-                              rel="noreferrer"
+                            <button
+                              type="button"
+                              onClick={() => setShowTrackingModal(true)}
                               className="text-xs text-emerald-600 dark:text-emerald-400 hover:underline font-bold inline-flex items-center gap-1 bg-emerald-50 dark:bg-emerald-950/30 px-2 py-1 rounded"
                             >
                               🗺️ View Travel Route Proof
-                            </a>
-                          </div>
-                        )}
-                        {!startOrigin && ticket.arrival_lat && ticket.arrival_lng && (
-                          <div className="pt-0.5">
-                            <a
-                              href={dest ? `https://www.google.com/maps/dir/?api=1&origin=${ticket.arrival_lat},${ticket.arrival_lng}&destination=${dest}&travelmode=driving` : `https://www.google.com/maps/search/?api=1&query=${ticket.arrival_lat},${ticket.arrival_lng}`}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="text-xs text-primary hover:underline font-medium inline-flex items-center gap-1"
-                            >
-                              🗺️ View Route to Customer
-                            </a>
+                            </button>
                           </div>
                         )}
                       </>
@@ -1561,7 +1722,7 @@ const ComplaintDetail = () => {
                 <span className="text-xs text-muted-foreground block font-medium flex items-center gap-1">
                   🎵 Recorded Audio Note:
                 </span>
-                <audio src={ticket.pir_audio_url} controls className="w-full max-w-md h-10 mt-1" />
+                <audio src={resolveSupabaseUrl(ticket.pir_audio_url)} controls className="w-full max-w-md h-10 mt-1" />
               </div>
             )}
 
@@ -1573,7 +1734,7 @@ const ComplaintDetail = () => {
             )}
 
             {/* Display Approved PIR Validation Details if present */}
-            {(ticket.pir_findings_severity || ticket.supervisor_severity || ticket.target_duration_hours) ? (
+            {(ticket.pir_findings_severity || ticket.supervisor_severity || ticket.target_duration_hours || ticket.target_end_time) ? (
               <div className="mt-3 bg-emerald-50/50 border border-emerald-200/60 p-4 rounded-lg space-y-3">
                 <span className="text-xs font-semibold text-emerald-800 uppercase tracking-wider block">🛡️ PIR Validation Details</span>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -1590,15 +1751,29 @@ const ComplaintDetail = () => {
                     <span className="font-semibold text-slate-800">{ticket.target_duration_hours ? `${ticket.target_duration_hours} Hours` : 'Not set'}</span>
                   </div>
                 </div>
+                {ticket.target_end_time && (
+                  <div className="mt-2 bg-indigo-50 border border-indigo-150 p-3 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div>
+                      <span className="text-xs text-indigo-700 block font-medium">Locked Target End Time</span>
+                      <span className="text-sm font-semibold text-indigo-900">{formatIndianDateTime(ticket.target_end_time)}</span>
+                    </div>
+                    {ticket.status === 'pir_approved_work_in_progress' && (
+                      <div className="text-right">
+                        <span className="text-xs text-indigo-700 block font-medium">Time Remaining</span>
+                        <span className="text-sm font-bold text-indigo-900 animate-pulse">{timeLeft}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             ) : null}
 
             {/* Supervisor/Admin Validation Action Panel */}
-            {isRole("admin", "supervisor") && ticket.pir_findings && !(ticket.pir_findings_severity || ticket.supervisor_severity || ticket.target_duration_hours) && (
-              <div className="mt-4 bg-slate-50 border-2 border-dashed border-indigo-200 p-5 rounded-lg space-y-4">
+            {isRole("admin", "supervisor") && (ticket.status === 'pir_submitted_awaiting_approval' || ticket.pir_status === 'pending') && (
+              <div className="mt-4 bg-slate-50 border-2 border-dashed border-indigo-200 p-4 sm:p-5 rounded-lg space-y-4 max-w-full overflow-x-hidden">
                 <div className="flex items-center gap-2">
-                  <ShieldCheck className="w-5 h-5 text-indigo-600" />
-                  <span className="font-semibold text-slate-800 text-sm">Supervisor PIR Verification Panel</span>
+                  <ShieldCheck className="w-5 h-5 text-indigo-600 flex-shrink-0" />
+                  <span className="font-semibold text-slate-800 text-sm md:text-base whitespace-normal break-words">Supervisor PIR Verification Panel</span>
                 </div>
                 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -1643,21 +1818,30 @@ const ComplaintDetail = () => {
                   </div>
                 </div>
 
-                <div className="flex justify-end pt-2">
+                <div className="flex flex-col sm:flex-row justify-end gap-3 pt-2 w-full">
+                  <Button
+                    onClick={handleRequestRevisionPIR}
+                    disabled={isApprovingPir}
+                    variant="outline"
+                    className="border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-800 flex items-center justify-center gap-1.5 text-xs sm:text-sm min-h-[44px] px-4 py-2.5 rounded shadow-sm transition-all w-full sm:w-auto whitespace-normal break-words text-center"
+                  >
+                    <RotateCcw className="w-4 h-4 flex-shrink-0" />
+                    <span className="truncate max-w-[200px] sm:max-w-none">Request More Info</span>
+                  </Button>
                   <Button
                     onClick={handleApprovePIR}
                     disabled={isApprovingPir}
-                    className="bg-indigo-600 hover:bg-indigo-700 text-white flex items-center gap-1.5 text-xs h-9 px-4 rounded shadow-sm transition-all"
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white flex items-center justify-center gap-1.5 text-xs sm:text-sm min-h-[44px] px-4 py-2.5 rounded shadow-sm transition-all w-full sm:w-auto whitespace-normal break-words text-center"
                   >
                     {isApprovingPir ? (
                       <>
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        Verifying...
+                        <Loader2 className="w-4 h-4 animate-spin flex-shrink-0" />
+                        <span className="truncate">Verifying...</span>
                       </>
                     ) : (
                       <>
-                        <ShieldCheck className="w-4 h-4" />
-                        Verify & Approve PIR
+                        <ShieldCheck className="w-4 h-4 flex-shrink-0" />
+                        <span className="truncate">Approve & Set Target Time</span>
                       </>
                     )}
                   </Button>
@@ -1697,7 +1881,7 @@ const ComplaintDetail = () => {
                 <div className="bg-white p-3 rounded-lg border flex flex-col justify-between">
                   <div>
                     <span className="text-xs text-muted-foreground block mb-2 font-medium">✍️ Customer Signature:</span>
-                    <img src={ticket.signature_url} alt="Customer Signature" className="max-h-16 border rounded bg-white p-1" />
+                    <img src={resolveSupabaseUrl(ticket.signature_url)} alt="Customer Signature" className="max-h-16 border rounded bg-white p-1" />
                   </div>
                   <span className="text-[10px] text-muted-foreground mt-2 block">
                     Signed Off At: {ticket.signoff_timestamp ? formatIndianDateTime(ticket.signoff_timestamp) : 'N/A'}
@@ -2004,7 +2188,7 @@ const ComplaintDetail = () => {
           )}
 
           {/* Phase 4: Submit PIR */}
-          {ticket.current_phase === 4 && ticket.status === "in-progress" && !showPIRForm && !showResolution && !showSignOff && (
+          {ticket.current_phase === 4 && ["in-progress", "rework_required"].includes(ticket.status) && !showPIRForm && !showResolution && !showSignOff && (
             <div className="flex items-center justify-between bg-muted/50 p-4 rounded-lg">
               <div>
                 <p className="font-medium">Submit Primary Information Report (PIR)</p>
@@ -2020,28 +2204,46 @@ const ComplaintDetail = () => {
               <label className="text-sm font-medium">PIR Findings *</label>
               <Textarea value={pirFindings} onChange={e => setPirFindings(e.target.value)} placeholder="Describe field findings..." rows={3} />
               <label className="text-sm font-medium">Upload Evidence / Audio / Files (Optional)</label>
-              <input type="file" multiple onChange={async (e) => {
-                const files = Array.from(e.target.files || []);
-                const newEvidence: string[] = [];
-                for (const file of files) {
-                  try {
-                    if (file.type.startsWith('audio/')) {
-                      const url = await uploadToSupabase(file, 'pir-audio');
-                      setPirAudioUrl(url);
-                      toast.success(`Audio "${file.name}" uploaded`);
-                    } else {
-                      const url = await uploadToSupabase(file, 'evidence');
-                      newEvidence.push(url);
-                      toast.success(`File "${file.name}" uploaded`);
+              <input
+                type="file"
+                multiple
+                accept="image/*,video/*,.png,.jpg,.jpeg,.gif,.webp,.mp4,.mov,.avi,.mkv"
+                onChange={async (e) => {
+                  const files = Array.from(e.target.files || []);
+                  console.log("Files selected on mobile:", files);
+                  if (files.length === 0) return;
+
+                  const newEvidence: string[] = [];
+                  for (const file of files) {
+                    try {
+                      if (file.type.startsWith('audio/')) {
+                        const url = await uploadToSupabase(file, 'pir-audio');
+                        setPirAudioUrl(url);
+                        toast.success(`Audio "${file.name}" uploaded`);
+                      } else {
+                        const url = await uploadToSupabase(file, 'evidence');
+                        newEvidence.push(url);
+                        toast.success(`File "${file.name}" uploaded`);
+                      }
+                    } catch (err) {
+                      console.error("Mobile upload error for file:", file.name, err);
+                      toast.error(`Failed to upload ${file.name}`);
                     }
-                  } catch (err) {
-                    toast.error(`Failed to upload ${file.name}`);
                   }
-                }
-                if (newEvidence.length > 0) {
-                  setEvidenceUrls(prev => [...prev, ...newEvidence]);
-                }
-              }} className="text-sm" />
+                  if (newEvidence.length > 0) {
+                    setEvidenceUrls(prev => [...prev, ...newEvidence]);
+                  }
+                  e.target.value = ''; // Reset input value for mobile reuse
+                }}
+                className="text-sm file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary/10 file:text-primary hover:file:bg-primary/20 cursor-pointer w-full"
+                disabled={isUploading}
+              />
+              {isUploading && (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground bg-primary/5 p-2 rounded animate-pulse">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
+                  <span>Uploading files... Please wait.</span>
+                </div>
+              )}
               {pirAudioUrl && (
                 <div className="text-xs text-muted-foreground bg-muted p-2 rounded flex items-center gap-1.5 mt-1">
                   🎵 Audio Note: <a href={pirAudioUrl} target="_blank" rel="noreferrer" className="text-primary hover:underline font-medium">Listen to Audio</a>
@@ -2064,43 +2266,52 @@ const ComplaintDetail = () => {
               )}
               <div className="flex gap-2 justify-end">
                 <Button variant="outline" size="sm" onClick={() => setShowPIRForm(false)}>Cancel</Button>
-                <Button size="sm" onClick={handleSubmitPIR} disabled={updateMutation.isPending}>
-                  {updateMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <CheckCircle2 className="w-4 h-4 mr-2" />}
+                <Button size="sm" onClick={handleSubmitPIR} disabled={updateMutation.isPending || isUploading}>
+                  {updateMutation.isPending || isUploading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <CheckCircle2 className="w-4 h-4 mr-2" />}
                   Submit PIR
                 </Button>
               </div>
             </div>
           )}
 
+          {/* Phase 4: Awaiting PIR Approval */}
+          {ticket.current_phase === 4 && ticket.status === "pir_submitted_awaiting_approval" && (
+            <div className="space-y-3 bg-indigo-50/50 dark:bg-indigo-950/20 p-4 rounded-lg mt-3 border border-indigo-200/50 flex flex-col items-center text-center">
+              <Clock className="w-8 h-8 text-indigo-500 animate-pulse mb-1" />
+              <p className="font-semibold text-indigo-900 dark:text-indigo-400">PIR Verification Pending</p>
+              <p className="text-xs text-muted-foreground max-w-md">Your Primary Information Report has been submitted successfully. Please wait for your supervisor to review and authorize the work target completion time.</p>
+            </div>
+          )}
+
           {/* Phase 4: Add Resolution */}
-          {ticket.current_phase === 4 && ticket.status === "in-progress" && !showPIRForm && !showSignOff && (
+          {ticket.current_phase === 4 && ticket.status === "pir_approved_work_in_progress" && !showPIRForm && !showSignOff && (
             <div className="space-y-3 bg-muted/50 p-4 rounded-lg mt-3">
               {showResolution ? (
                 <div className="space-y-2">
                   <label className="text-sm font-medium">Resolution Notes *</label>
                   <Textarea placeholder="Describe work done, parts replaced, tests performed..." value={resolutionNote} onChange={e => setResolutionNote(e.target.value)} rows={3} />
-                  <div className="flex gap-2 justify-end">
-                    <Button variant="outline" size="sm" onClick={() => setShowResolution(false)}>Cancel</Button>
-                    <Button size="sm" onClick={handleSaveResolution} disabled={updateMutation.isPending} className="bg-primary text-primary-foreground">
-                      {updateMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <CheckCircle2 className="w-4 h-4 mr-2" />}
+                  <div className="flex flex-col sm:flex-row gap-3 justify-end mt-3 w-full">
+                    <Button variant="outline" onClick={() => setShowResolution(false)} className="w-full sm:w-auto min-h-[44px] px-4 py-2.5 text-sm order-2 sm:order-1">Cancel</Button>
+                    <Button onClick={handleSaveResolution} disabled={updateMutation.isPending} className="bg-primary text-primary-foreground w-full sm:w-auto min-h-[44px] px-4 py-2.5 text-sm order-1 sm:order-2 whitespace-normal break-words text-center flex items-center justify-center gap-1.5">
+                      {updateMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2 shrink-0" /> : <CheckCircle2 className="w-4 h-4 mr-2 shrink-0" />}
                       Save & Continue to Sign Off
                     </Button>
                   </div>
                 </div>
               ) : (
-                <div className="flex items-center justify-between">
-                  <div>
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-3 p-1">
+                  <div className="text-center sm:text-left w-full">
                     <p className="font-medium">Job in progress</p>
                     <p className="text-sm text-muted-foreground">Add resolution notes when work is done.</p>
                   </div>
-                  <Button onClick={() => setShowResolution(true)} variant="outline"><CheckSquare className="w-4 h-4 mr-2" /> Add Resolution</Button>
+                  <Button onClick={() => setShowResolution(true)} variant="outline" className="w-full sm:w-auto min-h-[44px] px-4 py-2.5 text-sm flex items-center justify-center"><CheckSquare className="w-4 h-4 mr-2 shrink-0" /> Add Resolution</Button>
                 </div>
               )}
             </div>
           )}
 
           {/* Sign Off Form */}
-          {showSignOff && (
+          {(showSignOff || ticket.current_phase === 5) && (
             <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="bg-muted/50 p-4 rounded-lg space-y-4 border-l-4 border-l-success mt-3">
               <h3 className="font-semibold text-lg text-success flex items-center gap-2">
                 <CheckCircle2 className="w-5 h-5" /> Final Sign-Off
@@ -2193,9 +2404,9 @@ const ComplaintDetail = () => {
                   </div>
                 )}
               </div>
-              <div className="flex gap-2 justify-end pt-2 border-t">
-                <Button variant="outline" size="sm" onClick={() => setShowSignOff(false)}>Cancel</Button>
-                <Button size="sm" onClick={handleFinalSignOff} disabled={updateMutation.isPending} className="bg-success hover:bg-success/90 text-success-foreground">
+              <div className="flex flex-col sm:flex-row gap-2 justify-end pt-2 border-t">
+                <Button variant="outline" size="sm" onClick={() => setShowSignOff(false)} className="w-full sm:w-auto">Cancel</Button>
+                <Button size="sm" onClick={handleFinalSignOff} disabled={updateMutation.isPending} className="bg-success hover:bg-success/90 text-success-foreground w-full sm:w-auto">
                   {updateMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <CheckCircle2 className="w-4 h-4 mr-2" />}
                   Finalize & Complete Job
                 </Button>
@@ -2315,17 +2526,38 @@ const ComplaintDetail = () => {
               </>
             )}
             {ticket.feedback_collected && (
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="p-3 rounded-lg bg-success/10 border border-success/20">
-                <div className="flex items-center gap-2 mb-2">
-                  <CheckCircle2 className="w-4 h-4 text-success" />
-                  <p className="text-sm font-medium text-success">Feedback Successfully Collected</p>
+              <div className="space-y-3">
+                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="p-3 rounded-lg bg-success/10 border border-success/20">
+                  <div className="flex items-center gap-2 mb-2">
+                    <CheckCircle2 className="w-4 h-4 text-success" />
+                    <p className="text-sm font-medium text-success">Feedback Successfully Collected</p>
+                  </div>
+                  <div className="space-y-1 text-xs text-muted-foreground">
+                    <p><strong>Satisfaction:</strong> {ticket.customer_satisfaction?.replace('_', ' ')}</p>
+                    <p><strong>Contact Method:</strong> {ticket.feedback_contact_method}</p>
+                    {ticket.feedback_timestamp && (<p><strong>Collected:</strong> {formatIndianDateTime(ticket.feedback_timestamp)}</p>)}
+                  </div>
+                </motion.div>
+
+                {/* Show verification / reject note input once feedback is collected */}
+                <div className="space-y-2 mt-3">
+                  <label className="text-sm font-medium flex items-center gap-1.5 text-slate-800">
+                    <FileText className="w-4 h-4 text-primary" />
+                    Verification Notes / Reject Reason
+                    {ticket.customer_satisfaction === 'unsatisfied' ? (
+                      <span className="text-xs font-semibold text-destructive">(Required for Rejection/Rework)</span>
+                    ) : (
+                      <span className="text-xs font-normal text-muted-foreground">(Required for Rejection/Rework)</span>
+                    )}
+                  </label>
+                  <Textarea
+                    value={verificationNote}
+                    onChange={(e) => setVerificationNote(e.target.value)}
+                    placeholder="Enter verification notes or reasons for rejecting the ticket..."
+                    rows={3}
+                  />
                 </div>
-                <div className="space-y-1 text-xs text-muted-foreground">
-                  <p><strong>Satisfaction:</strong> {ticket.customer_satisfaction?.replace('_', ' ')}</p>
-                  <p><strong>Contact Method:</strong> {ticket.feedback_contact_method}</p>
-                  {ticket.feedback_timestamp && (<p><strong>Collected:</strong> {formatIndianDateTime(ticket.feedback_timestamp)}</p>)}
-                </div>
-              </motion.div>
+              </div>
             )}
           </div>
 
@@ -2356,18 +2588,18 @@ const ComplaintDetail = () => {
                 <h3 className="font-semibold text-sm mb-2 flex items-center gap-2">
                   <User className="w-4 h-4" /> Customer Signature
                 </h3>
-                <img src={ticket.signature_url} alt="Signature" className="max-w-xs border rounded bg-white p-2" />
+                <img src={resolveSupabaseUrl(ticket.signature_url)} alt="Signature" className="max-w-xs border rounded bg-white p-2" />
               </div>
             )}
           </div>
 
           {/* Action Buttons */}
-          <div className="flex gap-3 mt-3 flex-wrap">
-            <Button onClick={handleFinalClosure} disabled={!ticket.feedback_collected || updateMutation.isPending} className="bg-success text-success-foreground hover:bg-success/90" title={!ticket.feedback_collected ? "Please collect customer feedback first" : ""}>
+          <div className="flex flex-col sm:flex-row gap-3 mt-3">
+            <Button onClick={handleFinalClosure} disabled={!ticket.feedback_collected || updateMutation.isPending} className="bg-success text-success-foreground hover:bg-success/90 w-full sm:w-auto" title={!ticket.feedback_collected ? "Please collect customer feedback first" : ""}>
               {updateMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <CheckCircle2 className="w-4 h-4 mr-2" />}
               Confirm & Close Ticket
             </Button>
-            <Button variant="outline" onClick={handleReject} disabled={!ticket.feedback_collected || !verificationNote.trim()} className="border-destructive text-destructive" title={!ticket.feedback_collected ? "Please collect customer feedback first" : ""}>
+            <Button variant="outline" onClick={handleReject} disabled={!ticket.feedback_collected || !verificationNote.trim()} className="border-destructive text-destructive w-full sm:w-auto" title={!ticket.feedback_collected ? "Please collect customer feedback first" : ""}>
               <XCircle className="w-4 h-4 mr-2" /> Reject & Rework
             </Button>
           </div>
@@ -2548,6 +2780,13 @@ const ComplaintDetail = () => {
             </div>
           </div>
         </div>
+      )}
+      {showTrackingModal && (
+        <LiveRouteTrackingModal
+          complaintId={ticket.id}
+          ticket={ticket}
+          onClose={() => setShowTrackingModal(false)}
+        />
       )}
 
       </div>

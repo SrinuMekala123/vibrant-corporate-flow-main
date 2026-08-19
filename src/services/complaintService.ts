@@ -164,6 +164,8 @@ export interface Complaint {
   supervisor_severity?: string;
   pir_findings_severity?: string;
   target_duration_hours?: number;
+  target_end_time?: string;
+  pir_status?: 'pending' | 'approved' | 'revision_requested';
   created_at: string;
   updated_at: string;
   

@@ -36,7 +36,20 @@
 
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+let supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+
+// Dynamically handle local network testing (mobile device access via LAN IP)
+if (supabaseUrl && (supabaseUrl.includes('127.0.0.1') || supabaseUrl.includes('localhost'))) {
+  const hostname = window.location.hostname;
+  if (hostname && hostname !== 'localhost' && hostname !== '127.0.0.1') {
+    supabaseUrl = supabaseUrl.replace('127.0.0.1', hostname).replace('localhost', hostname);
+  }
+}
+
+if (import.meta.env.DEV) {
+  console.log('🔍 Resolved Supabase URL:', supabaseUrl);
+}
+
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
@@ -59,3 +72,14 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
         },
     },
 });
+
+export const resolveSupabaseUrl = (url: string | null | undefined): string => {
+  if (!url) return "";
+  if (url.includes('127.0.0.1') || url.includes('localhost')) {
+    const hostname = window.location.hostname;
+    if (hostname && hostname !== 'localhost' && hostname !== '127.0.0.1') {
+      return url.replace('127.0.0.1', hostname).replace('localhost', hostname);
+    }
+  }
+  return url;
+};

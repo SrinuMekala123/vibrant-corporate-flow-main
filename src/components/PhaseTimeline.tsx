@@ -34,7 +34,7 @@ export function PhaseTimeline({ currentPhase, status, activePhase, onPhaseClick 
             >
               <div
                 className={cn(
-                  "w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all border-2",
+                  "w-8 h-8 md:w-10 md:h-10 rounded-full flex items-center justify-center text-xs font-bold transition-all border-2",
                   isCompleted && !isFinalPhase && "gradient-primary text-primary-foreground border-transparent",
                   isCompleted && isFinalPhase && "bg-success text-success-foreground border-transparent shadow-[0_0_12px_rgba(34,197,94,0.4)]",
                   isCurrent && !isFinalPhase && "border-primary text-primary bg-primary/10 animate-pulse-glow",
@@ -55,7 +55,7 @@ export function PhaseTimeline({ currentPhase, status, activePhase, onPhaseClick 
             </button>
             {i < phases.length - 1 && (
               <div className={cn(
-                "h-0.5 flex-1 mx-1 rounded-full mt-[-18px] hidden md:block",
+                "h-0.5 flex-1 mx-1 rounded-full md:mt-[-22px] hidden md:block",
                 isCompleted ? "gradient-primary" : "bg-border"
               )} />
             )}

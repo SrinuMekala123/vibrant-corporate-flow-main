@@ -247,7 +247,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
 
       {/* 🔥 Sidebar */}
       <aside
-        className={`fixed top-0 left-0 z-50 h-[100dvh] transform transition-all duration-300 ease-in-out bg-[#f8fafc] text-slate-800 border-r border-slate-200/80 ${
+        className={`fixed top-0 left-0 z-50 h-[100dvh] overflow-y-auto transform transition-all duration-300 ease-in-out bg-[#f8fafc] text-slate-800 border-r border-slate-200/80 ${
           mobileMenuOpen ? "translate-x-0" : "-translate-x-full"
         } md:translate-x-0 ${sidebarCollapsed ? "md:w-20" : "md:w-64"} w-64`}
       >

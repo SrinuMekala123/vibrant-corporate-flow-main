@@ -154,7 +154,7 @@ const KPIAnalytics = () => {
 
   // Calculate real KPIs from Supabase data
   const totalTickets = complaints?.length || 1;
-  const completedTickets = complaints?.filter((t: Complaint) => t.status === "completed") || [];
+  const completedTickets = complaints?.filter((t: Complaint) => ["completed", "closed"].includes(t.status)) || [];
   const totalCompleted = completedTickets.length;
 
   // 1. First-Time Fix Rate (FTFR)
@@ -215,7 +215,7 @@ const KPIAnalytics = () => {
       };
     }
     acc[month].count++;
-    if (ticket.status === "completed") {
+    if (["completed", "closed"].includes(ticket.status)) {
       acc[month].completed++;
       const start = new Date(ticket.created_at).getTime();
       const end = new Date(ticket.updated_at).getTime();

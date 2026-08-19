@@ -1,5 +1,5 @@
 import { useParams, useNavigate } from "react-router-dom";
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { ArrowLeft, Save, Filter, Loader2, Upload, X, Info, User, MapPin, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -158,7 +158,9 @@ const ComplaintEdit = () => {
   useEffect(() => {
     // Note: Geolocation APIs are restricted to Secure Contexts (HTTPS or localhost).
     // In local development over a LAN IP (e.g. HTTP), isSecureContext is false. This is expected.
-    if (!window.isSecureContext) {
+    const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    const isHttp = window.location.protocol === 'http:';
+    if (isHttp && !isLocalhost) {
       setLocationHelp("Location services require HTTPS. Please enter your address manually.");
     }
     const fetchPreviousLocations = async () => {
@@ -190,6 +192,41 @@ const ComplaintEdit = () => {
     };
     fetchPreviousLocations();
   }, []);
+  const isAutoCompletingRef = useRef(false);
+
+  // Forward geocoding: address -> GPS coordinates
+  useEffect(() => {
+    if (isAutoCompletingRef.current) {
+      isAutoCompletingRef.current = false;
+      return;
+    }
+    if (!form.location || form.location.trim().length < 5) return;
+
+    const delayDebounceFn = setTimeout(async () => {
+      try {
+        const response = await fetch(
+          `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(form.location)}`
+        );
+        if (response.ok) {
+          const data = await response.json();
+          if (data && data.length > 0) {
+            const lat = parseFloat(data[0].lat);
+            const lng = parseFloat(data[0].lon);
+            setForm(prev => ({
+              ...prev,
+              customerLat: lat,
+              customerLng: lng
+            }));
+            toast.success("Location coordinates resolved!");
+          }
+        }
+      } catch (e) {
+        console.warn("Geocoding failed:", e);
+      }
+    }, 1200);
+
+    return () => clearTimeout(delayDebounceFn);
+  }, [form.location]);
 
   useEffect(() => {
     if (user?.id) {
@@ -300,7 +337,9 @@ const ComplaintEdit = () => {
     // In local development over a LAN IP (e.g. http://172.21.6.206:8080), browser security will block
     // geolocation and trigger isSecureContext = false. This is EXPECTED browser behavior.
     // For production deployment, HTTPS must be configured to enable geolocation.
-    if (!window.isSecureContext) {
+    const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    const isHttp = window.location.protocol === 'http:';
+    if (isHttp && !isLocalhost) {
       const msg = "Location services require HTTPS. Please use the manual address entry.";
       toast.error(msg);
       setLocationHelp(msg);
@@ -333,6 +372,7 @@ const ComplaintEdit = () => {
             const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1&t=${Date.now()}`);
             const data = await res.json();
             if (data && data.display_name) {
+              isAutoCompletingRef.current = true;
               setForm(prev => ({
                 ...prev,
                 location: data.display_name
@@ -593,6 +633,23 @@ const ComplaintEdit = () => {
         let nextPhase = existingComplaint?.current_phase || 1;
         let nextStatus = form.status;
 
+        // Sync phase based on the manually selected status if it has changed
+        if (form.status !== existingComplaint?.status) {
+          if (form.status === "unassigned") {
+            nextPhase = 1;
+          } else if (form.status === "assigned") {
+            nextPhase = 2;
+          } else if (form.status === "dispatched") {
+            nextPhase = 3;
+          } else if (["in-progress", "in_progress", "pir_submitted_awaiting_approval", "pir_approved_work_in_progress", "rework_required"].includes(form.status)) {
+            nextPhase = 4;
+          } else if (form.status === "completed") {
+            nextPhase = 6;
+          } else if (form.status === "closed") {
+            nextPhase = 6;
+          }
+        }
+
         // 🔥 If supervisor is assigned and we're in Phase 1, move to Phase 2 (status: 'assigned')
         if (form.assignedSupervisor && !isCustomer) {
           if (existingComplaint?.current_phase === 1) {
@@ -610,9 +667,9 @@ const ComplaintEdit = () => {
           }
         }
 
-        // 🔥 If technician is assigned and we're in Phase 2 or 3, move to Phase 3 (status: 'dispatched')
+        // 🔥 If technician is assigned, move to Phase 3 (status: 'dispatched')
         if (form.assignedTechnician && !isCustomer) {
-          if (existingComplaint?.current_phase === 2 || existingComplaint?.current_phase === 3) {
+          if (existingComplaint?.current_phase < 3) {
             nextPhase = 3;
             nextStatus = "dispatched";
             console.log("🚀 Auto-advancing to Phase 3 (Dispatch)");
@@ -807,8 +864,41 @@ const ComplaintEdit = () => {
 
           <div className="space-y-2">
             <label className="text-sm font-medium">Location <span className="text-destructive">*</span></label>
-            <div className="flex gap-2">
-              <div className="relative flex-1">
+            
+            <div className="flex flex-col sm:flex-row sm:items-start gap-3 w-full">
+              {isCustomer && (
+                <div className="w-full sm:w-auto sm:max-w-xs shrink-0 flex flex-col gap-1.5">
+                  <Button 
+                    type="button" 
+                    variant="outline" 
+                    onClick={handleGetCurrentLocation}
+                    disabled={isLocating || isSaving}
+                    className="w-full flex items-center justify-center gap-2 py-2 border-dashed border-primary/40 hover:border-primary/80 hover:bg-primary/5 transition-all h-11 sm:h-9"
+                  >
+                    {isLocating ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                        Detecting...
+                      </>
+                    ) : (
+                      <>
+                        <MapPin className="w-4 h-4 mr-2 text-primary" />
+                        Use Current Location
+                      </>
+                    )}
+                  </Button>
+                  <p className="text-[10px] text-muted-foreground mt-0.5 text-center sm:text-left">
+                    Use current location if you are at the field site
+                  </p>
+                  <div className="flex items-center justify-center my-1 sm:hidden">
+                    <div className="h-[1px] bg-border flex-1"></div>
+                    <span className="text-[10px] text-muted-foreground px-3 font-semibold uppercase">OR</span>
+                    <div className="h-[1px] bg-border flex-1"></div>
+                  </div>
+                </div>
+              )}
+              
+              <div className="relative flex-1 w-full">
                 <Input 
                   value={form.location} 
                   onChange={(e) => {
@@ -820,10 +910,10 @@ const ComplaintEdit = () => {
                     // A brief timeout allows the click event on the suggestion button to register first
                     setTimeout(() => setShowLocationSuggestions(false), 200);
                   }}
-                  placeholder="Site address..." 
+                  placeholder={isCustomer ? "Or enter address manually" : "Enter complete address"} 
                   required 
                   disabled={isSaving || (!isNew && isRole("supervisor"))} 
-                  className="w-full" 
+                  className="w-full h-11 sm:h-9" 
                 />
                 
                 {showLocationSuggestions && filteredSuggestions.length > 0 && (
@@ -845,28 +935,8 @@ const ComplaintEdit = () => {
                   </div>
                 )}
               </div>
-              {isCustomer && (
-                <Button 
-                  type="button" 
-                  variant="outline" 
-                  onClick={handleGetCurrentLocation}
-                  disabled={isLocating || isSaving}
-                  className="flex-shrink-0"
-                >
-                  {isLocating ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin mr-2" />
-                      Detecting location...
-                    </>
-                  ) : (
-                    <>
-                      <MapPin className="w-4 h-4 mr-2 text-primary" />
-                      Use Current Location
-                    </>
-                  )}
-                </Button>
-              )}
             </div>
+            
             {form.customerLat && form.customerLng && (
               <p className="text-xs text-success flex items-center gap-1 mt-1">
                 <ShieldCheck className="w-3.5 h-3.5" />

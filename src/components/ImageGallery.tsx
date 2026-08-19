@@ -1,12 +1,55 @@
 import { useState } from "react";
-import { X, Download, ZoomIn, User, Wrench, Play } from "lucide-react";
+import { X, Download, ZoomIn, User, Wrench, Play, Image as ImageIcon } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import { resolveSupabaseUrl } from "@/lib/supabase";
 
 interface ImageGalleryProps {
     images: string[];
     title: string;
     uploader: "customer" | "technician";
     emptyMessage?: string;
+}
+
+function GalleryImage({ url, index, onClick }: { url: string; index: number; onClick: () => void }) {
+    const [hasError, setHasError] = useState(false);
+    const [loading, setLoading] = useState(true);
+    const resolvedUrl = resolveSupabaseUrl(url);
+
+    return (
+        <div
+            className="relative group cursor-pointer rounded-lg overflow-hidden border border-border/60 hover:border-primary/50 transition-all bg-card shadow-sm aspect-video flex items-center justify-center"
+            onClick={onClick}
+        >
+            {hasError ? (
+                <div className="w-full h-full bg-slate-100 dark:bg-slate-800 flex flex-col items-center justify-center p-2 text-center text-muted-foreground">
+                    <ImageIcon className="w-5 h-5 mb-1 text-slate-400" />
+                    <span className="text-[10px] font-medium">Failed to load image</span>
+                </div>
+            ) : (
+                <>
+                    {loading && (
+                        <div className="absolute inset-0 bg-slate-100 dark:bg-slate-800 animate-pulse flex items-center justify-center">
+                            <ImageIcon className="w-5 h-5 text-slate-300 animate-bounce" />
+                        </div>
+                    )}
+                    <img
+                        src={resolvedUrl}
+                        alt={`img-${index}`}
+                        loading="lazy"
+                        onLoad={() => setLoading(false)}
+                        onError={() => {
+                            setHasError(true);
+                            setLoading(false);
+                        }}
+                        className={`w-full h-full object-cover transition-opacity duration-300 ${loading ? 'opacity-0' : 'opacity-100'}`}
+                    />
+                </>
+            )}
+            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                <ZoomIn className="w-6 h-6 text-white" />
+            </div>
+        </div>
+    );
 }
 
 export default function ImageGallery({ images, title, uploader, emptyMessage }: ImageGalleryProps) {
@@ -64,28 +107,34 @@ export default function ImageGallery({ images, title, uploader, emptyMessage }: 
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
                     {images.map((url, index) => {
                         const isVideo = isVideoUrl(url);
-                        return (
-                            <div
-                                key={index}
-                                className="relative group cursor-pointer rounded-lg overflow-hidden border border-border/60 hover:border-primary/50 transition-all bg-card shadow-sm aspect-video flex items-center justify-center"
-                                onClick={() => setSelectedMedia(url)}
-                            >
-                                {isVideo ? (
+                        if (isVideo) {
+                            return (
+                                <div
+                                    key={index}
+                                    className="relative group cursor-pointer rounded-lg overflow-hidden border border-border/60 hover:border-primary/50 transition-all bg-card shadow-sm aspect-video flex items-center justify-center"
+                                    onClick={() => setSelectedMedia(url)}
+                                >
                                     <div className="relative w-full h-full bg-slate-950 flex items-center justify-center overflow-hidden">
-                                        <video src={url} className="w-full h-full object-cover opacity-80" muted />
+                                        <video src={resolveSupabaseUrl(url)} className="w-full h-full object-cover opacity-80" muted />
                                         <div className="absolute inset-0 flex items-center justify-center bg-black/25">
                                             <div className="w-9 h-9 rounded-full bg-black/60 hover:bg-black/80 flex items-center justify-center text-white transition-all shadow-md">
                                                 <Play className="w-4 h-4 fill-white ml-0.5" />
                                             </div>
                                         </div>
                                     </div>
-                                ) : (
-                                    <img src={url} alt={`img-${index}`} className="w-full h-full object-cover" />
-                                )}
-                                <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                                    <ZoomIn className="w-6 h-6 text-white" />
+                                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                        <ZoomIn className="w-6 h-6 text-white" />
+                                    </div>
                                 </div>
-                            </div>
+                            );
+                        }
+                        return (
+                            <GalleryImage
+                                key={index}
+                                url={url}
+                                index={index}
+                                onClick={() => setSelectedMedia(url)}
+                            />
                         );
                     })}
                 </div>
@@ -111,14 +160,14 @@ export default function ImageGallery({ images, title, uploader, emptyMessage }: 
                         <div className="max-w-4xl max-h-[85vh] flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
                             {isVideoUrl(selectedMedia) ? (
                                 <video
-                                    src={selectedMedia}
+                                    src={resolveSupabaseUrl(selectedMedia)}
                                     controls
                                     autoPlay
                                     className="max-w-full max-h-[80vh] object-contain rounded-lg shadow-2xl border border-white/10"
                                 />
                             ) : (
                                 <img
-                                    src={selectedMedia}
+                                    src={resolveSupabaseUrl(selectedMedia)}
                                     alt="Selected media"
                                     className="max-w-full max-h-[80vh] object-contain rounded-lg shadow-2xl"
                                 />
@@ -126,7 +175,7 @@ export default function ImageGallery({ images, title, uploader, emptyMessage }: 
                         </div>
 
                         <a
-                            href={selectedMedia}
+                            href={resolveSupabaseUrl(selectedMedia)}
                             download
                             target="_blank"
                             rel="noopener noreferrer"
