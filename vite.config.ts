@@ -59,7 +59,8 @@ export default defineConfig(({ mode }) => ({
   plugins: [
     react(),
     mode === "development" && componentTagger(),
-    VitePWA({
+    // Register Service Worker only in production builds
+    mode === "production" && VitePWA({
       registerType: 'autoUpdate',
       strategies: 'injectManifest',
       srcDir: 'public',

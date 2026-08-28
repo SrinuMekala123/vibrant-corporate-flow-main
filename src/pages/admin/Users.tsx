@@ -201,6 +201,34 @@ export default function UsersPage() {
 
       if (signUpError) throw signUpError;
 
+      // If role is 'customer', also create a customer record in the customers table
+      if (role === "customer") {
+        // Fetch the newly created profile to get the user ID
+        const { data: newProfile } = await supabase
+          .from("profiles")
+          .select("id")
+          .eq("email", trimmedEmail)
+          .maybeSingle();
+
+        if (newProfile?.id) {
+          const { error: customerError } = await supabase
+            .from("customers")
+            .insert([{
+              user_id: newProfile.id,
+              full_name: trimmedName,
+              phone: cleanPhone || null,
+              email: trimmedEmail,
+              customer_type: "Retail",
+            }]);
+
+          if (customerError) {
+            console.error("Auto-create customer record error:", customerError);
+            // Don't block — user was created successfully, just log the warning
+            toast.warning("User created but customer record could not be auto-created. Please add manually in Customers page.");
+          }
+        }
+      }
+
       toast.success(`User ${trimmedName} created successfully!`);
       
       // Clear form

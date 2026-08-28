@@ -427,3 +427,18 @@ entrypoint = "./functions/send-notification/index.ts"
 # Specifies static files to be bundled with the function. Supports glob patterns.
 # For example, if you want to serve static HTML pages in your function:
 # static_files = [ "./functions/send-notification/*.html" ]
+
+[functions.create-customer-user]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/create-customer-user/index.ts"
+
+[functions.create-user]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/create-user/index.ts"
+
+[functions.invite-customer-user]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/invite-customer-user/index.ts"

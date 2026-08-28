@@ -143,7 +143,7 @@
 //       <Toaster />
 //       <Sonner />
 //       <AuthProvider>
-//         <BrowserRouter>
+//         <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
 //           <AppRoutes />
 //         </BrowserRouter>
 //       </AuthProvider>
@@ -174,6 +174,8 @@ import ComplaintEdit from "./pages/ComplaintEdit";
 import Assignments from "./pages/Assignments";
 import KPIAnalytics from "./pages/KPIAnalytics";
 import UsersPage from "./pages/admin/Users";
+import Customers from "./pages/Customers";
+import Assets from "./pages/Assets";
 import Profile from "./pages/Profile";
 import UpdatePassword from "./pages/UpdatePassword";
 import NotFound from "./pages/NotFound";
@@ -349,6 +351,24 @@ const AppRoutes = () => {
         </ProtectedRoute>
       } />
 
+      {/* Customers Page - All authenticated users */}
+      <Route path="/customers" element={
+        <ProtectedRoute>
+          <AppLayout>
+            <Customers />
+          </AppLayout>
+        </ProtectedRoute>
+      } />
+
+      {/* Assets Page - All authenticated users */}
+      <Route path="/assets" element={
+        <ProtectedRoute>
+          <AppLayout>
+            <Assets />
+          </AppLayout>
+        </ProtectedRoute>
+      } />
+
       {/* Profile - All authenticated users */}
       <Route path="/profile" element={
         <ProtectedRoute>
@@ -370,7 +390,7 @@ const App = () => (
       <Toaster />
       <Sonner />
       <AuthProvider>
-        <BrowserRouter>
+        <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
           <AppRoutes />
         </BrowserRouter>
       </AuthProvider>

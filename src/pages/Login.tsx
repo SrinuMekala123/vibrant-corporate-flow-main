@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Zap, Mail, Lock, Eye, EyeOff } from "lucide-react";
+import { Zap, Mail, Lock, Eye, EyeOff, User, Phone } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/contexts/AuthContext";
@@ -20,6 +20,12 @@ const Login = () => {
   const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [resetEmail, setResetEmail] = useState("");
   const [resetLoading, setResetLoading] = useState(false);
+
+  // Customer Sign-Up States
+  const [isSignUp, setIsSignUp] = useState(false);
+  const [fullName, setFullName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
 
   // Note: If you see "WebCrypto API is not supported" in the console, this is a harmless Supabase client fallback for older environments and can be safely ignored.
   const handlePasswordReset = async (e: React.FormEvent) => {
@@ -77,6 +83,66 @@ const Login = () => {
       }
     }
   }, [user, authLoading, navigate]);
+
+  const handleSignUp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    const trimmedName = fullName.trim();
+    if (!trimmedName || trimmedName.length < 3) {
+      toast.error("Full Name must be at least 3 characters.");
+      return;
+    }
+
+    const trimmedEmail = email.trim().toLowerCase();
+    if (!trimmedEmail) {
+      toast.error("Please enter a valid email address.");
+      return;
+    }
+
+    const cleanPhone = phone.replace(/[\s\-()]/g, "");
+    if (!cleanPhone || cleanPhone.length < 8) {
+      toast.error("Please enter a valid phone number.");
+      return;
+    }
+
+    if (password.length < 6) {
+      toast.error("Password must be at least 6 characters.");
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      toast.error("Passwords do not match.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const { data, error } = await supabase.auth.signUp({
+        email: trimmedEmail,
+        password,
+        options: {
+          data: {
+            full_name: trimmedName,
+            role: "customer",
+            phone: cleanPhone,
+          },
+          emailRedirectTo: `${window.location.origin}/dashboard`
+        }
+      });
+
+      if (error) throw error;
+
+      toast.success("Account created successfully! Check your email to confirm registration.");
+      setIsSignUp(false);
+      setPassword("");
+      setConfirmPassword("");
+    } catch (err: any) {
+      console.error("SignUp error:", err);
+      toast.error(err.message || "Failed to create account.");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -152,78 +218,229 @@ const Login = () => {
             <span className="font-display font-extrabold text-2xl tracking-tight text-gradient">Brihaspathi FSM</span>
           </div>
 
-          <div className="space-y-2">
-            <div className="mb-5 flex justify-start">
-              <img src="/highbtlogo-tm-1.webp" alt="Brihaspathi Technologies" className="h-14 object-contain" />
-            </div>
-            <h2 className="text-3xl font-display font-extrabold tracking-tight text-foreground">Welcome Back</h2>
-            <p className="text-muted-foreground text-sm">Enter your credentials to access the Field Service Console.</p>
-          </div>
-
-          {/* Secure Login Form */}
-          <form onSubmit={handleLogin} className="space-y-5">
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Email Address</label>
-              <div className="relative">
-                <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                <Input
-                  type="email"
-                  placeholder="you@company.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="pl-11 h-12 rounded-xl border-border/80 focus:border-primary focus:ring-primary/20 bg-card"
-                  required
-                  disabled={loading}
-                />
+          {isSignUp ? (
+            <>
+              <div className="space-y-2">
+                <div className="mb-5 flex justify-start">
+                  <img src="/highbtlogo-tm-1.webp" alt="Brihaspathi Technologies" className="h-14 object-contain" />
+                </div>
+                <h2 className="text-3xl font-display font-extrabold tracking-tight text-foreground">Create Customer Account</h2>
+                <p className="text-muted-foreground text-sm">Register to track your assets, complaints, and service history.</p>
               </div>
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Password</label>
-              <div className="relative">
-                <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                <Input
-                  type={showPass ? "text" : "password"}
-                  placeholder="••••••••"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="pl-11 pr-11 h-12 rounded-xl border-border/80 focus:border-primary focus:ring-primary/20 bg-card"
-                  required
-                  minLength={6}
-                  disabled={loading}
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPass(!showPass)}
-                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+
+              {/* Secure Sign Up Form */}
+              <form onSubmit={handleSignUp} className="space-y-5">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Full Name</label>
+                  <div className="relative">
+                    <User className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                    <Input
+                      type="text"
+                      placeholder="John Doe"
+                      value={fullName}
+                      onChange={(e) => setFullName(e.target.value)}
+                      className="pl-11 h-12 rounded-xl border-border/80 focus:border-primary focus:ring-primary/20 bg-card"
+                      required
+                      disabled={loading}
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Email Address</label>
+                  <div className="relative">
+                    <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                    <Input
+                      type="email"
+                      placeholder="you@example.com"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      className="pl-11 h-12 rounded-xl border-border/80 focus:border-primary focus:ring-primary/20 bg-card"
+                      required
+                      disabled={loading}
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Phone Number</label>
+                  <div className="relative">
+                    <Phone className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                    <Input
+                      type="tel"
+                      placeholder="9876543210"
+                      value={phone}
+                      onChange={(e) => setPhone(e.target.value)}
+                      className="pl-11 h-12 rounded-xl border-border/80 focus:border-primary focus:ring-primary/20 bg-card"
+                      required
+                      disabled={loading}
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Password</label>
+                  <div className="relative">
+                    <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                    <Input
+                      type={showPass ? "text" : "password"}
+                      placeholder="••••••••"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      className="pl-11 pr-11 h-12 rounded-xl border-border/80 focus:border-primary focus:ring-primary/20 bg-card"
+                      required
+                      minLength={6}
+                      disabled={loading}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPass(!showPass)}
+                      className="absolute right-3.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                      disabled={loading}
+                    >
+                      {showPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Confirm Password</label>
+                  <div className="relative">
+                    <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                    <Input
+                      type={showPass ? "text" : "password"}
+                      placeholder="••••••••"
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      className="pl-11 pr-11 h-12 rounded-xl border-border/80 focus:border-primary focus:ring-primary/20 bg-card"
+                      required
+                      minLength={6}
+                      disabled={loading}
+                    />
+                  </div>
+                </div>
+
+                <Button
+                  type="submit"
+                  className="w-full h-12 rounded-xl gradient-primary text-white font-bold shadow-glow hover:opacity-95 transition-all mt-2"
                   disabled={loading}
                 >
-                  {showPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  {loading ? (
+                    <span className="flex items-center justify-center gap-2">
+                      <span className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
+                      Registering...
+                    </span>
+                  ) : "Register Account"}
+                </Button>
+              </form>
+
+              <div className="text-center pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsSignUp(false);
+                    setFullName("");
+                    setPhone("");
+                    setPassword("");
+                    setConfirmPassword("");
+                  }}
+                  className="text-xs font-semibold text-primary hover:underline hover:text-primary/80 transition-colors"
+                  disabled={loading}
+                >
+                  Already have an account? Sign In
                 </button>
               </div>
-            </div>
-            <div className="text-right">
-              <button
-                type="button"
-                onClick={() => setShowForgotPassword(true)}
-                className="text-xs font-semibold text-primary hover:underline hover:text-primary/80 transition-colors"
-                disabled={loading}
-              >
-                Forgot Password?
-              </button>
-            </div>
-            <Button
-              type="submit"
-              className="w-full h-12 rounded-xl gradient-primary text-white font-bold shadow-glow hover:opacity-95 transition-all mt-2"
-              disabled={loading}
-            >
-              {loading ? (
-                <span className="flex items-center justify-center gap-2">
-                  <span className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
-                  Authenticating...
-                </span>
-              ) : "Sign In"}
-            </Button>
-          </form>
+            </>
+          ) : (
+            <>
+              <div className="space-y-2">
+                <div className="mb-5 flex justify-start">
+                  <img src="/highbtlogo-tm-1.webp" alt="Brihaspathi Technologies" className="h-14 object-contain" />
+                </div>
+                <h2 className="text-3xl font-display font-extrabold tracking-tight text-foreground">Welcome Back</h2>
+                <p className="text-muted-foreground text-sm">Enter your credentials to access the Field Service Console.</p>
+              </div>
+
+              {/* Secure Login Form */}
+              <form onSubmit={handleLogin} className="space-y-5">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Email Address</label>
+                  <div className="relative">
+                    <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                    <Input
+                      type="email"
+                      placeholder="you@company.com"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      className="pl-11 h-12 rounded-xl border-border/80 focus:border-primary focus:ring-primary/20 bg-card"
+                      required
+                      disabled={loading}
+                    />
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Password</label>
+                  <div className="relative">
+                    <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                    <Input
+                      type={showPass ? "text" : "password"}
+                      placeholder="••••••••"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      className="pl-11 pr-11 h-12 rounded-xl border-border/80 focus:border-primary focus:ring-primary/20 bg-card"
+                      required
+                      minLength={6}
+                      disabled={loading}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPass(!showPass)}
+                      className="absolute right-3.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                      disabled={loading}
+                    >
+                      {showPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <button
+                    type="button"
+                    onClick={() => setShowForgotPassword(true)}
+                    className="text-xs font-semibold text-primary hover:underline hover:text-primary/80 transition-colors"
+                    disabled={loading}
+                  >
+                    Forgot Password?
+                  </button>
+                </div>
+                <Button
+                  type="submit"
+                  className="w-full h-12 rounded-xl gradient-primary text-white font-bold shadow-glow hover:opacity-95 transition-all mt-2"
+                  disabled={loading}
+                >
+                  {loading ? (
+                    <span className="flex items-center justify-center gap-2">
+                      <span className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
+                      Authenticating...
+                    </span>
+                  ) : "Sign In"}
+                </Button>
+              </form>
+
+              <div className="text-center pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsSignUp(true);
+                    setPassword("");
+                  }}
+                  className="text-xs font-semibold text-primary hover:underline hover:text-primary/80 transition-colors"
+                  disabled={loading}
+                >
+                  Don't have an account? Sign Up / Customer Registration
+                </button>
+              </div>
+            </>
+          )}
 
           <p className="text-center text-xs text-muted-foreground font-medium pt-4">
             © 2026 Brihaspathi Technologies Ltd. All rights reserved.

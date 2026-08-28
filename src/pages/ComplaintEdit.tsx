@@ -1,7 +1,7 @@
 import { useParams, useNavigate } from "react-router-dom";
 import { useState, useMemo, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
-import { ArrowLeft, Save, Filter, Loader2, Upload, X, Info, User, MapPin, ShieldCheck } from "lucide-react";
+import { ArrowLeft, Save, Filter, Loader2, Upload, X, Info, User, MapPin, ShieldCheck, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -14,6 +14,22 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import browserImageCompression from "browser-image-compression";
 import { notificationService } from "@/services/notificationService";
+
+const formatDateTimeLocal = (dateStr?: string) => {
+  if (!dateStr) return "";
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return "";
+  
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  
+  const year = d.getFullYear();
+  const month = pad(d.getMonth() + 1);
+  const day = pad(d.getDate());
+  const hours = pad(d.getHours());
+  const minutes = pad(d.getMinutes());
+  
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+};
 
 const ComplaintEdit = () => {
   const { id } = useParams();
@@ -140,6 +156,7 @@ const ComplaintEdit = () => {
     assignedTechnician: "",
     description: "",
     resolution: "",
+    targetEndTime: "",
     customerLat: null as number | null,
     customerLng: null as number | null,
   });
@@ -154,6 +171,73 @@ const ComplaintEdit = () => {
   const [showLocationSuggestions, setShowLocationSuggestions] = useState(false);
   const [locationHelp, setLocationHelp] = useState("");
   const [locationSuggestions, setLocationSuggestions] = useState<string[]>([]);
+  const [availableCategories, setAvailableCategories] = useState<string[]>(['Solar', 'Networking', 'Electrical', 'CCTV', 'Other']);
+  const [isAssetsLoading, setIsAssetsLoading] = useState(false);
+
+  useEffect(() => {
+    const fetchCategories = async () => {
+      if (!user?.id) return;
+
+      if (isCustomer) {
+        setIsAssetsLoading(true);
+        try {
+          // Get from customers table where user_id = auth.uid()
+          const { data: customerRecord, error: custError } = await supabase
+            .from('customers')
+            .select('id')
+            .eq('user_id', user.id)
+            .maybeSingle();
+
+          if (custError) {
+            console.error("Error fetching customer profile:", custError);
+            setAvailableCategories([]);
+            return;
+          }
+
+          if (customerRecord) {
+            const { data: assets, error: assetsError } = await supabase
+              .from('customer_assets')
+              .select('category')
+              .eq('customer_id', customerRecord.id)
+              .order('category', { ascending: true });
+
+            if (assetsError) {
+              console.error("Error fetching customer assets:", assetsError);
+              setAvailableCategories([]);
+              return;
+            }
+
+            if (assets) {
+              const uniqueCategories = [...new Set(assets.map((a: any) => a.category).filter(Boolean))] as string[];
+              setAvailableCategories(uniqueCategories);
+            } else {
+              setAvailableCategories([]);
+            }
+          } else {
+            setAvailableCategories([]);
+          }
+        } catch (err) {
+          console.error("Error in fetchCategories:", err);
+          setAvailableCategories([]);
+        } finally {
+          setIsAssetsLoading(false);
+        }
+      } else {
+        // For admin/supervisor/technician, show all categories
+        setAvailableCategories(['Solar', 'Networking', 'Electrical', 'CCTV', 'Other']);
+      }
+    };
+
+    fetchCategories();
+  }, [user?.id, isCustomer]);
+
+  // Ensure current fieldOfWork value is always part of availableCategories so the Select component can render it correctly
+  const displayCategories = useMemo(() => {
+    if (form.fieldOfWork && !availableCategories.includes(form.fieldOfWork)) {
+      return [...availableCategories, form.fieldOfWork];
+    }
+    return availableCategories;
+  }, [availableCategories, form.fieldOfWork]);
 
   useEffect(() => {
     // Note: Geolocation APIs are restricted to Secure Contexts (HTTPS or localhost).
@@ -246,13 +330,18 @@ const ComplaintEdit = () => {
         customerName: existingComplaint.customer_name || "",
         customerPhone: existingComplaint.customer_phone || "",
         location: existingComplaint.location || "",
-        fieldOfWork: existingComplaint.field_of_work || "",
+        fieldOfWork: existingComplaint.field_of_work ? (
+          ['Solar', 'Networking', 'Electrical', 'CCTV', 'Other'].find(
+            c => c.toLowerCase() === existingComplaint.field_of_work.toLowerCase()
+          ) || existingComplaint.field_of_work
+        ) : "",
         status: existingComplaint.status || "unassigned",
         severity: existingComplaint.severity as SeverityTier || "minor",
         assignedSupervisor: existingComplaint.assigned_supervisor || "",
         assignedTechnician: existingComplaint.assigned_technician || "",
         description: existingComplaint.description || "",
         resolution: existingComplaint.resolution || "",
+        targetEndTime: formatDateTimeLocal(existingComplaint.target_end_time),
         customerLat: existingComplaint.customer_lat || null,
         customerLng: existingComplaint.customer_lng || null,
       });
@@ -521,13 +610,25 @@ const ComplaintEdit = () => {
     setIsSaving(true);
     try {
       if (isNew) {
-        let status = "unassigned";
+        let status = form.status || "unassigned";
         let phase = 1;
-        if (form.assignedSupervisor && !isCustomer) {
+        if (status === "unassigned") {
+          phase = 1;
+        } else if (status === "assigned") {
+          phase = 2;
+        } else if (status === "dispatched") {
+          phase = 3;
+        } else if (["in-progress", "in_progress"].includes(status)) {
+          phase = 4;
+        } else if (status === "completed" || status === "closed") {
+          phase = 6;
+        }
+
+        if (form.assignedSupervisor && !isCustomer && status === "unassigned") {
           status = "assigned";
           phase = 2;
         }
-        if (form.assignedTechnician && !isCustomer) {
+        if (form.assignedTechnician && !isCustomer && (status === "unassigned" || status === "assigned")) {
           status = "dispatched";
           phase = 3;
         }
@@ -550,6 +651,7 @@ const ComplaintEdit = () => {
           complaint_images: evidenceUrls.length > 0 ? evidenceUrls : null, // ✅ CORRECT
           customer_lat: form.customerLat,
           customer_lng: form.customerLng,
+          target_end_time: form.targetEndTime ? new Date(form.targetEndTime).toISOString() : null,
         } as any);
         if (import.meta.env.DEV) {
         console.log("✅ Complaint created ID:", newComplaint.id);
@@ -694,6 +796,7 @@ const ComplaintEdit = () => {
           current_phase: nextPhase,
           customer_lat: form.customerLat,
           customer_lng: form.customerLng,
+          target_end_time: form.targetEndTime ? new Date(form.targetEndTime).toISOString() : null,
         } as any);
 
         if (supervisorChanged) {
@@ -807,8 +910,9 @@ const ComplaintEdit = () => {
               onChange={(e) => setForm({ ...form, title: e.target.value })} 
               placeholder="Brief description of the problem..." 
               required 
-              disabled={isSaving || (!isNew && isRole("supervisor"))} 
+              disabled={isSaving || !isNew} 
               maxLength={250} 
+              className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
             />
           </div>
 
@@ -816,11 +920,18 @@ const ComplaintEdit = () => {
             <>
               <div className="space-y-2">
                 <label className="text-sm font-medium">Your Name</label>
-                <Input value={form.customerName} disabled className="bg-muted" />
+                <Input value={form.customerName} disabled className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100" />
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">Contact Phone <span className="text-destructive">*</span></label>
-                <Input value={form.customerPhone} onChange={(e) => setForm({ ...form, customerPhone: e.target.value })} placeholder="+91 9876543210" required disabled={isSaving || (!isNew && isRole("supervisor"))} />
+                <Input 
+                  value={form.customerPhone} 
+                  onChange={(e) => setForm({ ...form, customerPhone: e.target.value })} 
+                  placeholder="+91 9876543210" 
+                  required 
+                  disabled={isSaving || !isNew} 
+                  className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
+                />
               </div>
             </>
           ) : (
@@ -839,8 +950,8 @@ const ComplaintEdit = () => {
                     <Select value={form.customerId} onValueChange={(v) => {
                       const selectedCustomer = customers?.find((c: any) => c.id === v);
                       setForm({ ...form, customerId: v, customerName: selectedCustomer?.full_name || "", customerPhone: selectedCustomer?.phone || "" });
-                    }} disabled={isSaving || !customers || (!isNew && isRole("supervisor"))}>
-                      <SelectTrigger className="h-10">
+                    }} disabled={isSaving || !customers || !isNew}>
+                      <SelectTrigger className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100">
                         <SelectValue placeholder="Select Customer">
                           {form.customerName ? <span className="truncate font-medium">{form.customerName}</span> : undefined}
                         </SelectValue>
@@ -855,7 +966,13 @@ const ComplaintEdit = () => {
                   </div>
                   <div className="space-y-2">
                     <label className="text-sm font-medium">Phone</label>
-                    <Input value={form.customerPhone} onChange={(e) => setForm({ ...form, customerPhone: e.target.value })} placeholder="+91 ..." disabled={isSaving || (!isNew && isRole("supervisor"))} />
+                    <Input 
+                      value={form.customerPhone} 
+                      onChange={(e) => setForm({ ...form, customerPhone: e.target.value })} 
+                      placeholder="+91 ..." 
+                      disabled={isSaving || !isNew} 
+                      className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
+                    />
                   </div>
                 </>
               )}
@@ -872,7 +989,7 @@ const ComplaintEdit = () => {
                     type="button" 
                     variant="outline" 
                     onClick={handleGetCurrentLocation}
-                    disabled={isLocating || isSaving}
+                    disabled={isLocating || isSaving || !isNew}
                     className="w-full flex items-center justify-center gap-2 py-2 border-dashed border-primary/40 hover:border-primary/80 hover:bg-primary/5 transition-all h-11 sm:h-9"
                   >
                     {isLocating ? (
@@ -912,8 +1029,8 @@ const ComplaintEdit = () => {
                   }}
                   placeholder={isCustomer ? "Or enter address manually" : "Enter complete address"} 
                   required 
-                  disabled={isSaving || (!isNew && isRole("supervisor"))} 
-                  className="w-full h-11 sm:h-9" 
+                  disabled={isSaving || !isNew} 
+                  className="w-full h-11 sm:h-9 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100" 
                 />
                 
                 {showLocationSuggestions && filteredSuggestions.length > 0 && (
@@ -927,7 +1044,7 @@ const ComplaintEdit = () => {
                           setShowLocationSuggestions(false);
                         }}
                         className="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-accent hover:text-accent-foreground transition-colors truncate"
-                        disabled={!isNew && isRole("supervisor")}
+                        disabled={!isNew}
                       >
                         {suggestion}
                       </button>
@@ -950,21 +1067,41 @@ const ComplaintEdit = () => {
 
           <div className="space-y-2">
             <label className="text-sm font-medium">Field of Work <span className="text-destructive">*</span></label>
-            <Select value={form.fieldOfWork} onValueChange={(v) => setForm({ ...form, fieldOfWork: v })} disabled={isSaving || (!isNew && isRole("supervisor"))}>
-              <SelectTrigger><SelectValue placeholder="Select field" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="Solar PV">Solar PV</SelectItem>
-                <SelectItem value="Networking">Networking</SelectItem>
-                <SelectItem value="Security Systems">Security Systems</SelectItem>
-                <SelectItem value="Power Systems">Power Systems</SelectItem>
-              </SelectContent>
-            </Select>
+            {isCustomer && (
+              <p className="text-xs text-muted-foreground mb-1">
+                Select the category of your installed product
+              </p>
+            )}
+            {isCustomer && !isAssetsLoading && availableCategories.length === 0 ? (
+              <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-xs text-amber-500 flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>You have no registered products. Please contact support to register your products before raising a complaint.</span>
+              </div>
+            ) : (
+              <Select 
+                key={form.fieldOfWork || 'empty'}
+                value={form.fieldOfWork} 
+                onValueChange={(v) => setForm({ ...form, fieldOfWork: v })} 
+                disabled={isSaving || isAssetsLoading || (isCustomer && availableCategories.length === 0) || !isNew}
+              >
+                <SelectTrigger className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100">
+                  <SelectValue placeholder={isAssetsLoading ? "Loading your products..." : "Select field"} />
+                </SelectTrigger>
+                <SelectContent>
+                  {displayCategories.map((cat) => (
+                    <SelectItem key={cat} value={cat}>{cat}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
           </div>
 
           <div className="space-y-2">
             <label className="text-sm font-medium">Severity Level <span className="text-destructive">*</span></label>
-            <Select value={form.severity} onValueChange={(v) => setForm({ ...form, severity: v as SeverityTier })} disabled={isSaving || (!isNew && isRole("supervisor"))}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
+            <Select value={form.severity} onValueChange={(v) => setForm({ ...form, severity: v as SeverityTier })} disabled={isSaving || !isNew}>
+              <SelectTrigger className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100">
+                <SelectValue />
+              </SelectTrigger>
               <SelectContent>
                 <SelectItem value="minor">Minor - Low priority</SelectItem>
                 <SelectItem value="moderate">Moderate - Needs attention</SelectItem>
@@ -973,24 +1110,20 @@ const ComplaintEdit = () => {
             </Select>
           </div>
 
-          {isAdminOrSupervisor && !isNew && (
+          {isAdminOrSupervisor && (
             <div className="space-y-2">
-              <label className="text-sm font-medium">Status</label>
-              <Select value={form.status} onValueChange={(v) => setForm({ ...form, status: v })} disabled={isSaving || (!isNew && isRole("supervisor"))}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="unassigned">Unassigned</SelectItem>
-                  <SelectItem value="assigned">Assigned</SelectItem>
-                  <SelectItem value="dispatched">Dispatched</SelectItem>
-                  <SelectItem value="in-progress">In Progress</SelectItem>
-                  <SelectItem value="completed">Completed</SelectItem>
-                  <SelectItem value="closed">Closed</SelectItem>
-                </SelectContent>
-              </Select>
+              <label className="text-sm font-medium">Target Time / SLA</label>
+              <Input 
+                type="datetime-local" 
+                value={form.targetEndTime} 
+                onChange={(e) => setForm({ ...form, targetEndTime: e.target.value })} 
+                disabled={isSaving}
+                className="h-10"
+              />
             </div>
           )}
 
-          {((isAdminOrSupervisor && !isNew) || (isAdmin && isNew)) && (
+          {isAdminOrSupervisor && (
             <div className="space-y-2">
               <label className="text-sm font-medium flex items-center gap-2">
                 <User className="w-3.5 h-3.5 text-primary" />
@@ -1068,7 +1201,24 @@ const ComplaintEdit = () => {
             </div>
           )}
 
-          {isRole("supervisor") && !isNew && (
+          {isAdminOrSupervisor && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Status</label>
+              <Select value={form.status} onValueChange={(v) => setForm({ ...form, status: v })} disabled={isSaving}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="unassigned">Unassigned</SelectItem>
+                  <SelectItem value="assigned">Assigned</SelectItem>
+                  <SelectItem value="dispatched">Dispatched</SelectItem>
+                  <SelectItem value="in-progress">In Progress</SelectItem>
+                  <SelectItem value="completed">Completed</SelectItem>
+                  <SelectItem value="closed">Closed</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
+          {isRole("supervisor") && (
             <div className="md:col-span-2 space-y-2">
               <label className="text-sm font-medium flex items-center gap-2">
                 <Filter className="w-3.5 h-3.5 text-primary" />
@@ -1090,7 +1240,7 @@ const ComplaintEdit = () => {
                     }
                   }
                 }} 
-                disabled={isSaving || !technicians}
+                disabled={isSaving || !technicians || !isRole("supervisor")}
               >
                 <SelectTrigger className="h-10">
                   <SelectValue placeholder="Assign technician">
@@ -1143,7 +1293,15 @@ const ComplaintEdit = () => {
 
           <div className="md:col-span-2 space-y-2">
             <label className="text-sm font-medium">Problem Description <span className="text-destructive">*</span></label>
-            <Textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} rows={4} placeholder={isCustomer ? "Describe the issue in detail. What happened? When did it start?" : "Describe the issue..."} required disabled={isSaving || (!isNew && isRole("supervisor"))} />
+            <Textarea 
+              value={form.description} 
+              onChange={(e) => setForm({ ...form, description: e.target.value })} 
+              rows={4} 
+              placeholder={isCustomer ? "Describe the issue in detail. What happened? When did it start?" : "Describe the issue..."} 
+              required 
+              disabled={isSaving || !isNew} 
+              className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100" 
+            />
           </div>
 
           {isAdminOrSupervisor && !isNew && (

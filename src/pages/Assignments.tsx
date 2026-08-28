@@ -80,8 +80,8 @@ const Assignments = () => {
   );
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+    <div className="space-y-8 relative">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-border/40 pb-6 relative z-10 pr-12 md:pr-16">
         <div>
           <h1 className="text-2xl font-display font-bold">Assignments</h1>
           <p className="text-muted-foreground">Team dispatch and workload overview</p>
