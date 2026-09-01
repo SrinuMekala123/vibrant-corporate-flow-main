@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import AssetImportModal from "@/components/AssetImportModal";
 import {
   Loader2,
   Search,
@@ -370,7 +371,13 @@ export default function Assets() {
 
         {canModify && (
           <div className="flex items-center gap-3">
-            {/* Add Button SECOND (Primary style) */}
+            <Button
+              variant="outline"
+              onClick={() => setIsAssetImportOpen(true)}
+              className="flex items-center gap-2 border-slate-300 text-slate-700 hover:bg-slate-50"
+            >
+              <Upload className="w-4 h-4" /> Import Assets
+            </Button>
             <Button
               onClick={() => handleOpenModal(null, 'add')}
               className="flex items-center gap-2 bg-gradient-to-r from-blue-600 to-teal-500 hover:from-blue-700 hover:to-teal-600 text-white"
@@ -1044,6 +1051,12 @@ export default function Assets() {
           </div>
         )}
       </AnimatePresence>
+
+      <AssetImportModal
+        open={isAssetImportOpen}
+        onOpenChange={setIsAssetImportOpen}
+        onImportSuccess={refetch}
+      />
     </div>
   );
 }

@@ -1,0 +1,5 @@
+asset_name,asset_type,serial_number,model_number,manufacturer,purchase_date,warranty_months,status,customer_email,location,installation_date,notes
+Solar Panel 400W Monocrystalline,Solar PV,SN-PV400-9981,SP-400-MONO,SunPower,2024-01-15,24,Active,john@example.com,Main Branch,2024-01-20,Rooftop array installation unit #1
+Hikvision 4K IP Dome Camera,CCTV & Security,SN-HK4K-5521,DS-2CD2143G2-I,Hikvision,2024-03-10,12,Active,sarah@example.com,Downtown HQ,2024-03-12,Entrance lobby surveillance camera
+APC Smart-UPS 3000VA,Power Systems,SN-APC3K-7712,SMT3000RMI2U,Schneider Electric,2023-11-05,36,Active,techcorp@example.com,Server Room,2023-11-06,Rack-mounted 2U battery backup
+Cisco Catalyst 2960X Switch,Networking,SN-CS2960-4411,WS-C2960X-24TS-L,Cisco Systems,2024-02-01,12,Maintenance,info@citygovt.gov,North Branch,2024-02-02,Core switch layer 2

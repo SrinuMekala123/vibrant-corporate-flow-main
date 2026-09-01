@@ -76,13 +76,8 @@ export default function CustomerImportModal({ open, onOpenChange }: CustomerImpo
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg bg-white rounded-lg shadow-lg">
-        <DialogHeader className="flex items-center justify-between">
+        <DialogHeader>
           <DialogTitle>Import Customers</DialogTitle>
-          <DialogClose asChild>
-            <Button variant="ghost" size="icon">
-              <X className="h-4 w-4" />
-            </Button>
-          </DialogClose>
         </DialogHeader>
         <DialogDescription className="mt-2">
           <Button variant="link" asChild>

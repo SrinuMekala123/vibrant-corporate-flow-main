@@ -1,0 +1,5 @@
+full_name,phone,email,customer_type,branch_id,address
+John Doe,9876543210,john@example.com,Retail,Main Branch,123 Main St Cityville
+Sarah Smith,9876543211,sarah@example.com,Corporate,Downtown HQ,456 Market St Tech Town
+Tech Corp,9876543212,techcorp@example.com,Corporate,Server Room,789 Tech Park Suite 100
+City Govt Office,9876543213,info@citygovt.gov,Government,North Branch,1 Civic Center Plaza
