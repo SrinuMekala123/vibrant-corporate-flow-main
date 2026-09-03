@@ -476,32 +476,22 @@
 
 // public/sw.js - UPDATED VERSION
 
-const CACHE_NAME = 'brihaspathi-v5';
-const OFFLINE_URL = '/';
+const CACHE_NAME = 'brihaspathi-v11';
 
-// Files to cache immediately
 const PRECACHE_URLS = [
-    '/',
     '/index.html',
     '/manifest.json',
-    '/src/main.tsx',
-    '/src/App.tsx',
 ];
 
-// Install event
 self.addEventListener('install', (event) => {
     console.log('✅ Service Worker installing...');
     event.waitUntil(
         caches.open(CACHE_NAME)
-            .then((cache) => {
-                console.log('📦 Caching static assets');
-                return cache.addAll(PRECACHE_URLS);
-            })
+            .then((cache) => cache.addAll(PRECACHE_URLS))
             .then(() => self.skipWaiting())
     );
 });
 
-// Activate event
 self.addEventListener('activate', (event) => {
     console.log('✅ Service Worker activating...');
     event.waitUntil(
@@ -509,7 +499,7 @@ self.addEventListener('activate', (event) => {
             return Promise.all(
                 cacheNames.map((cacheName) => {
                     if (cacheName !== CACHE_NAME) {
-                        console.log('🗑️ Deleting old cache:', cacheName);
+                        console.log('️ Deleting old cache:', cacheName);
                         return caches.delete(cacheName);
                     }
                 })
@@ -518,52 +508,58 @@ self.addEventListener('activate', (event) => {
     );
 });
 
-// Fetch event - DON'T INTERCEPT SUPABASE REQUESTS
 self.addEventListener('fetch', (event) => {
+    // Ignore non-HTTP requests (fixes chrome-extension errors)
+    if (!event.request.url.startsWith('http://') && !event.request.url.startsWith('https://')) {
+        return;
+    }
+
     const url = new URL(event.request.url);
 
-    // IMPORTANT: Skip all Supabase requests - let them go directly
-    if (url.hostname.includes('supabase.co')) {
-        return;
+    // Skip Supabase/API requests
+    if (url.hostname.includes('supabase.co') || (url.hostname.includes('brihaspathi.in') && url.pathname.includes('/auth/'))) {
+        return; 
     }
 
-    // Skip non-GET requests
-    if (event.request.method !== 'GET') {
-        return;
-    }
+    if (event.request.method !== 'GET') return;
 
-    // For HTML pages (SPA shell routing)
-    const isNavigation = event.request.mode === 'navigate' || 
-                         url.pathname === '/' || 
-                         !url.pathname.includes('.');
+    // 🚨 CRITICAL: NEVER cache HTML navigation requests. Always go to network.
+    const isNavigation = event.request.mode === 'navigate' || url.pathname === '/' || !url.pathname.includes('.');
 
     if (isNavigation) {
         event.respondWith(
-            caches.match(OFFLINE_URL).then((cachedResponse) => {
-                // Prefer cached offline shell first for instant load and route takeover
-                return cachedResponse || fetch(event.request);
+            fetch(event.request).then((response) => {
+                // Return network response directly, DO NOT put it in cache
+                return response;
             }).catch(() => {
-                return fetch(event.request);
+                // Only use cache as a last resort if completely offline
+                return caches.match('/index.html');
             })
         );
         return;
     }
 
-    // For static assets
+    // Cache-first ONLY for static assets (JS, CSS, images, fonts)
     event.respondWith(
         caches.match(event.request).then((cachedResponse) => {
             if (cachedResponse) {
                 return cachedResponse;
             }
             return fetch(event.request).then((networkResponse) => {
-                return caches.open(CACHE_NAME).then((cache) => {
-                    cache.put(event.request, networkResponse.clone());
-                    return networkResponse;
-                });
-            }).catch((err) => {
-                console.warn("SW static asset fetch failed:", err);
-                return new Response("Network error", { status: 408, headers: { 'Content-Type': 'text/plain' } });
-            });
+                if (networkResponse.ok) {
+                    const responseClone = networkResponse.clone();
+                    caches.open('brihaspathi-v11').then((cache) => {
+                        cache.put(event.request, responseClone);
+                    });
+                }
+                return networkResponse;
+            }).catch(() => new Response("Offline", { status: 503 }));
         })
     );
+});
+
+self.addEventListener('message', (event) => {
+    if (event.data && event.data.type === 'SKIP_WAITING') {
+        self.skipWaiting();
+    }
 });

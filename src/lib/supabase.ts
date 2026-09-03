@@ -1,44 +1,58 @@
-// import { createClient } from '@supabase/supabase-js'
+// import { createClient } from '@supabase/supabase-js';
 
-// // Debug: Log environment variables on load (only in development)
+// let supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+
+// // Dynamically handle local network testing (mobile device access via LAN IP)
+// if (supabaseUrl && (supabaseUrl.includes('127.0.0.1') || supabaseUrl.includes('localhost'))) {
+//   const hostname = window.location.hostname;
+//   if (hostname && hostname !== 'localhost' && hostname !== '127.0.0.1') {
+//     supabaseUrl = supabaseUrl.replace('127.0.0.1', hostname).replace('localhost', hostname);
+//   }
+// }
+
 // if (import.meta.env.DEV) {
-//     console.log('🔍 Supabase URL:', import.meta.env.VITE_SUPABASE_URL)
-//     console.log('🔑 Supabase Anon Key loaded:', !!import.meta.env.VITE_SUPABASE_ANON_KEY)
+//   console.log('🔍 Resolved Supabase URL:', supabaseUrl);
 // }
 
-// const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
-// const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
-
-// if (!supabaseUrl || !supabaseAnonKey) {
-//     console.error('❌ Missing Supabase credentials!')
-//     console.error('Check your .env file has:')
-//     console.error('VITE_SUPABASE_URL=your_project_url')
-//     console.error('VITE_SUPABASE_ANON_KEY=your_anon_key')
-// }
+// const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 // export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
 //     auth: {
-//         autoRefreshToken: true,
 //         persistSession: true,
+//         autoRefreshToken: true,
 //         detectSessionInUrl: true,
+//         storage: localStorage,
+//         flowType: 'pkce', // Add this
 //     },
 //     global: {
-//         // Add retry logic for network issues
-//         fetch: (url, options) => {
-//             return fetch(url, {
-//                 ...options,
-//                 // Add timeout to prevent hanging requests
-//                 signal: AbortSignal.timeout(10000),
-//             })
+//         headers: {
+//             'X-Client-Info': 'supabase-js-web',
 //         },
 //     },
-// })
+//     // Don't send credentials with requests
+//     realtime: {
+//         params: {
+//             eventsPerSecond: 10,
+//         },
+//     },
+// });
+
+// export const resolveSupabaseUrl = (url: string | null | undefined): string => {
+//   if (!url) return "";
+//   if (url.includes('127.0.0.1') || url.includes('localhost')) {
+//     const hostname = window.location.hostname;
+//     if (hostname && hostname !== 'localhost' && hostname !== '127.0.0.1') {
+//       return url.replace('127.0.0.1', hostname).replace('localhost', hostname);
+//     }
+//   }
+//   return url;
+// };
 
 import { createClient } from '@supabase/supabase-js';
 
 let supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 
-// Dynamically handle local network testing (mobile device access via LAN IP)
+// Handle localhost/LAN IP dynamically
 if (supabaseUrl && (supabaseUrl.includes('127.0.0.1') || supabaseUrl.includes('localhost'))) {
   const hostname = window.location.hostname;
   if (hostname && hostname !== 'localhost' && hostname !== '127.0.0.1') {
@@ -57,15 +71,16 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
         persistSession: true,
         autoRefreshToken: true,
         detectSessionInUrl: true,
-        storage: localStorage,
-        flowType: 'pkce', // Add this
+        storage: localStorage, // Bypasses cookie blocking
+        storageKey: 'brihaspathi-auth-token',
+        flowType: 'pkce', // More secure, works better with HTTPS
     },
     global: {
         headers: {
-            'X-Client-Info': 'supabase-js-web',
+            'X-Client-Info': 'brihaspathi-fsm',
         },
+        // REMOVED the custom fetch override that was causing the CORS preflight failure
     },
-    // Don't send credentials with requests
     realtime: {
         params: {
             eventsPerSecond: 10,
