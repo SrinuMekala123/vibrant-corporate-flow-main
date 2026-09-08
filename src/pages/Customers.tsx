@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { useQuery } from "@tanstack/react-query";
@@ -6,6 +6,14 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Pagination,
+  PaginationContent,
+  PaginationItem,
+  PaginationLink,
+  PaginationNext,
+  PaginationPrevious,
+} from "@/components/ui/pagination";
 import CustomerImportModal from "@/components/CustomerImportModal";
 import { 
   Loader2, 
@@ -23,15 +31,20 @@ import {
   Building,
   ShieldCheck,
   UserCheck,
-  Lock
+  Lock,
+  Download
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import { downloadCSV, generateSampleCSV } from "@/utils/csvHelpers";
+import ExportButton from "@/components/ExportButton";
 
 export default function Customers() {
-  const { user } = useAuth();
+  const { user, session } = useAuth();
   const [searchQuery, setSearchQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
   const [loading, setLoading] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const ITEMS_PER_PAGE = 10;
 
   // Modal / Side-panel states
   const [selectedCustomer, setSelectedCustomer] = useState<any | null>(null);
@@ -59,6 +72,11 @@ export default function Customers() {
   const isSupervisor = user?.role === "supervisor";
   const canModify = isAdmin || isSupervisor;
   const isViewOnly = !canModify;
+
+  const downloadSample = () => {
+    const csv = generateSampleCSV("customer");
+    downloadCSV(csv, "customer_sample.csv");
+  };
 
   // React Query: Fetch Branches
   const { data: branches } = useQuery({
@@ -284,20 +302,32 @@ export default function Customers() {
     }
   };
 
-  const handleDelete = async (id: string, name: string) => {
+  const handleDelete = async (id: string, userId: string, name: string) => {
     if (!isAdmin) {
       toast.error("Only administrators can delete customer profiles.");
       return;
     }
 
-    if (!confirm(`Are you sure you want to delete customer "${name}"? This action cannot be undone.`)) {
+    if (!confirm(`Are you sure you want to delete customer "${name}"? This will permanently remove the customer record and auth account.`)) {
       return;
     }
 
     try {
-      const { error } = await supabase.from('customers').delete().eq('id', id);
-      if (error) throw error;
-      toast.success("Customer record deleted successfully.");
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/delete-user`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session?.access_token}`,
+        },
+        body: JSON.stringify({ userId, tableName: 'customers' }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to delete customer');
+      }
+
+      toast.success("Customer and auth account deleted successfully.");
       refetch();
     } catch (e: any) {
       toast.error(e.message || "Failed to delete customer.");
@@ -316,6 +346,13 @@ export default function Customers() {
     return matchesSearch && matchesType;
   }) || [];
 
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, typeFilter]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredCustomers.length / ITEMS_PER_PAGE));
+  const paginatedCustomers = filteredCustomers.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
+
   return (
     <div className="space-y-8 relative">
       {/* Header section */}
@@ -330,22 +367,37 @@ export default function Customers() {
         </div>
 
         {canModify && (
-          <div className="flex gap-2">
+          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 justify-end overflow-x-auto max-w-full">
+            <ExportButton variant="customer" />
+            <button
+              onClick={downloadSample}
+              className="px-3 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 flex items-center gap-1.5 whitespace-nowrap"
+            >
+              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              <span className="hidden sm:inline">Sample CSV</span>
+              <span className="sm:hidden">Sample</span>
+            </button>
             <button
               onClick={() => setIsCustomerImportOpen(true)}
-              className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+              className="px-3 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 flex items-center gap-1.5 whitespace-nowrap"
             >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                   d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
               </svg>
-              Import
+              <span className="hidden sm:inline">Import</span>
+              <span className="sm:hidden">Import</span>
             </button>
             <Button 
               onClick={() => handleOpenModal(null, "add")}
-              className="gradient-primary text-primary-foreground shadow-glow shrink-0 rounded-xl"
+              className="gradient-primary text-primary-foreground shadow-glow shrink-0 rounded-xl whitespace-nowrap"
             >
-              <Plus className="w-4 h-4 mr-2" /> Add Customer
+              <Plus className="w-4 h-4 mr-1.5" /> 
+              <span className="hidden sm:inline">Add Customer</span>
+              <span className="sm:hidden">Add</span>
             </Button>
           </div>
         )}
@@ -392,7 +444,7 @@ export default function Customers() {
           <Loader2 className="w-8 h-8 animate-spin text-primary mb-3" />
           <span className="text-sm font-medium">Loading customers directory...</span>
         </div>
-      ) : filteredCustomers.length === 0 ? (
+      ) : paginatedCustomers.length === 0 ? (
         <div className="text-center py-16 text-muted-foreground text-sm border-2 border-dashed rounded-xl bg-slate-50/50 border-slate-200/80">
           {user?.role === 'technician' && (!customers || customers.length === 0) ? (
             <>
@@ -423,7 +475,7 @@ export default function Customers() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-slate-700">
-                {filteredCustomers.map((c: any) => (
+                {paginatedCustomers.map((c: any) => (
                   <tr 
                     key={c.id} 
                     className="hover:bg-slate-50/80 transition-colors cursor-pointer"
@@ -482,7 +534,7 @@ export default function Customers() {
                           <Button 
                             variant="ghost" 
                             size="sm" 
-                            onClick={() => handleDelete(c.id, c.full_name)}
+                            onClick={() => handleDelete(c.id, c.user_id, c.full_name)}
                             className="text-muted-foreground hover:text-destructive hover:bg-destructive/5 rounded-lg h-8 w-8 p-0"
                             title="Delete customer"
                           >
@@ -499,7 +551,7 @@ export default function Customers() {
 
           {/* Mobile Card List View */}
           <div className="grid grid-cols-1 gap-4 md:hidden">
-            {filteredCustomers.map((c: any) => (
+            {paginatedCustomers.map((c: any) => (
               <div 
                 key={c.id} 
                 className="bg-white border border-slate-200 p-4 rounded-xl shadow-sm hover:border-slate-300 transition-all flex flex-col gap-3.5 cursor-pointer"
@@ -568,6 +620,49 @@ export default function Customers() {
             ))}
           </div>
         </>
+      )}
+
+      {filteredCustomers.length > ITEMS_PER_PAGE && (
+        <div className="flex items-center justify-center pt-2">
+          <Pagination>
+            <PaginationContent>
+              <PaginationItem>
+                <PaginationPrevious
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setCurrentPage((p) => Math.max(1, p - 1));
+                  }}
+                  className={currentPage === 1 ? "pointer-events-none opacity-50" : undefined}
+                />
+              </PaginationItem>
+              {Array.from({ length: totalPages }).map((_, idx) => (
+                <PaginationItem key={idx}>
+                  <PaginationLink
+                    href="#"
+                    isActive={currentPage === idx + 1}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      setCurrentPage(idx + 1);
+                    }}
+                  >
+                    {idx + 1}
+                  </PaginationLink>
+                </PaginationItem>
+              ))}
+              <PaginationItem>
+                <PaginationNext
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setCurrentPage((p) => Math.min(totalPages, p + 1));
+                  }}
+                  className={currentPage === totalPages ? "pointer-events-none opacity-50" : undefined}
+                />
+              </PaginationItem>
+            </PaginationContent>
+          </Pagination>
+        </div>
       )}
 
       {/* View & Add/Edit Overlay Modal */}

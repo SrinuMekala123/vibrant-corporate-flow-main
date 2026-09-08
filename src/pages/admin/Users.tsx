@@ -6,11 +6,20 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 import { useQuery } from "@tanstack/react-query";
-import { Loader2, UserPlus, Mail, Phone, Shield, Wrench, Search, ShieldAlert, Trash2, Eye, EyeOff, Edit, X } from "lucide-react";
+import { Loader2, UserPlus, Mail, Phone, Shield, Wrench, Search, ShieldAlert, Trash2, Eye, EyeOff, Edit, X, Download, Upload } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import StaffImportModal from "@/components/StaffImportModal";
+import { downloadCSV, generateSampleCSV } from "@/utils/csvHelpers";
+import ExportButton from "@/components/ExportButton";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 export default function UsersPage() {
-  const { user, signUp } = useAuth();
+  const { user, session, signUp } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [fullName, setFullName] = useState("");
@@ -34,6 +43,11 @@ export default function UsersPage() {
   const [editConfirmPassword, setEditConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [showEditPassword, setShowEditPassword] = useState(false);
+  const [isStaffImportOpen, setIsStaffImportOpen] = useState(false);
+  const [branchId, setBranchId] = useState("");
+  const [editBranchId, setEditBranchId] = useState("");
+  const [customerType, setCustomerType] = useState("Retail");
+  const [editCustomerType, setEditCustomerType] = useState("Retail");
 
   const isNameValid = (name: string) => {
     if (!name) return true;
@@ -83,6 +97,19 @@ export default function UsersPage() {
     }
   });
 
+  // Fetch branches
+  const { data: branches } = useQuery({
+    queryKey: ['branches-list'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('branches')
+        .select('*')
+        .order('branch_name', { ascending: true });
+      if (error) throw error;
+      return data || [];
+    }
+  });
+
   const handleExpertiseChange = (field: string) => {
     setSelectedExpertise((prev) =>
       prev.includes(field)
@@ -99,6 +126,11 @@ export default function UsersPage() {
     );
   };
 
+  const downloadSample = (type: "technician" | "supervisor") => {
+    const csv = generateSampleCSV(type);
+    downloadCSV(csv, `${type}_sample.csv`);
+  };
+
   const handleOpenModal = (profile: any, mode: "view" | "edit" = "view") => {
     setSelectedUser(profile);
     setModalMode(mode);
@@ -111,6 +143,8 @@ export default function UsersPage() {
     setEditConfirmPassword("");
     setShowPassword(false);
     setShowEditPassword(false);
+    setEditBranchId(profile.branch_id || "");
+    setEditCustomerType(profile.customer_type || "Retail");
   };
 
   const handleCreateUser = async (e: React.FormEvent) => {
@@ -201,16 +235,33 @@ export default function UsersPage() {
 
       if (signUpError) throw signUpError;
 
-      // If role is 'customer', also create a customer record in the customers table
-      if (role === "customer") {
-        // Fetch the newly created profile to get the user ID
-        const { data: newProfile } = await supabase
-          .from("profiles")
-          .select("id")
-          .eq("email", trimmedEmail)
-          .maybeSingle();
+      // Fetch the newly created profile to get the user ID
+      const { data: newProfile } = await supabase
+        .from("profiles")
+        .select("id")
+        .eq("email", trimmedEmail)
+        .maybeSingle();
 
-        if (newProfile?.id) {
+      if (newProfile?.id) {
+        const profileUpdates: any = {
+          branch_id: branchId || null,
+        };
+
+        if (role === "customer") {
+          profileUpdates.customer_type = customerType;
+        }
+
+        const { error: profileUpdateError } = await supabase
+          .from("profiles")
+          .update(profileUpdates)
+          .eq("id", newProfile.id);
+
+        if (profileUpdateError) {
+          console.error("Profile update error:", profileUpdateError);
+        }
+
+        // If role is 'customer', also create a customer record in the customers table
+        if (role === "customer") {
           const { error: customerError } = await supabase
             .from("customers")
             .insert([{
@@ -218,12 +269,12 @@ export default function UsersPage() {
               full_name: trimmedName,
               phone: cleanPhone || null,
               email: trimmedEmail,
-              customer_type: "Retail",
+              customer_type: customerType,
+              branch_id: branchId || null,
             }]);
 
           if (customerError) {
             console.error("Auto-create customer record error:", customerError);
-            // Don't block — user was created successfully, just log the warning
             toast.warning("User created but customer record could not be auto-created. Please add manually in Customers page.");
           }
         }
@@ -238,6 +289,8 @@ export default function UsersPage() {
       setPhone("");
       setRole("");
       setSelectedExpertise([]);
+      setBranchId("");
+      setCustomerType("Retail");
       
       // Refresh user list
       refetch();
@@ -340,6 +393,8 @@ export default function UsersPage() {
           phone: cleanPhone || null,
           role: editRole,
           expertise: expertiseString,
+          branch_id: editBranchId || null,
+          customer_type: editRole === "customer" ? editCustomerType : null,
           avatar_url: trimmedName.charAt(0).toUpperCase()
         })
         .eq('id', selectedUser.id);
@@ -359,16 +414,28 @@ export default function UsersPage() {
 
 
   const handleDeleteProfileOnly = async (profileId: string, profileName: string) => {
-    if (!confirm(`Are you sure you want to delete profile for ${profileName}? Note: This only deletes their profile record, not their Auth account.`)) {
+    if (!confirm(`Are you sure you want to delete profile for ${profileName}? This will permanently remove the account and auth user.`)) {
       return;
     }
     try {
-      const { error } = await supabase.from('profiles').delete().eq('id', profileId);
-      if (error) throw error;
-      toast.success("Profile deleted successfully");
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/delete-user`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session?.access_token}`,
+        },
+        body: JSON.stringify({ userId: profileId, tableName: 'profiles' }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to delete user');
+      }
+
+      toast.success("User and auth account deleted successfully");
       refetch();
     } catch (e: any) {
-      toast.error(e.message || "Failed to delete profile");
+      toast.error(e.message || "Failed to delete user");
     }
   };
 
@@ -385,9 +452,44 @@ export default function UsersPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-display font-bold">User Management</h1>
-        <p className="text-muted-foreground font-light text-sm">Create and manage accounts for Customers, Supervisors, and Technicians.</p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="text-2xl font-display font-bold">User Management</h1>
+          <p className="text-muted-foreground font-light text-sm">Create and manage accounts for Customers, Supervisors, and Technicians.</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 overflow-x-auto max-w-full">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" className="flex items-center gap-1.5 whitespace-nowrap">
+                <Download className="w-4 h-4 shrink-0" />
+                <span className="hidden sm:inline">Sample CSV</span>
+                <span className="sm:hidden">Sample</span>
+                <span className="text-[10px]">▼</span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => downloadSample("technician")}>For Technicians</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => downloadSample("supervisor")}>For Supervisors</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" className="flex items-center gap-1.5 whitespace-nowrap">
+                <Upload className="w-4 h-4 shrink-0" />
+                <span className="hidden sm:inline">Import Staff</span>
+                <span className="sm:hidden">Import</span>
+                <span className="text-[10px]">▼</span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => { setRole('technician'); setIsStaffImportOpen(true); }}>Technician</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => { setRole('supervisor'); setIsStaffImportOpen(true); }}>Supervisor</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          <ExportButton variant="staff" />
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
@@ -501,6 +603,20 @@ export default function UsersPage() {
             </div>
 
             <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-slate-600 block">Branch Location</label>
+              <Select value={branchId} onValueChange={setBranchId} disabled={loading}>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Select branch" />
+                </SelectTrigger>
+                <SelectContent>
+                  {branches?.map((b: any) => (
+                    <SelectItem key={b.id} value={b.id}>{b.branch_name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1.5">
               <label className="text-xs font-semibold text-slate-600 block">System Role</label>
               <Select value={role} onValueChange={setRole} disabled={loading}>
                 <SelectTrigger className="w-full">
@@ -514,6 +630,23 @@ export default function UsersPage() {
                 </SelectContent>
               </Select>
             </div>
+
+            {role === "customer" && (
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-600 block">Customer Type</label>
+                <Select value={customerType} onValueChange={setCustomerType} disabled={loading}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Select type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Retail">Retail</SelectItem>
+                    <SelectItem value="Corporate">Corporate</SelectItem>
+                    <SelectItem value="Government">Government</SelectItem>
+                    <SelectItem value="Partner">Partner</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
 
             {(role === "supervisor" || role === "technician") && (
               <div className="space-y-2">
@@ -766,6 +899,18 @@ export default function UsersPage() {
                         <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Phone Contact</span>
                         <span className="text-xs font-semibold text-slate-700">{selectedUser.phone || "Not provided"}</span>
                       </div>
+                      <div>
+                        <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Branch</span>
+                        <span className="text-xs font-semibold text-slate-700">
+                          {selectedUser.branch_id ? (branches?.find((b: any) => b.id === selectedUser.branch_id)?.branch_name || selectedUser.branch_id) : "Not assigned"}
+                        </span>
+                      </div>
+                      {selectedUser.role === 'customer' && (
+                        <div>
+                          <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Customer Type</span>
+                          <span className="text-xs font-semibold text-slate-700">{selectedUser.customer_type || 'Retail'}</span>
+                        </div>
+                      )}
                     </div>
 
                     {(selectedUser.role === 'supervisor' || selectedUser.role === 'technician') && (
@@ -858,6 +1003,20 @@ export default function UsersPage() {
                   </div>
 
                   <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-slate-600 block">Branch Location</label>
+                    <Select value={editBranchId} onValueChange={setEditBranchId} disabled={savingEdit}>
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="Select branch" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {branches?.map((b: any) => (
+                          <SelectItem key={b.id} value={b.id}>{b.branch_name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="space-y-1.5">
                     <label className="text-xs font-semibold text-slate-600 block">System Role</label>
                     <Select value={editRole} onValueChange={setEditRole} disabled={true}>
                       <SelectTrigger className="w-full">
@@ -871,6 +1030,23 @@ export default function UsersPage() {
                       </SelectContent>
                     </Select>
                   </div>
+
+                  {editRole === "customer" && (
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-semibold text-slate-600 block">Customer Type</label>
+                      <Select value={editCustomerType} onValueChange={setEditCustomerType} disabled={savingEdit}>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Select type" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="Retail">Retail</SelectItem>
+                          <SelectItem value="Corporate">Corporate</SelectItem>
+                          <SelectItem value="Government">Government</SelectItem>
+                          <SelectItem value="Partner">Partner</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
 
                   {(editRole === "supervisor" || editRole === "technician") && (
                     <div className="space-y-2">
@@ -1004,7 +1180,15 @@ export default function UsersPage() {
             </motion.div>
           </div>
         )}
-      </AnimatePresence>
+       </AnimatePresence>
+
+      <StaffImportModal
+        open={isStaffImportOpen}
+        onOpenChange={setIsStaffImportOpen}
+        onSuccess={() => refetch()}
+        role={role}
+        onRoleChange={setRole}
+      />
     </div>
   );
 }

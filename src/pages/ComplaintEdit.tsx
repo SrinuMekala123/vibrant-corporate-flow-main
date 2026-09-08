@@ -1,11 +1,13 @@
 import { useParams, useNavigate } from "react-router-dom";
 import { useState, useMemo, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
-import { ArrowLeft, Save, Filter, Loader2, Upload, X, Info, User, MapPin, ShieldCheck, AlertTriangle } from "lucide-react";
+import { ArrowLeft, Save, Filter, Loader2, Upload, X, Info, User, MapPin, ShieldCheck, AlertTriangle, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Command, CommandInput, CommandList, CommandEmpty, CommandItem } from "@/components/ui/command";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { SeverityTier } from "@/data/mockData";
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
@@ -40,6 +42,7 @@ const ComplaintEdit = () => {
   const isCustomer = isRole("customer");
   const isAdminOrSupervisor = isRole("admin", "supervisor");
   const isAdmin = isRole("admin");
+  const isSupervisor = isRole("supervisor");
 
   const fetchProfileByName = async (name: string) => {
     if (!name) return null;
@@ -155,7 +158,7 @@ const ComplaintEdit = () => {
     assignedSupervisor: "",
     assignedTechnician: "",
     description: "",
-    resolution: "",
+    supervisor_notes: "",
     targetEndTime: "",
     customerLat: null as number | null,
     customerLng: null as number | null,
@@ -173,6 +176,9 @@ const ComplaintEdit = () => {
   const [locationSuggestions, setLocationSuggestions] = useState<string[]>([]);
   const [availableCategories, setAvailableCategories] = useState<string[]>(['Solar', 'Networking', 'Electrical', 'CCTV', 'Other']);
   const [isAssetsLoading, setIsAssetsLoading] = useState(false);
+  const [customerAssets, setCustomerAssets] = useState<any[]>([]);
+  const [availableFieldOfWork, setAvailableFieldOfWork] = useState<string[]>([]);
+  const [isCustomerPopoverOpen, setIsCustomerPopoverOpen] = useState(false);
 
   useEffect(() => {
     const fetchCategories = async () => {
@@ -230,6 +236,52 @@ const ComplaintEdit = () => {
 
     fetchCategories();
   }, [user?.id, isCustomer]);
+
+  useEffect(() => {
+    const fetchCustomerAssets = async () => {
+      if (!form.customerId) {
+        setCustomerAssets([]);
+        setAvailableFieldOfWork([]);
+        return;
+      }
+
+      setIsAssetsLoading(true);
+      try {
+        const { data: customerRecord } = await supabase
+          .from('customers')
+          .select('id')
+          .eq('user_id', form.customerId)
+          .maybeSingle();
+
+        if (!customerRecord) {
+          setCustomerAssets([]);
+          setAvailableFieldOfWork([]);
+          return;
+        }
+
+        const { data, error } = await supabase
+          .from('customer_assets')
+          .select('category')
+          .eq('customer_id', customerRecord.id);
+
+        if (error) throw error;
+
+        const assets = data || [];
+        setCustomerAssets(assets);
+
+        const uniqueFields = [...new Set(assets.map((a: any) => a.category).filter(Boolean))] as string[];
+        setAvailableFieldOfWork(uniqueFields);
+      } catch (err) {
+        console.error("Error fetching customer assets:", err);
+        setCustomerAssets([]);
+        setAvailableFieldOfWork([]);
+      } finally {
+        setIsAssetsLoading(false);
+      }
+    };
+
+    fetchCustomerAssets();
+  }, [form.customerId]);
 
   // Ensure current fieldOfWork value is always part of availableCategories so the Select component can render it correctly
   const displayCategories = useMemo(() => {
@@ -340,7 +392,7 @@ const ComplaintEdit = () => {
         assignedSupervisor: existingComplaint.assigned_supervisor || "",
         assignedTechnician: existingComplaint.assigned_technician || "",
         description: existingComplaint.description || "",
-        resolution: existingComplaint.resolution || "",
+        supervisor_notes: existingComplaint.supervisor_notes || "",
         targetEndTime: formatDateTimeLocal(existingComplaint.target_end_time),
         customerLat: existingComplaint.customer_lat || null,
         customerLng: existingComplaint.customer_lng || null,
@@ -791,7 +843,7 @@ const ComplaintEdit = () => {
           status: nextStatus,
           assigned_supervisor: form.assignedSupervisor || null,
           assigned_technician: form.assignedTechnician || null,
-          resolution: form.resolution || null,
+          supervisor_notes: form.supervisor_notes || null,
           complaint_images: evidenceUrls.length > 0 ? evidenceUrls : null, // ✅ FIXED: Changed from evidence_urls
           current_phase: nextPhase,
           customer_lat: form.customerLat,
@@ -947,22 +999,46 @@ const ComplaintEdit = () => {
                 <>
                   <div className="space-y-2">
                     <label className="text-sm font-medium">Customer <span className="text-destructive">*</span></label>
-                    <Select value={form.customerId} onValueChange={(v) => {
-                      const selectedCustomer = customers?.find((c: any) => c.id === v);
-                      setForm({ ...form, customerId: v, customerName: selectedCustomer?.full_name || "", customerPhone: selectedCustomer?.phone || "" });
-                    }} disabled={isSaving || !customers || !isNew}>
-                      <SelectTrigger className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100">
-                        <SelectValue placeholder="Select Customer">
-                          {form.customerName ? <span className="truncate font-medium">{form.customerName}</span> : undefined}
-                        </SelectValue>
-                      </SelectTrigger>
-                      <SelectContent>
-                        {customers?.map((c: any) => (
-                          <SelectItem key={c.id} value={c.id}>{c.full_name} ({c.email})</SelectItem>
-                        ))}
-                        {(!customers || customers.length === 0) && (<SelectItem value="none" disabled>No customers found</SelectItem>)}
-                      </SelectContent>
-                    </Select>
+                    <Popover open={isCustomerPopoverOpen && !isCustomersLoading} onOpenChange={setIsCustomerPopoverOpen}>
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="outline"
+                          role="combobox"
+                          className="h-10 w-full justify-between font-normal disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
+                          disabled={isSaving || !customers || !isNew}
+                        >
+                          {form.customerName ? (
+                            <span className="truncate font-medium">{form.customerName}</span>
+                          ) : (
+                            <span className="text-muted-foreground">Search customer by name, phone, or email...</span>
+                          )}
+                          <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-full p-0" align="start">
+                        <Command>
+                          <CommandInput placeholder="Search customer by name, phone, or email..." />
+                          <CommandList>
+                            <CommandEmpty>No customer found.</CommandEmpty>
+                            {customers?.map((c: any) => (
+                              <CommandItem
+                                key={c.id}
+                                value={`${c.full_name} ${c.phone || ''} ${c.email || ''}`}
+                                onSelect={() => {
+                                  setForm({ ...form, customerId: c.id, customerName: c.full_name || "", customerPhone: c.phone || "", fieldOfWork: "" });
+                                  setIsCustomerPopoverOpen(false);
+                                }}
+                              >
+                                <div className="flex flex-col">
+                                  <span className="font-medium">{c.full_name}</span>
+                                  <span className="text-xs text-muted-foreground">{c.phone} {c.email ? `• ${c.email}` : ''}</span>
+                                </div>
+                              </CommandItem>
+                            ))}
+                          </CommandList>
+                        </Command>
+                      </PopoverContent>
+                    </Popover>
                   </div>
                   <div className="space-y-2">
                     <label className="text-sm font-medium">Phone</label>
@@ -1077,18 +1153,26 @@ const ComplaintEdit = () => {
                 <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
                 <span>You have no registered products. Please contact support to register your products before raising a complaint.</span>
               </div>
+            ) : isAdminOrSupervisor && form.customerId && !isAssetsLoading && availableFieldOfWork.length === 0 ? (
+              <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-xs text-amber-500 flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>No assets found for this customer. Please create assets first or select manually.</span>
+              </div>
             ) : (
-              <Select 
+              <Select
                 key={form.fieldOfWork || 'empty'}
-                value={form.fieldOfWork} 
-                onValueChange={(v) => setForm({ ...form, fieldOfWork: v })} 
+                value={form.fieldOfWork}
+                onValueChange={(v) => setForm({ ...form, fieldOfWork: v })}
                 disabled={isSaving || isAssetsLoading || (isCustomer && availableCategories.length === 0) || !isNew}
               >
                 <SelectTrigger className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100">
-                  <SelectValue placeholder={isAssetsLoading ? "Loading your products..." : "Select field"} />
+                  <SelectValue placeholder={isAssetsLoading ? "Loading..." : "Select field"} />
                 </SelectTrigger>
                 <SelectContent>
-                  {displayCategories.map((cat) => (
+                  {(isAdminOrSupervisor && form.customerId && availableFieldOfWork.length > 0
+                    ? availableFieldOfWork
+                    : displayCategories
+                  ).map((cat) => (
                     <SelectItem key={cat} value={cat}>{cat}</SelectItem>
                   ))}
                 </SelectContent>
@@ -1304,10 +1388,17 @@ const ComplaintEdit = () => {
             />
           </div>
 
-          {isAdminOrSupervisor && !isNew && (
+          {(isAdmin || isSupervisor) && (
             <div className="md:col-span-2 space-y-2">
-              <label className="text-sm font-medium">Resolution Notes</label>
-              <Textarea value={form.resolution} onChange={(e) => setForm({ ...form, resolution: e.target.value })} rows={3} placeholder="Resolution details..." disabled={isSaving} />
+              <label className="text-sm font-medium">Supervisor Notes / Key Points for Technician</label>
+              <Textarea
+                value={form.supervisor_notes}
+                onChange={(e) => setForm({ ...form, supervisor_notes: e.target.value })}
+                rows={4}
+                placeholder="Optional: Add key symptoms or instructions for the technician."
+                disabled={isSaving}
+              />
+              <p className="text-xs text-muted-foreground">Optional: Add key symptoms or instructions for the technician.</p>
             </div>
           )}
 

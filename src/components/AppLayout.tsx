@@ -212,8 +212,8 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const getMenuItems = () => {
     const baseItems = [
       { path: "/dashboard", label: "Dashboard", icon: LayoutDashboard, roles: ["admin", "supervisor", "technician", "customer"] },
-      { path: "/customers", label: "Customers", icon: Users, roles: ["admin", "supervisor", "technician", "customer"] },
-      { path: "/assets", label: "Assets", icon: Zap, roles: ["admin", "supervisor", "technician", "customer"] },
+      { path: "/customers", label: "Customers", icon: Users, roles: ["admin", "supervisor", "customer"] },
+      { path: "/assets", label: "Assets", icon: Zap, roles: ["admin", "supervisor", "customer"] },
       { path: "/complaints", label: "All Complaints", icon: FileText, roles: ["admin", "supervisor"] },
     ];
 

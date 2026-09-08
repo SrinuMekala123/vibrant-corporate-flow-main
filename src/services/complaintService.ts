@@ -142,6 +142,12 @@ export interface Complaint {
   assigned_technician?: string;
   current_phase: number;
   resolution?: string;
+  resolution_notes?: string;
+  supervisor_notes?: string;
+  resolved_remotely?: boolean;
+  resolution_type?: string;
+  resolved_at?: string;
+  resolved_by?: string;
   pir_findings?: string;
   pir_audio_url?: string;
   complaint_images?: string[];      // Initial images (Before)
@@ -237,6 +243,33 @@ export const complaintService = {
 
   // Update complaint
   update: async (id: string, updates: Partial<Complaint>): Promise<Complaint> => {
+    const { data: current, error: fetchError } = await supabase
+      .from("complaints")
+      .select("triage_outcome, current_phase, status, resolution_notes, resolved_remotely, resolution_type, resolved_at, resolved_by")
+      .eq("id", id)
+      .single();
+
+    if (fetchError) throw fetchError;
+
+    const wasRemoteFixed = current?.triage_outcome === "remote_fixed";
+
+    if (wasRemoteFixed && (updates.triage_outcome === undefined || updates.triage_outcome === null)) {
+      const nextPhase = updates.current_phase ?? current.current_phase;
+      const nextStatus = updates.status ?? current.status;
+
+      if (nextPhase !== 6 || nextStatus !== "completed") {
+        updates.triage_outcome = null;
+        updates.resolution = null;
+        updates.signoff_timestamp = null;
+        updates.pir_findings = null;
+        updates.resolution_notes = null;
+        updates.resolved_remotely = false;
+        updates.resolution_type = null;
+        updates.resolved_at = null;
+        updates.resolved_by = null;
+      }
+    }
+
     const { data, error } = await supabase
       .from("complaints")
       .update(updates)

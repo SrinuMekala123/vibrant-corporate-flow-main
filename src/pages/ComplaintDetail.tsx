@@ -5,6 +5,7 @@ import { ArrowLeft, Edit, Phone, MapPin, Clock, User, Wrench, FileText, ShieldCh
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { StatusBadge, SeverityBadge } from "@/components/Badges";
 import { PhaseTimeline } from "@/components/PhaseTimeline";
 import { phaseLabels } from "@/data/mockData";
@@ -117,6 +118,10 @@ const ComplaintDetail = () => {
   const [feedbackContactMethod, setFeedbackContactMethod] = useState("phone");
   const [isCollectingFeedback, setIsCollectingFeedback] = useState(false);
   const [showFeedbackForm, setShowFeedbackForm] = useState(false);
+
+  const [showRemoteResolutionModal, setShowRemoteResolutionModal] = useState(false);
+  const [remoteResolutionNotes, setRemoteResolutionNotes] = useState("");
+  const [pendingRemoteResolution, setPendingRemoteResolution] = useState<"remote_fixed" | "field_required" | null>(null);
   const [showTrackingModal, setShowTrackingModal] = useState(false);
   const [timeLeft, setTimeLeft] = useState("");
 
@@ -604,6 +609,13 @@ const ComplaintDetail = () => {
     (ticket.current_phase === 3 || ticket.current_phase === 4 || ticket.current_phase === 5);
 
   const handleTriageDecision = async (outcome: 'remote_fixed' | 'field_required') => {
+    if (outcome === 'remote_fixed') {
+      setPendingRemoteResolution(outcome);
+      setRemoteResolutionNotes("");
+      setShowRemoteResolutionModal(true);
+      return;
+    }
+
     const customerEmail = ticket.profiles?.email || null;
     const supervisorEmail = ticket.assigned_supervisor ? await fetchEmailByName(ticket.assigned_supervisor) : null;
 
@@ -611,8 +623,49 @@ const ComplaintDetail = () => {
     const slicedId = ticket.id.slice(0, 8);
     const supervisorDisplayName = currentUserFullName || ticket.assigned_supervisor || 'Supervisor';
 
-    if (outcome === 'remote_fixed') {
-      // 4. Remote Fix: Notify Customer AND Admin
+    await notificationService.insertNotification(
+      adminIds,
+      ticket.id,
+      'info',
+      '🚐 Field Visit Required',
+      `Field visit required for Ticket #${slicedId}. Technician assignment pending.`,
+      2,
+      undefined,
+      user?.id
+    );
+    if (ticket.customer_id) {
+      await notificationService.insertNotification(
+        ticket.customer_id,
+        ticket.id,
+        'info',
+        '🚐 Field Visit Required',
+        `A field visit is required for your complaint #${slicedId}. A technician will be assigned shortly.`,
+        2,
+        undefined,
+        user?.id
+      );
+    }
+
+    updateMutation.mutate({
+      status: 'assigned',
+      current_phase: 3,
+      triage_outcome: outcome,
+      resolution: null,
+      assignment_timestamp: new Date().toISOString()
+    } as any);
+  };
+
+  const handleRemoteResolutionSave = async () => {
+    if (!remoteResolutionNotes.trim()) {
+      toast.error("Please describe how the issue was resolved remotely.");
+      return;
+    }
+
+    const adminIds = await notificationService.getAdminUserIds();
+    const slicedId = ticket.id.slice(0, 8);
+    const supervisorDisplayName = currentUserFullName || ticket.assigned_supervisor || 'Supervisor';
+
+    try {
       if (ticket.customer_id) {
         await notificationService.insertNotification(
           ticket.customer_id,
@@ -635,39 +688,34 @@ const ComplaintDetail = () => {
         undefined,
         user?.id
       );
-    } else {
-      // 5. Field Visit Required: Notify Admin AND Customer
-      await notificationService.insertNotification(
-        adminIds,
-        ticket.id,
-        'info',
-        '🚐 Field Visit Required',
-        `Field visit required for Ticket #${slicedId}. Technician assignment pending.`,
-        2,
-        undefined,
-        user?.id
-      );
-      if (ticket.customer_id) {
-        await notificationService.insertNotification(
-          ticket.customer_id,
-          ticket.id,
-          'info',
-          '🚐 Field Visit Required',
-          `A field visit is required for your complaint #${slicedId}. A technician will be assigned shortly.`,
-          2,
-          undefined,
-          user?.id
-        );
-      }
+    } catch (notificationError) {
+      console.warn("Notification failed, continuing with save:", notificationError);
     }
 
+    const now = new Date().toISOString();
+
     updateMutation.mutate({
-      status: outcome === 'remote_fixed' ? 'completed' : 'assigned',
-      current_phase: outcome === 'remote_fixed' ? 6 : 3,
-      triage_outcome: outcome,
-      resolution: outcome === 'remote_fixed' ? 'Resolved remotely via telephonic triage.' : null,
-      assignment_timestamp: outcome === 'field_required' ? new Date().toISOString() : null
-    } as any);
+      status: 'completed',
+      current_phase: 6,
+      triage_outcome: 'remote_fixed',
+      resolution: remoteResolutionNotes.trim(),
+      resolution_notes: remoteResolutionNotes.trim(),
+      resolved_remotely: true,
+      resolution_type: 'telephonic_triage',
+      resolved_at: now,
+      resolved_by: user?.id || null
+    } as any, {
+      onSuccess: () => {
+        setShowRemoteResolutionModal(false);
+        setPendingRemoteResolution(null);
+        setRemoteResolutionNotes("");
+        toast.success("Remote resolution saved successfully.");
+      },
+      onError: (error: any) => {
+        console.error("Failed to save remote resolution:", error);
+        toast.error(error?.message || "Failed to save remote resolution. Please ensure the database migration has been run.");
+      }
+    });
   };
 
   const handleStartJourney = async () => {
@@ -898,6 +946,7 @@ const ComplaintDetail = () => {
 
     await updateMutation.mutateAsync({
       resolution: resolutionNote,
+      resolution_notes: resolutionNote,
       current_phase: 5
     } as any);
     setShowResolution(false);
@@ -1504,6 +1553,14 @@ const ComplaintDetail = () => {
             <p className="text-slate-600 leading-relaxed">
               If a field visit is required, the supervisor assigns a specific technician to handle the on-site resolution.
             </p>
+
+            {ticket.supervisor_notes && (
+              <div className="mt-3 bg-indigo-50/70 border border-indigo-200 p-3 rounded-lg">
+                <p className="text-xs font-semibold text-indigo-700 mb-1">📋 Supervisor's Initial Assessment / Diagnostic Notes</p>
+                <p className="text-sm text-slate-700 whitespace-pre-wrap">{ticket.supervisor_notes}</p>
+              </div>
+            )}
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3 bg-white p-3 rounded-lg border">
               <div>
                 <span className="text-xs text-muted-foreground block">Assigned Technician</span>
@@ -2008,12 +2065,13 @@ const ComplaintDetail = () => {
             <div className="flex-1">
               <p className="font-semibold text-sm text-info">✅ Resolved Remotely</p>
               <p className="text-xs text-muted-foreground mt-1">
-                This ticket was resolved via telephonic triage by {supervisorName || 'supervisor'}.
+                This ticket was resolved via telephonic triage by {ticket.resolved_by || supervisorName || 'supervisor'}.
+                {ticket.resolved_at && ` • ${formatIndianDateTime(ticket.resolved_at)}`}
               </p>
-              {ticket.resolution && (
+              {ticket.resolution_notes && (
                 <div className="mt-2 p-2 rounded bg-muted/50">
-                  <p className="text-xs text-muted-foreground mb-1">Resolution:</p>
-                  <p className="text-sm">{ticket.resolution}</p>
+                  <p className="text-xs text-muted-foreground mb-1">Resolution Notes:</p>
+                  <p className="text-sm whitespace-pre-wrap">{ticket.resolution_notes}</p>
                 </div>
               )}
             </div>
@@ -2129,6 +2187,14 @@ const ComplaintDetail = () => {
           <h2 className="font-semibold mb-3 flex items-center gap-2 text-warning">
             <Phone className="w-5 h-5" /> Phase 3: Dispatch
           </h2>
+
+          {ticket.supervisor_notes && (
+            <div className="mb-4 p-3 rounded-lg bg-indigo-50/70 border border-indigo-200">
+              <p className="text-xs font-semibold text-indigo-700 mb-1">📋 Supervisor's Initial Assessment / Diagnostic Notes</p>
+              <p className="text-sm whitespace-pre-wrap bg-white/70 p-2 rounded border border-indigo-100">{ticket.supervisor_notes}</p>
+            </div>
+          )}
+
           {(isRole("supervisor") && ticket.assigned_supervisor === currentUserFullName) ? (
             <div className="bg-muted/50 p-4 rounded-lg space-y-3">
               <p className="text-sm text-muted-foreground">
@@ -2155,6 +2221,15 @@ const ComplaintDetail = () => {
         <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-xl p-5 border-l-4 border-l-primary">
           <h2 className="font-semibold mb-3 flex items-center gap-2 text-primary"><Wrench className="w-5 h-5" /> Technician Actions</h2>
 
+          {/* Supervisor Notes for Technician */}
+          {ticket.supervisor_notes && (
+            <div className="mb-4 p-4 rounded-lg bg-indigo-50/70 border border-indigo-200">
+              <p className="text-xs font-semibold text-indigo-700 mb-1">📋 Supervisor's Initial Assessment / Diagnostic Notes</p>
+              <p className="text-xs text-muted-foreground mb-2">Review these notes before starting work. Do not edit this section.</p>
+              <p className="text-sm whitespace-pre-wrap bg-white/70 p-2 rounded border border-indigo-100">{ticket.supervisor_notes}</p>
+            </div>
+          )}
+
           {/* Navigate to Customer Button */}
           {ticket.current_phase === 4 && ticket.status === "in-progress" && ticket.location && (
             <div className="mb-4 p-4 rounded-lg bg-primary/5 border border-primary/20">
@@ -2175,7 +2250,15 @@ const ComplaintDetail = () => {
 
           {/* Phase 3: Start Journey */}
           {ticket.current_phase === 3 && (ticket.status === "assigned" || ticket.status === "dispatched") && (
-            <div className="flex items-center justify-between bg-muted/50 p-4 rounded-lg">
+            <>
+              {ticket.supervisor_notes && (
+                <div className="mb-4 p-4 rounded-lg bg-indigo-50/70 border border-indigo-200">
+                  <p className="text-xs font-semibold text-indigo-700 mb-1">📋 Supervisor's Initial Assessment / Diagnostic Notes</p>
+                  <p className="text-xs text-muted-foreground mb-2">Review these notes before starting work.</p>
+                  <p className="text-sm whitespace-pre-wrap bg-white/70 p-2 rounded border border-indigo-100">{ticket.supervisor_notes}</p>
+                </div>
+              )}
+              <div className="flex items-center justify-between bg-muted/50 p-4 rounded-lg">
               <div>
                 <p className="font-medium">Ready to start journey?</p>
                 <p className="text-sm text-muted-foreground">GPS will verify your arrival.</p>
@@ -2183,8 +2266,9 @@ const ComplaintDetail = () => {
               <Button onClick={handleStartJourney} className="gradient-primary" disabled={updateMutation.isPending}>
                 {updateMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Play className="w-4 h-4 mr-2" />}
                 Start Journey
-              </Button>
-            </div>
+               </Button>
+             </div>
+            </>
           )}
 
           {/* Phase 4: Submit PIR */}
@@ -2288,7 +2372,7 @@ const ComplaintDetail = () => {
             <div className="space-y-3 bg-muted/50 p-4 rounded-lg mt-3">
               {showResolution ? (
                 <div className="space-y-2">
-                  <label className="text-sm font-medium">Resolution Notes *</label>
+                  <label className="text-sm font-medium">Technician Resolution Notes *</label>
                   <Textarea placeholder="Describe work done, parts replaced, tests performed..." value={resolutionNote} onChange={e => setResolutionNote(e.target.value)} rows={3} />
                   <div className="flex flex-col sm:flex-row gap-3 justify-end mt-3 w-full">
                     <Button variant="outline" onClick={() => setShowResolution(false)} className="w-full sm:w-auto min-h-[44px] px-4 py-2.5 text-sm order-2 sm:order-1">Cancel</Button>
@@ -2788,6 +2872,42 @@ const ComplaintDetail = () => {
           onClose={() => setShowTrackingModal(false)}
         />
       )}
+
+      <Dialog open={showRemoteResolutionModal} onOpenChange={setShowRemoteResolutionModal}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Remote Resolution Notes</DialogTitle>
+            <DialogDescription>
+              Describe how you resolved this issue remotely. This will be saved as the official resolution.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <Textarea
+              value={remoteResolutionNotes}
+              onChange={(e) => setRemoteResolutionNotes(e.target.value)}
+              placeholder="Describe how you resolved this issue remotely..."
+              rows={5}
+              maxLength={1000}
+              className="resize-none"
+            />
+            <p className="text-xs text-muted-foreground text-right">
+              {remoteResolutionNotes.length}/1000 characters
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => {
+              setShowRemoteResolutionModal(false);
+              setPendingRemoteResolution(null);
+              setRemoteResolutionNotes("");
+            }}>
+              Cancel
+            </Button>
+            <Button onClick={handleRemoteResolutionSave} disabled={!remoteResolutionNotes.trim()}>
+              Save Resolution
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       </div>
     </div>

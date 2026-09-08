@@ -1,11 +1,22 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Command, CommandInput, CommandList, CommandEmpty, CommandItem } from "@/components/ui/command";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Pagination,
+  PaginationContent,
+  PaginationItem,
+  PaginationLink,
+  PaginationNext,
+  PaginationPrevious,
+} from "@/components/ui/pagination";
 import AssetImportModal from "@/components/AssetImportModal";
 import {
   Loader2,
@@ -23,10 +34,12 @@ import {
   User,
   Building,
   Wrench,
-  ChevronDown,
-  ShieldCheck
+  ShieldCheck,
+  Download
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import { downloadCSV, generateSampleCSV } from "@/utils/csvHelpers";
+import ExportButton from "@/components/ExportButton";
 
 export default function Assets() {
   const { user } = useAuth();
@@ -34,6 +47,8 @@ export default function Assets() {
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [warrantyFilter, setWarrantyFilter] = useState("all"); // all, active, expired
   const [loading, setLoading] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const ITEMS_PER_PAGE = 10;
 
   // Modal / Side-panel states
   const [selectedAsset, setSelectedAsset] = useState<any | null>(null);
@@ -41,7 +56,7 @@ export default function Assets() {
 
   // Search states inside form for dropdowns
   const [customerSearch, setCustomerSearch] = useState("");
-  const [customerDropdownOpen, setCustomerDropdownOpen] = useState(false);
+  const [isCustomerPopoverOpen, setIsCustomerPopoverOpen] = useState(false);
   const [branchSearch, setBranchSearch] = useState("");
   const [branchDropdownOpen, setBranchDropdownOpen] = useState(false);
 
@@ -64,6 +79,11 @@ export default function Assets() {
   const isSupervisor = user?.role === "supervisor";
   const canModify = isAdmin || isSupervisor;
   const isViewOnly = !canModify;
+
+  const downloadSample = () => {
+    const csv = generateSampleCSV("asset");
+    downloadCSV(csv, "asset_sample.csv");
+  };
 
   // React Query: Fetch Branches
   const { data: branches } = useQuery({
@@ -102,7 +122,7 @@ export default function Assets() {
 
         const { data, error } = await supabase
           .from('customers')
-          .select('id, full_name, user_id')
+          .select('id, full_name, user_id, phone, email')
           .in('user_id', customerProfileIds)
           .order('full_name', { ascending: true });
 
@@ -110,7 +130,7 @@ export default function Assets() {
         return data || [];
       }
 
-      let query = supabase.from('customers').select('id, full_name, user_id');
+      let query = supabase.from('customers').select('id, full_name, user_id, phone, email');
       if (user?.role === 'customer') {
         query = query.eq('user_id', user.id);
       }
@@ -347,11 +367,14 @@ export default function Assets() {
     return matchesSearch && matchesCategory && matchesWarranty;
   }) || [];
 
-  // Filtered dropdown lists inside form
-  const filteredFormCustomers = customers?.filter(c =>
-    c.full_name.toLowerCase().includes(customerSearch.toLowerCase())
-  ) || [];
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, categoryFilter, warrantyFilter]);
 
+  const totalPages = Math.max(1, Math.ceil(filteredAssets.length / ITEMS_PER_PAGE));
+  const paginatedAssets = filteredAssets.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
+
+  // Filtered dropdown lists inside form
   const filteredFormBranches = branches?.filter(b =>
     b.branch_name.toLowerCase().includes(branchSearch.toLowerCase())
   ) || [];
@@ -370,19 +393,33 @@ export default function Assets() {
         </div>
 
         {canModify && (
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 justify-end overflow-x-auto max-w-full">
+            <ExportButton variant="asset" />
+            <Button
+              variant="outline"
+              onClick={downloadSample}
+              className="flex items-center gap-1.5 border-slate-300 text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+            >
+              <Download className="w-4 h-4 shrink-0" />
+              <span className="hidden sm:inline">Sample CSV</span>
+              <span className="sm:hidden">Sample</span>
+            </Button>
             <Button
               variant="outline"
               onClick={() => setIsAssetImportOpen(true)}
-              className="flex items-center gap-2 border-slate-300 text-slate-700 hover:bg-slate-50"
+              className="flex items-center gap-1.5 border-slate-300 text-slate-700 hover:bg-slate-50 whitespace-nowrap"
             >
-              <Upload className="w-4 h-4" /> Import Assets
+              <Upload className="w-4 h-4 shrink-0" />
+              <span className="hidden sm:inline">Import Assets</span>
+              <span className="sm:hidden">Import</span>
             </Button>
             <Button
               onClick={() => handleOpenModal(null, 'add')}
-              className="flex items-center gap-2 bg-gradient-to-r from-blue-600 to-teal-500 hover:from-blue-700 hover:to-teal-600 text-white"
+              className="flex items-center gap-1.5 bg-gradient-to-r from-blue-600 to-teal-500 hover:from-blue-700 hover:to-teal-600 text-white whitespace-nowrap"
             >
-              <Plus className="w-4 h-4" /> Add Asset
+              <Plus className="w-4 h-4 shrink-0" />
+              <span className="hidden sm:inline">Add Asset</span>
+              <span className="sm:hidden">Add</span>
             </Button>
           </div>
         )}
@@ -447,7 +484,7 @@ export default function Assets() {
           <Loader2 className="w-8 h-8 animate-spin text-primary mb-3" />
           <span className="text-sm font-medium">Loading assets directory...</span>
         </div>
-      ) : filteredAssets.length === 0 ? (
+      ) : paginatedAssets.length === 0 ? (
         <div className="text-center py-16 text-muted-foreground text-sm border-2 border-dashed rounded-xl bg-slate-50/50 border-slate-200/80">
           {user?.role === 'technician' && (!assets || assets.length === 0) ? (
             <>
@@ -479,7 +516,7 @@ export default function Assets() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-slate-700">
-                {filteredAssets.map((a: any) => {
+                {paginatedAssets.map((a: any) => {
                   const wInfo = getWarrantyInfo(a.purchase_date, a.warranty_months);
                   return (
                     <tr
@@ -566,7 +603,7 @@ export default function Assets() {
 
           {/* Mobile Card List View */}
           <div className="grid grid-cols-1 gap-4 md:hidden">
-            {filteredAssets.map((a: any) => {
+            {paginatedAssets.map((a: any) => {
               const wInfo = getWarrantyInfo(a.purchase_date, a.warranty_months);
               return (
                 <div
@@ -644,6 +681,49 @@ export default function Assets() {
             })}
           </div>
         </>
+      )}
+
+      {filteredAssets.length > ITEMS_PER_PAGE && (
+        <div className="flex items-center justify-center pt-2">
+          <Pagination>
+            <PaginationContent>
+              <PaginationItem>
+                <PaginationPrevious
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setCurrentPage((p) => Math.max(1, p - 1));
+                  }}
+                  className={currentPage === 1 ? "pointer-events-none opacity-50" : undefined}
+                />
+              </PaginationItem>
+              {Array.from({ length: totalPages }).map((_, idx) => (
+                <PaginationItem key={idx}>
+                  <PaginationLink
+                    href="#"
+                    isActive={currentPage === idx + 1}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      setCurrentPage(idx + 1);
+                    }}
+                  >
+                    {idx + 1}
+                  </PaginationLink>
+                </PaginationItem>
+              ))}
+              <PaginationItem>
+                <PaginationNext
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setCurrentPage((p) => Math.min(totalPages, p + 1));
+                  }}
+                  className={currentPage === totalPages ? "pointer-events-none opacity-50" : undefined}
+                />
+              </PaginationItem>
+            </PaginationContent>
+          </Pagination>
+        </div>
       )}
 
       {/* View & Add/Edit Overlay Modal */}
@@ -805,44 +885,47 @@ export default function Assets() {
                     {/* Searchable Customer Dropdown */}
                     <div className="space-y-1.5 relative">
                       <label className="text-xs font-semibold text-slate-600">Select Customer <span className="text-destructive">*</span></label>
-                      <div className="relative">
-                        <Input
-                          value={customerSearch}
-                          onChange={(e) => {
-                            setCustomerSearch(e.target.value);
-                            setCustomerDropdownOpen(true);
-                          }}
-                          onFocus={() => setCustomerDropdownOpen(true)}
-                          placeholder="Type client name to search..."
-                          disabled={loading}
-                          className="rounded-lg border-slate-200 h-10 pr-10"
-                        />
-                        <ChevronDown className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2 cursor-pointer" onClick={() => setCustomerDropdownOpen(!customerDropdownOpen)} />
-                      </div>
-
-                      {customerDropdownOpen && (
-                        <div className="absolute left-0 right-0 z-50 mt-1 max-h-48 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-lg divide-y divide-slate-100">
-                          {filteredFormCustomers.length === 0 ? (
-                            <div className="p-3 text-xs text-muted-foreground text-center">No customers match search</div>
-                          ) : (
-                            filteredFormCustomers.map((c: any) => (
-                              <button
-                                type="button"
-                                key={c.id}
-                                className="w-full text-left px-4 py-2 text-xs hover:bg-slate-50 transition-colors flex items-center justify-between"
-                                onClick={() => {
-                                  setCustomerId(c.id);
-                                  setCustomerSearch(c.full_name);
-                                  setCustomerDropdownOpen(false);
-                                }}
-                              >
-                                <span className="font-semibold text-slate-800">{c.full_name}</span>
-                                {c.user_id && <span className="text-[10px] text-emerald-600 bg-emerald-50 border border-emerald-100 px-1.5 py-0.5 rounded font-bold uppercase">Linked User</span>}
-                              </button>
-                            ))
-                          )}
-                        </div>
-                      )}
+                      <Popover open={isCustomerPopoverOpen} onOpenChange={setIsCustomerPopoverOpen}>
+                        <PopoverTrigger asChild>
+                          <Button
+                            variant="outline"
+                            role="combobox"
+                            className="h-10 w-full justify-between font-normal disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
+                            disabled={loading}
+                          >
+                            {customerSearch ? (
+                              <span className="truncate font-medium">{customerSearch}</span>
+                            ) : (
+                              <span className="text-muted-foreground">Search customer by name, phone, or email...</span>
+                            )}
+                            <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-full p-0" align="start">
+                          <Command>
+                            <CommandInput placeholder="Search customer by name, phone, or email..." />
+                            <CommandList>
+                              <CommandEmpty>No customer found.</CommandEmpty>
+                              {customers?.map((c: any) => (
+                                <CommandItem
+                                  key={c.id}
+                                  value={`${c.full_name} ${c.phone || ''} ${c.email || ''}`}
+                                  onSelect={() => {
+                                    setCustomerId(c.id);
+                                    setCustomerSearch(c.full_name);
+                                    setIsCustomerPopoverOpen(false);
+                                  }}
+                                >
+                                  <div className="flex flex-col">
+                                    <span className="font-medium">{c.full_name}</span>
+                                    <span className="text-xs text-muted-foreground">{c.phone} {c.email ? `• ${c.email}` : ''}</span>
+                                  </div>
+                                </CommandItem>
+                              ))}
+                            </CommandList>
+                          </Command>
+                        </PopoverContent>
+                      </Popover>
                     </div>
 
                     {/* Searchable Branch Dropdown */}

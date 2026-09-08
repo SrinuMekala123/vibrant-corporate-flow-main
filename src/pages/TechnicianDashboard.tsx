@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "@/contexts/AuthContext";
+import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { complaintService } from "@/services/complaintService";
 import { supabase } from "@/lib/supabase";
@@ -48,6 +49,7 @@ const phaseLabels: Record<number, string> = {
 
 const TechnicianDashboard = () => {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<"all" | "active" | "completed" | "closed">("active");
 
   // Fetch technician profile to get full name
@@ -181,7 +183,8 @@ const TechnicianDashboard = () => {
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: i * 0.05 }}
-                  className="glass-card rounded-2xl p-6 border border-border/60 hover:border-primary/20 hover:shadow-glow transition-all duration-300 group relative overflow-hidden"
+                  onClick={() => navigate(`/complaints/${ticket.id}`)}
+                  className="glass-card rounded-2xl p-6 border border-border/60 hover:border-primary/20 hover:shadow-glow transition-all duration-300 cursor-pointer group relative overflow-hidden"
                 >
                   <div className="absolute left-0 top-0 bottom-0 w-1 bg-primary opacity-0 group-hover:opacity-100 transition-opacity" />
 
@@ -235,11 +238,16 @@ const TechnicianDashboard = () => {
                         </p>
                       </div>
 
-                      <Link to={`/complaints/${ticket.id}`} className="w-full">
-                        <Button size="sm" className="w-full gradient-primary text-white font-bold rounded-lg h-9 shadow-sm hover:opacity-95">
-                          View Work Order <ArrowRight className="w-3.5 h-3.5 ml-1.5" />
-                        </Button>
-                      </Link>
+                      <Button 
+                        size="sm" 
+                        className="w-full gradient-primary text-white font-bold rounded-lg h-9 shadow-sm hover:opacity-95"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          navigate(`/complaints/${ticket.id}`);
+                        }}
+                      >
+                        View Work Order <ArrowRight className="w-3.5 h-3.5 ml-1.5" />
+                      </Button>
                     </div>
                   </div>
                 </motion.div>
