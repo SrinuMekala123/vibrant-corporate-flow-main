@@ -1389,7 +1389,7 @@ const ComplaintEdit = () => {
           </div>
 
           {(isAdmin || isSupervisor) && (
-            <div className="md:col-span-2 space-y-2">
+            <div className="md:col-span-2 min-w-0 max-w-full space-y-2">
               <label className="text-sm font-medium">Supervisor Notes / Key Points for Technician</label>
               <Textarea
                 value={form.supervisor_notes}
@@ -1397,6 +1397,7 @@ const ComplaintEdit = () => {
                 rows={4}
                 placeholder="Optional: Add key symptoms or instructions for the technician."
                 disabled={isSaving}
+                className="w-full min-w-0 max-w-full resize-y break-words"
               />
               <p className="text-xs text-muted-foreground">Optional: Add key symptoms or instructions for the technician.</p>
             </div>

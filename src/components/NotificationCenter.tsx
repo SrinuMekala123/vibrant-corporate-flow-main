@@ -48,8 +48,15 @@ export function NotificationCenter() {
     };
 
     fetchInitialData();
+  }, [user?.id]);
 
-    // Subscribe to realtime changes
+  // Realtime updates are disabled to prevent WebSocket 403 errors
+  // If you need realtime notifications, set REALTIME_ENABLED to true
+  const REALTIME_ENABLED = false;
+
+  useEffect(() => {
+    if (!user?.id || !REALTIME_ENABLED) return;
+
     const channel = supabase
       .channel(`user-notifications-${user.id}`)
       .on(

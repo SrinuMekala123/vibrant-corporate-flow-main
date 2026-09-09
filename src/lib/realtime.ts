@@ -79,6 +79,16 @@ export const subscribeToComplaint = (
     complaintId: string,
     onChanges: (payload: ComplaintPayload) => void
 ) => {
+    // Realtime updates are disabled to prevent WebSocket 403 errors
+    // If you need realtime updates, set REALTIME_ENABLED to true
+    const REALTIME_ENABLED = false;
+    if (!REALTIME_ENABLED) {
+        return {
+            channel: null,
+            unsubscribe: async () => {}
+        };
+    }
+    
     let retryCount = 0;
     const maxRetries = 5;
     let channel: any = null;
@@ -146,6 +156,16 @@ export const subscribeToComplaint = (
 export const subscribeToAllComplaints = (
     onChanges: (payload: ComplaintPayload) => void
 ) => {
+    // Realtime updates are disabled to prevent WebSocket 403 errors
+    // If you need realtime updates, set REALTIME_ENABLED to true
+    const REALTIME_ENABLED = false;
+    if (!REALTIME_ENABLED) {
+        return {
+            channel: null,
+            unsubscribe: async () => {}
+        };
+    }
+    
     let retryCount = 0;
     const maxRetries = 5;
     let channel: any = null;

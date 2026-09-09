@@ -17,6 +17,8 @@ export function parseCsv(file: File): Promise<Array<Record<string, any>>> {
   return new Promise((resolve, reject) => {
     Papa.parse<Record<string, any>>(file, {
       header: true,
+      quoteChar: '"',
+      escapeChar: '"',
       skipEmptyLines: true,
       complete: (results) => resolve(results.data as any),
       error: (err) => reject(err),

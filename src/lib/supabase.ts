@@ -82,6 +82,7 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
         // REMOVED the custom fetch override that was causing the CORS preflight failure
     },
     realtime: {
+        enabled: false,
         params: {
             eventsPerSecond: 10,
         },

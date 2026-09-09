@@ -6,106 +6,71 @@ const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
-
-const ALLOWED_TABLES = ["profiles", "customers", "customer_assets", "assets"];
+const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
+  status,
+  headers: { ...corsHeaders, "Content-Type": "application/json" },
+});
 
 serve(async (req: Request): Promise<Response> => {
-  if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+  let body;
+  try { body = await req.json(); } catch { return json({ error: "Request body must be valid JSON" }, 400); }
+
+  const { userId, customerId, tableName } = body;
+  console.log("Deleting user:", userId, "from table:", tableName);
+  console.log("Service role key exists:", !!Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"));
+  if (userId != null && typeof userId !== "string") return json({ error: "Invalid userId" }, 400);
+  if (customerId != null && typeof customerId !== "string") return json({ error: "Invalid customerId" }, 400);
+  if (!userId && !customerId) return json({ error: "Missing userId or customerId" }, 400);
+  if (!["profiles", "customers"].includes(tableName)) return json({ error: "tableName must be profiles or customers" }, 400);
+
+  const url = Deno.env.get("SUPABASE_URL");
+  const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!url || !key) {
+    console.error("Delete configuration error", { hasUrl: !!url, hasServiceRoleKey: !!key });
+    return json({ error: "Delete service is not configured with SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY" }, 500);
   }
+  const admin = createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
 
   try {
-    const body = await req.json();
-    const { userId, tableName } = body;
-
-    if (!userId || typeof userId !== "string") {
-      throw new Error("Missing or invalid userId");
-    }
-
-    if (!tableName || !ALLOWED_TABLES.includes(tableName)) {
-      throw new Error(`Invalid tableName. Allowed: ${ALLOWED_TABLES.join(", ")}`);
-    }
-
-    const supabaseUrl = Deno.env.get("SUPABASE_URL");
-    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-
-    if (!supabaseUrl || !supabaseServiceKey) {
-      throw new Error("Missing environment variables: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
-    }
-
-    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false,
-      },
-    });
-
-    // For customers table, resolve the actual customer record id first
-    let recordId = userId;
+    let authUserId = userId || null;
+    let profileId = userId || null;
+    let customerRecordIds = customerId ? [customerId] : [];
     if (tableName === "customers") {
-      const { data: customerRecord, error: lookupError } = await supabaseAdmin
-        .from("customers")
-        .select("id")
-        .eq("user_id", userId)
-        .maybeSingle();
-
-      if (lookupError) {
-        console.error("Failed to look up customer record:", lookupError);
-        throw new Error(`Failed to look up customer record: ${lookupError.message}`);
+      let query = admin.from("customers").select("id, user_id");
+      query = customerId ? query.eq("id", customerId) : query.eq("user_id", userId);
+      const { data: customers, error } = await query;
+      if (error) throw new Error(`Could not find customer records: ${error.message}`);
+      if (customers?.length) {
+        customerRecordIds = customers.map((customer) => customer.id);
+        const linkedUserId = customers.find((customer) => customer.user_id)?.user_id;
+        authUserId = linkedUserId || authUserId;
+        profileId = linkedUserId || profileId;
       }
-
-      if (!customerRecord) {
-        // No customer record found, still try to delete auth user
-        const { error: authError } = await supabaseAdmin.auth.admin.deleteUser(userId);
-        if (authError) {
-          throw new Error(`Failed to delete auth user: ${authError.message}`);
-        }
-        return new Response(
-          JSON.stringify({ success: true, message: "No customer record found, but auth user deleted" }),
-          {
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-            status: 200,
-          }
-        );
-      }
-
-      recordId = customerRecord.id;
+    } else if (userId) {
+      const { data: profile, error } = await admin.from("profiles").select("id, role").eq("id", userId).maybeSingle();
+      if (error) throw new Error(`Could not find profile: ${error.message}`);
+      const { data: customers, error: customerError } = await admin.from("customers").select("id, user_id").eq("user_id", userId);
+      if (customerError) throw new Error(`Could not find related customers: ${customerError.message}`);
+      customerRecordIds = customers?.map((customer) => customer.id) || [];
     }
 
-    // Step A: Delete from the specified public table first
-    const { error: tableError } = await supabaseAdmin
-      .from(tableName)
-      .delete()
-      .eq("id", recordId);
-
-    if (tableError) {
-      console.error(`Failed to delete from ${tableName}:`, tableError);
-      throw new Error(`Failed to delete from ${tableName}: ${tableError.message}`);
+    if (customerRecordIds.length) {
+      const { error } = await admin.from("customers").delete().in("id", customerRecordIds);
+      if (error) throw new Error(`Failed to delete customers record: ${error.message}`);
     }
-
-    // Step B: Delete from Supabase Auth
-    const { error: authError } = await supabaseAdmin.auth.admin.deleteUser(userId);
-
-    if (authError) {
-      console.error("Failed to delete auth user:", authError);
-      throw new Error(`Failed to delete auth user: ${authError.message}`);
+    if (profileId) {
+      const { error } = await admin.from("profiles").delete().eq("id", profileId);
+      if (error) throw new Error(`Failed to delete profiles record: ${error.message}`);
     }
-
-    return new Response(
-      JSON.stringify({ success: true, message: "User permanently deleted from database and auth" }),
-      {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-        status: 200,
-      }
-    );
-  } catch (error: any) {
+    if (authUserId) {
+      const { error } = await admin.auth.admin.deleteUser(authUserId);
+      if (error && !/not found|user not found/i.test(error.message)) throw new Error(`Failed to delete Auth user: ${error.message}`);
+    }
+    return json({ success: true, message: "User deleted from customers, profiles, and Auth" });
+  } catch (error) {
     console.error("Delete user error:", error);
-    return new Response(
-      JSON.stringify({ error: error.message || "Delete failed" }),
-      {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-        status: 400,
-      }
-    );
+    return json({ error: error?.message || "Delete failed" }, 500);
   }
 });

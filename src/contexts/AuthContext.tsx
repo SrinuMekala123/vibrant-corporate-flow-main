@@ -116,6 +116,7 @@ export interface AppUser {
   avatar?: string;
   phone?: string;
   expertise?: string;
+  branch_id?: string;
 }
 
 interface AuthContextType {

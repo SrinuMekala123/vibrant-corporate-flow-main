@@ -385,6 +385,14 @@ const ComplaintDetail = () => {
     if (import.meta.env.DEV) {
       console.log(`📡 Setting up realtime subscription for complaint: ${id}`);
     }
+    
+    // Realtime updates are disabled to prevent WebSocket 403 errors
+    // If you need realtime updates, set REALTIME_ENABLED to true
+    const REALTIME_ENABLED = false;
+    if (!REALTIME_ENABLED) {
+      return;
+    }
+    
     const channel = supabase
       .channel(`complaint-${id}`)
       .on('postgres_changes', {
@@ -1555,9 +1563,9 @@ const ComplaintDetail = () => {
             </p>
 
             {ticket.supervisor_notes && (
-              <div className="mt-3 bg-indigo-50/70 border border-indigo-200 p-3 rounded-lg">
+              <div className="mt-3 min-w-0 max-w-full overflow-hidden bg-indigo-50/70 border border-indigo-200 p-3 rounded-lg">
                 <p className="text-xs font-semibold text-indigo-700 mb-1">📋 Supervisor's Initial Assessment / Diagnostic Notes</p>
-                <p className="text-sm text-slate-700 whitespace-pre-wrap">{ticket.supervisor_notes}</p>
+                <p className="max-w-full break-words overflow-wrap-anywhere text-sm text-slate-700 whitespace-pre-wrap">{ticket.supervisor_notes}</p>
               </div>
             )}
 
@@ -2189,9 +2197,9 @@ const ComplaintDetail = () => {
           </h2>
 
           {ticket.supervisor_notes && (
-            <div className="mb-4 p-3 rounded-lg bg-indigo-50/70 border border-indigo-200">
+            <div className="mb-4 min-w-0 max-w-full overflow-hidden p-3 rounded-lg bg-indigo-50/70 border border-indigo-200">
               <p className="text-xs font-semibold text-indigo-700 mb-1">📋 Supervisor's Initial Assessment / Diagnostic Notes</p>
-              <p className="text-sm whitespace-pre-wrap bg-white/70 p-2 rounded border border-indigo-100">{ticket.supervisor_notes}</p>
+              <p className="max-w-full break-words overflow-wrap-anywhere text-sm whitespace-pre-wrap bg-white/70 p-2 rounded border border-indigo-100">{ticket.supervisor_notes}</p>
             </div>
           )}
 
@@ -2223,10 +2231,10 @@ const ComplaintDetail = () => {
 
           {/* Supervisor Notes for Technician */}
           {ticket.supervisor_notes && (
-            <div className="mb-4 p-4 rounded-lg bg-indigo-50/70 border border-indigo-200">
+            <div className="mb-4 min-w-0 max-w-full overflow-hidden p-4 rounded-lg bg-indigo-50/70 border border-indigo-200">
               <p className="text-xs font-semibold text-indigo-700 mb-1">📋 Supervisor's Initial Assessment / Diagnostic Notes</p>
               <p className="text-xs text-muted-foreground mb-2">Review these notes before starting work. Do not edit this section.</p>
-              <p className="text-sm whitespace-pre-wrap bg-white/70 p-2 rounded border border-indigo-100">{ticket.supervisor_notes}</p>
+              <p className="max-w-full break-words overflow-wrap-anywhere text-sm whitespace-pre-wrap bg-white/70 p-2 rounded border border-indigo-100">{ticket.supervisor_notes}</p>
             </div>
           )}
 
@@ -2252,10 +2260,10 @@ const ComplaintDetail = () => {
           {ticket.current_phase === 3 && (ticket.status === "assigned" || ticket.status === "dispatched") && (
             <>
               {ticket.supervisor_notes && (
-                <div className="mb-4 p-4 rounded-lg bg-indigo-50/70 border border-indigo-200">
+                <div className="mb-4 min-w-0 max-w-full overflow-hidden p-4 rounded-lg bg-indigo-50/70 border border-indigo-200">
                   <p className="text-xs font-semibold text-indigo-700 mb-1">📋 Supervisor's Initial Assessment / Diagnostic Notes</p>
                   <p className="text-xs text-muted-foreground mb-2">Review these notes before starting work.</p>
-                  <p className="text-sm whitespace-pre-wrap bg-white/70 p-2 rounded border border-indigo-100">{ticket.supervisor_notes}</p>
+                  <p className="max-w-full break-words overflow-wrap-anywhere text-sm whitespace-pre-wrap bg-white/70 p-2 rounded border border-indigo-100">{ticket.supervisor_notes}</p>
                 </div>
               )}
               <div className="flex items-center justify-between bg-muted/50 p-4 rounded-lg">

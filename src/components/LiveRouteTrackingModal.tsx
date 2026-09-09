@@ -106,6 +106,13 @@ export default function LiveRouteTrackingModal({
 
     // Subscribe to live inserts if the job is active
     if (isLive) {
+      // Realtime updates are disabled to prevent WebSocket 403 errors
+      // If you need realtime tracking, set REALTIME_ENABLED to true
+      const REALTIME_ENABLED = false;
+      if (!REALTIME_ENABLED) {
+        return;
+      }
+      
       const channel = supabase
         .channel(`live-tracking-${complaintId}`)
         .on(

@@ -539,13 +539,11 @@ self.addEventListener('fetch', (event) => {
         return;
     }
 
-    // Cache-first ONLY for static assets (JS, CSS, images, fonts)
-    event.respondWith(
-        caches.match(event.request).then((cachedResponse) => {
-            if (cachedResponse) {
-                return cachedResponse;
-            }
-            return fetch(event.request).then((networkResponse) => {
+    // Network-first for JS/CSS to ensure fresh deployments are picked up immediately
+    if (event.request.destination === 'script' ||
+        event.request.destination === 'style') {
+        event.respondWith(
+            fetch(event.request).then((networkResponse) => {
                 if (networkResponse.ok) {
                     const responseClone = networkResponse.clone();
                     caches.open('brihaspathi-v11').then((cache) => {
@@ -553,13 +551,47 @@ self.addEventListener('fetch', (event) => {
                     });
                 }
                 return networkResponse;
-            }).catch(() => new Response("Offline", { status: 503 }));
-        })
-    );
+            }).catch(async () => {
+                const cachedResponse = await caches.match(event.request);
+                if (cachedResponse) {
+                    return cachedResponse;
+                }
+                return new Response("Offline", { status: 503 });
+            })
+        );
+        return;
+    }
+
+    // Cache-first for images and fonts
+    if (event.request.destination === 'image' ||
+        event.request.destination === 'font') {
+        event.respondWith(
+            caches.match(event.request).then((cachedResponse) => {
+                if (cachedResponse) {
+                    return cachedResponse;
+                }
+                return fetch(event.request).then((networkResponse) => {
+                    if (networkResponse.ok) {
+                        const responseClone = networkResponse.clone();
+                        caches.open('brihaspathi-v11').then((cache) => {
+                            cache.put(event.request, responseClone);
+                        });
+                    }
+                    return networkResponse;
+                }).catch(() => new Response("Offline", { status: 503 }));
+            })
+        );
+        return;
+    }
 });
 
 self.addEventListener('message', (event) => {
     if (event.data && event.data.type === 'SKIP_WAITING') {
         self.skipWaiting();
+    }
+
+    if (event.data && event.data.type === 'CHECK_FOR_UPDATES') {
+        // Force the service worker to check for updates
+        self.registration.update();
     }
 });

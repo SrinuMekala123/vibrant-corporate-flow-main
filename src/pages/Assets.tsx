@@ -12,6 +12,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import {
   Pagination,
   PaginationContent,
+  PaginationEllipsis,
   PaginationItem,
   PaginationLink,
   PaginationNext,
@@ -35,7 +36,8 @@ import {
   Building,
   Wrench,
   ShieldCheck,
-  Download
+  Download,
+  ChevronDown
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { downloadCSV, generateSampleCSV } from "@/utils/csvHelpers";
@@ -48,7 +50,7 @@ export default function Assets() {
   const [warrantyFilter, setWarrantyFilter] = useState("all"); // all, active, expired
   const [loading, setLoading] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
-  const ITEMS_PER_PAGE = 10;
+  const ITEMS_PER_PAGE = 20;
 
   // Modal / Side-panel states
   const [selectedAsset, setSelectedAsset] = useState<any | null>(null);
@@ -220,10 +222,11 @@ export default function Assets() {
   };
 
   const handleOpenModal = (asset: any, mode: "view" | "add" | "edit") => {
+    console.log("handleOpenModal called with mode:", mode, "asset:", asset);
     setModalMode(mode);
     setCustomerSearch("");
     setBranchSearch("");
-    setCustomerDropdownOpen(false);
+    setIsCustomerPopoverOpen(false);
     setBranchDropdownOpen(false);
 
     if (mode === "add") {
@@ -373,6 +376,13 @@ export default function Assets() {
 
   const totalPages = Math.max(1, Math.ceil(filteredAssets.length / ITEMS_PER_PAGE));
   const paginatedAssets = filteredAssets.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
+  const pageNumbers: Array<number | "ellipsis"> = totalPages <= 7
+    ? Array.from({ length: totalPages }, (_, index) => index + 1)
+    : currentPage <= 4
+      ? [1, 2, 3, 4, 5, "ellipsis", totalPages]
+      : currentPage >= totalPages - 3
+        ? [1, "ellipsis", totalPages - 4, totalPages - 3, totalPages - 2, totalPages - 1, totalPages]
+        : [1, "ellipsis", currentPage - 1, currentPage, currentPage + 1, "ellipsis", totalPages];
 
   // Filtered dropdown lists inside form
   const filteredFormBranches = branches?.filter(b =>
@@ -527,7 +537,7 @@ export default function Assets() {
                       <td className="py-3 px-4 font-semibold text-slate-800">
                         {a.customers?.full_name || "Unknown Customer"}
                       </td>
-                      <td className="py-3 px-4">
+                      <td className="py-3 px-4 asset-product-cell">
                         <div className="font-medium text-slate-700">{a.product_name}</div>
                         {(a.model_number || a.serial_number) && (
                           <div className="text-[11px] text-slate-400 mt-0.5 font-light">
@@ -684,9 +694,12 @@ export default function Assets() {
       )}
 
       {filteredAssets.length > ITEMS_PER_PAGE && (
-        <div className="flex items-center justify-center pt-2">
-          <Pagination>
-            <PaginationContent>
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-3 pt-2">
+          <p className="text-xs text-muted-foreground">
+            Showing {((currentPage - 1) * ITEMS_PER_PAGE) + 1}-{Math.min(currentPage * ITEMS_PER_PAGE, filteredAssets.length)} of {filteredAssets.length}
+          </p>
+          <Pagination className="w-full sm:w-auto mx-0 justify-end overflow-x-auto">
+            <PaginationContent className="flex-nowrap">
               <PaginationItem>
                 <PaginationPrevious
                   href="#"
@@ -697,18 +710,18 @@ export default function Assets() {
                   className={currentPage === 1 ? "pointer-events-none opacity-50" : undefined}
                 />
               </PaginationItem>
-              {Array.from({ length: totalPages }).map((_, idx) => (
-                <PaginationItem key={idx}>
-                  <PaginationLink
+              {pageNumbers.map((page, index) => (
+                <PaginationItem key={page === "ellipsis" ? `ellipsis-${index}` : page}>
+                  {page === "ellipsis" ? <PaginationEllipsis /> : <PaginationLink
                     href="#"
-                    isActive={currentPage === idx + 1}
+                    isActive={currentPage === page}
                     onClick={(e) => {
                       e.preventDefault();
-                      setCurrentPage(idx + 1);
+                      setCurrentPage(page);
                     }}
                   >
-                    {idx + 1}
-                  </PaginationLink>
+                    {page}
+                  </PaginationLink>}
                 </PaginationItem>
               ))}
               <PaginationItem>

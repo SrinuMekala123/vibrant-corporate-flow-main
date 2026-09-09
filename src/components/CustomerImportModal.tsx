@@ -10,9 +10,10 @@ import { parseFile } from '@/lib/importHelpers';
 interface CustomerImportModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onSuccess?: () => void;
 }
 
-export default function CustomerImportModal({ open, onOpenChange }: CustomerImportModalProps) {
+export default function CustomerImportModal({ open, onOpenChange, onSuccess }: CustomerImportModalProps) {
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<Array<Record<string, any>>>([]);
   const [importing, setImporting] = useState(false);
@@ -63,6 +64,7 @@ export default function CustomerImportModal({ open, onOpenChange }: CustomerImpo
       const { error } = await supabase.from('customers').insert(validRows);
       if (error) throw error;
       toast.success(`Imported ${validRows.length} customers`);
+      onSuccess?.();
       onOpenChange(false);
     } catch (e: any) {
       toast.error(e.message || 'Import failed');

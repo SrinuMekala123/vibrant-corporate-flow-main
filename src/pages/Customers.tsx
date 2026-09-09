@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import {
   Pagination,
   PaginationContent,
+  PaginationEllipsis,
   PaginationItem,
   PaginationLink,
   PaginationNext,
@@ -40,11 +41,13 @@ import ExportButton from "@/components/ExportButton";
 
 export default function Customers() {
   const { user, session } = useAuth();
+  const queryClient = useQueryClient();
   const [searchQuery, setSearchQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
   const [loading, setLoading] = useState(false);
+  const [deletingCustomerId, setDeletingCustomerId] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
-  const ITEMS_PER_PAGE = 10;
+  const ITEMS_PER_PAGE = 20;
 
   // Modal / Side-panel states
   const [selectedCustomer, setSelectedCustomer] = useState<any | null>(null);
@@ -152,7 +155,7 @@ export default function Customers() {
 
   const handleOpenModal = (customer: any, mode: "view" | "add" | "edit") => {
     setModalMode(mode);
-    setCreateLoginAccount(false);
+    setCreateLoginAccount(mode === "add");
     setLoginPassword("");
     setShowPassword(false);
     setCreatingAccount(false);
@@ -292,7 +295,9 @@ export default function Customers() {
       }
 
       setSelectedCustomer(null);
-      refetch();
+      await refetch();
+      await queryClient.invalidateQueries({ queryKey: ["admin-profiles-list"] });
+      await queryClient.invalidateQueries({ queryKey: ["customer-profiles-to-link"] });
     } catch (error: any) {
       console.error("Save customer error:", error);
       toast.error(error.message || "An error occurred while saving.");
@@ -302,7 +307,7 @@ export default function Customers() {
     }
   };
 
-  const handleDelete = async (id: string, userId: string, name: string) => {
+  const handleDelete = async (customerId: string, userId: string | null, name: string) => {
     if (!isAdmin) {
       toast.error("Only administrators can delete customer profiles.");
       return;
@@ -312,6 +317,7 @@ export default function Customers() {
       return;
     }
 
+    setDeletingCustomerId(customerId);
     try {
       const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/delete-user`, {
         method: 'POST',
@@ -319,7 +325,7 @@ export default function Customers() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session?.access_token}`,
         },
-        body: JSON.stringify({ userId, tableName: 'customers' }),
+        body: JSON.stringify({ userId, customerId, tableName: 'customers' }),
       });
 
       if (!response.ok) {
@@ -327,10 +333,14 @@ export default function Customers() {
         throw new Error(errorData.error || 'Failed to delete customer');
       }
 
-      toast.success("Customer and auth account deleted successfully.");
-      refetch();
+      toast.success("Customer deleted successfully");
+      await refetch();
+      await queryClient.invalidateQueries({ queryKey: ["admin-profiles-list"] });
+      await queryClient.invalidateQueries({ queryKey: ["customer-profiles-to-link"] });
     } catch (e: any) {
-      toast.error(e.message || "Failed to delete customer.");
+      toast.error(e.message || "Error deleting customer");
+    } finally {
+      setDeletingCustomerId(null);
     }
   };
 
@@ -352,6 +362,13 @@ export default function Customers() {
 
   const totalPages = Math.max(1, Math.ceil(filteredCustomers.length / ITEMS_PER_PAGE));
   const paginatedCustomers = filteredCustomers.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
+  const pageNumbers: Array<number | "ellipsis"> = totalPages <= 7
+    ? Array.from({ length: totalPages }, (_, index) => index + 1)
+    : currentPage <= 4
+      ? [1, 2, 3, 4, 5, "ellipsis", totalPages]
+      : currentPage >= totalPages - 3
+        ? [1, "ellipsis", totalPages - 4, totalPages - 3, totalPages - 2, totalPages - 1, totalPages]
+        : [1, "ellipsis", currentPage - 1, currentPage, currentPage + 1, "ellipsis", totalPages];
 
   return (
     <div className="space-y-8 relative">
@@ -481,10 +498,10 @@ export default function Customers() {
                     className="hover:bg-slate-50/80 transition-colors cursor-pointer"
                     onClick={() => handleOpenModal(c, "view")}
                   >
-                    <td className="py-3 px-4">
-                      <div className="font-semibold text-slate-800">{c.full_name}</div>
-                      {c.email && <div className="text-xs text-slate-400 mt-0.5">{c.email}</div>}
-                    </td>
+                     <td className="py-3 px-4">
+                       <div className="font-semibold text-slate-800 truncate max-w-[180px] sm:max-w-[260px]" title={c.full_name}>{c.full_name}</div>
+                       {c.email && <div className="text-xs text-slate-400 mt-0.5 truncate max-w-[180px] sm:max-w-[260px]" title={c.email}>{c.email}</div>}
+                     </td>
                     <td className="py-3 px-4 font-medium text-slate-600">
                       {c.phone}
                     </td>
@@ -535,10 +552,11 @@ export default function Customers() {
                             variant="ghost" 
                             size="sm" 
                             onClick={() => handleDelete(c.id, c.user_id, c.full_name)}
+                            disabled={deletingCustomerId === c.id}
                             className="text-muted-foreground hover:text-destructive hover:bg-destructive/5 rounded-lg h-8 w-8 p-0"
                             title="Delete customer"
                           >
-                            <Trash2 className="w-4 h-4" />
+                            {deletingCustomerId === c.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
                           </Button>
                         )}
                       </div>
@@ -558,10 +576,10 @@ export default function Customers() {
                 onClick={() => handleOpenModal(c, "view")}
               >
                 <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <h3 className="font-semibold text-slate-800 text-base">{c.full_name}</h3>
-                    {c.email && <p className="text-xs text-slate-400 font-light mt-0.5">{c.email}</p>}
-                  </div>
+                   <div>
+                     <h3 className="font-semibold text-slate-800 text-base truncate" title={c.full_name}>{c.full_name}</h3>
+                     {c.email && <p className="text-xs text-slate-400 font-light mt-0.5 truncate" title={c.email}>{c.email}</p>}
+                   </div>
                   <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider shrink-0 ${
                     c.customer_type === 'Corporate' ? 'bg-indigo-50 border border-indigo-200 text-indigo-600' :
                     c.customer_type === 'Government' ? 'bg-rose-50 border border-rose-200 text-rose-600' :
@@ -609,10 +627,11 @@ export default function Customers() {
                     <Button 
                       variant="ghost" 
                       size="sm" 
-                      onClick={() => handleDelete(c.id, c.full_name)}
+                      onClick={() => handleDelete(c.id, c.user_id, c.full_name)}
+                      disabled={deletingCustomerId === c.id}
                       className="text-xs rounded-lg h-8 font-semibold text-destructive hover:bg-destructive/5 shrink-0"
                     >
-                      <Trash2 className="w-4 h-4" />
+                      {deletingCustomerId === c.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
                     </Button>
                   )}
                 </div>
@@ -623,9 +642,12 @@ export default function Customers() {
       )}
 
       {filteredCustomers.length > ITEMS_PER_PAGE && (
-        <div className="flex items-center justify-center pt-2">
-          <Pagination>
-            <PaginationContent>
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-3 pt-2">
+          <p className="text-xs text-muted-foreground">
+            Showing {((currentPage - 1) * ITEMS_PER_PAGE) + 1}-{Math.min(currentPage * ITEMS_PER_PAGE, filteredCustomers.length)} of {filteredCustomers.length}
+          </p>
+          <Pagination className="w-full sm:w-auto mx-0 justify-end overflow-x-auto">
+            <PaginationContent className="flex-nowrap">
               <PaginationItem>
                 <PaginationPrevious
                   href="#"
@@ -636,18 +658,18 @@ export default function Customers() {
                   className={currentPage === 1 ? "pointer-events-none opacity-50" : undefined}
                 />
               </PaginationItem>
-              {Array.from({ length: totalPages }).map((_, idx) => (
-                <PaginationItem key={idx}>
-                  <PaginationLink
+              {pageNumbers.map((page, index) => (
+                <PaginationItem key={page === "ellipsis" ? `ellipsis-${index}` : page}>
+                  {page === "ellipsis" ? <PaginationEllipsis /> : <PaginationLink
                     href="#"
-                    isActive={currentPage === idx + 1}
+                    isActive={currentPage === page}
                     onClick={(e) => {
                       e.preventDefault();
-                      setCurrentPage(idx + 1);
+                      setCurrentPage(page);
                     }}
                   >
-                    {idx + 1}
-                  </PaginationLink>
+                    {page}
+                  </PaginationLink>}
                 </PaginationItem>
               ))}
               <PaginationItem>
@@ -674,7 +696,7 @@ export default function Customers() {
               animate={{ x: 0 }}
               exit={{ x: "100%" }}
               transition={{ type: "spring", damping: 26, stiffness: 220 }}
-              className="bg-white w-full max-w-xl h-full rounded-lg p-6 md:p-8 relative flex flex-col gap-6 overflow-y-auto shadow-xl border border-gray-200"
+              className="bg-white w-full max-w-xl h-full rounded-lg p-4 sm:p-6 md:p-8 relative flex flex-col gap-6 overflow-y-auto shadow-xl border border-gray-200"
             >
               {/* Close Button */}
               <button 
@@ -686,11 +708,11 @@ export default function Customers() {
               </button>
 
               {/* Modal Header */}
-              <div className="flex items-center gap-4 border-b pb-4">
+              <div className="flex items-center gap-4 border-b pb-4 pr-8 min-w-0">
                 <div className={`w-14 h-14 rounded-2xl flex items-center justify-center text-xl font-bold text-white uppercase gradient-warm`}>
                   {(modalMode === 'add' ? 'N' : fullName)?.charAt(0) || 'C'}
                 </div>
-                <div>
+                <div className="min-w-0">
                   <h3 className="text-xl font-display font-bold text-slate-800">
                     {modalMode === 'view' ? "Customer Profile Details" : modalMode === 'add' ? "Add New Customer" : "Edit Customer Details"}
                   </h3>
@@ -705,12 +727,12 @@ export default function Customers() {
                 <div className="space-y-6 flex-1">
                   <div className="space-y-4 bg-muted/40 p-4 rounded-xl border border-slate-100">
                     <h4 className="text-xs font-bold text-primary uppercase tracking-wider">Profile Information</h4>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div className="sm:col-span-2 min-w-0">
                         <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Full Name</span>
-                        <span className="text-sm font-semibold text-slate-800">{selectedCustomer.full_name}</span>
+                        <span className="text-sm font-semibold text-slate-800 block truncate max-w-[250px] sm:max-w-full" title={selectedCustomer.full_name}>{selectedCustomer.full_name}</span>
                       </div>
-                      <div>
+                      <div className="sm:col-span-2">
                         <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Type</span>
                         <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider inline-block mt-0.5 ${
                           selectedCustomer.customer_type === 'Corporate' ? 'bg-indigo-50 border border-indigo-200 text-indigo-600' :
@@ -915,28 +937,7 @@ export default function Customers() {
                       )}
                     </div>
 
-                    {/* Linking login profile (Admin/Supervisor Only) */}
-                    <div className="space-y-1.5">
-                      <label className="text-xs font-semibold text-slate-600 block">Link Login Account (Optional)</label>
-                      <Select value={profileUserId || "none_clear"} onValueChange={setProfileUserId} disabled={loading}>
-                        <SelectTrigger className="w-full h-10 rounded-lg border-slate-200 bg-white">
-                          <SelectValue placeholder="Choose a registered customer login account" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="none_clear">-- Do not link / Clear --</SelectItem>
-                          {customerProfiles?.map((p: any) => (
-                            <SelectItem key={p.id} value={p.id}>
-                              {p.full_name} ({p.email})
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <p className="text-[10px] text-muted-foreground">
-                        Allows the customer to view their own profile and assets when they log in.
-                        <br />
-                        <span className="font-semibold text-slate-500">Note: If customer self-registers, link their account in the Customers table.</span>
-                      </p>
-                    </div>
+                    {/* Manual login-account linking is disabled. New accounts are linked automatically. */}
 
                     <div className="space-y-1.5">
                       <label className="text-xs font-semibold text-slate-600">Physical Address</label>
@@ -982,7 +983,15 @@ export default function Customers() {
           </div>
         )}
       </AnimatePresence>
-    <CustomerImportModal open={isCustomerImportOpen} onOpenChange={setIsCustomerImportOpen} />
+      <CustomerImportModal
+        open={isCustomerImportOpen}
+        onOpenChange={setIsCustomerImportOpen}
+        onSuccess={() => {
+          refetch();
+          queryClient.invalidateQueries({ queryKey: ["admin-profiles-list"] });
+          queryClient.invalidateQueries({ queryKey: ["customer-profiles-to-link"] });
+        }}
+      />
     </div>
   );
 }

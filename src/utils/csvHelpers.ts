@@ -52,14 +52,28 @@ export function generateSampleCSV(type: "customer" | "asset" | "technician" | "s
 
   if (type === "technician") {
     const headers = ["full_name", "email", "phone", "branch", "expertise", "password"];
-    const example = ["John Doe", "john@test.com", "9999999999", "Hyderabad", "CCTV,Solar", "TechPass123!"];
-    return [headers.join(","), example.join(",")].join("\n");
+    const example = [{
+      full_name: "John Doe",
+      email: "john@test.com",
+      phone: "9999999999",
+      branch: "Hyderabad",
+      expertise: "Solar,CCTV,Networking",
+      password: "TechPass123!",
+    }];
+    return generateCSV(example, headers);
   }
 
   if (type === "supervisor") {
-    const headers = ["full_name", "email", "phone", "branch", "password"];
-    const example = ["Jane Smith", "jane@test.com", "8888888888", "Bangalore", "SuperPass123!"];
-    return [headers.join(","), example.join(",")].join("\n");
+    const headers = ["full_name", "email", "phone", "branch", "expertise", "password"];
+    const example = [{
+      full_name: "Jane Smith",
+      email: "jane@test.com",
+      phone: "8888888888",
+      branch: "Bangalore",
+      expertise: "Solar,CCTV,Networking",
+      password: "SupPass123!",
+    }];
+    return generateCSV(example, headers);
   }
 
   return "";

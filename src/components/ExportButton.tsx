@@ -21,7 +21,7 @@ interface ExportButtonProps {
 }
 
 const STAFF_COLUMNS = ["full_name", "email", "phone", "role", "branch_id", "expertise", "created_at"];
-const CUSTOMER_COLUMNS = ["full_name", "email", "phone", "created_at"];
+const CUSTOMER_COLUMNS = ["full_name", "email", "phone", "customer_type", "created_at"];
 const ASSET_COLUMNS = [
   "customer_name",
   "product_name",
@@ -98,6 +98,26 @@ export default function ExportButton({ variant = "staff", className }: ExportBut
   const handleExport = async (filter: "all" | "technician" | "supervisor" | null) => {
     setExporting(true);
     try {
+      if (variant === "staff") {
+        const session = (await supabase.auth.getSession()).data.session;
+        const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/export-data`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${session?.access_token || import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+          },
+          body: JSON.stringify({ table: "profiles", role: filter === "all" ? undefined : filter }),
+        });
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.error || "Export failed");
+        }
+        downloadCSV(await response.text(), filter ? `export_${filter}s.csv` : "export_all_users.csv");
+        toast.success("Users exported successfully");
+        setExporting(false);
+        return;
+      }
+
       let rows = getQueryData();
 
       if (variant === "staff" && filter) {

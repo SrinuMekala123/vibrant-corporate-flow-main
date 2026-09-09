@@ -15,7 +15,7 @@ serve(async (req: Request): Promise<Response> => {
 
   try {
     const body = await req.json();
-    const { email, password, fullName, role, phone, expertise, userId } = body;
+    const { email, password, fullName, role, phone, expertise, userId, branchId, customerType = "Retail" } = body;
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -56,6 +56,17 @@ serve(async (req: Request): Promise<Response> => {
       throw new Error("Missing required fields: email, password, fullName, role");
     }
 
+    const resolvedBranchId = branchId || null;
+    if (resolvedBranchId) {
+      const { data: branch, error: branchError } = await supabaseAdmin
+        .from("branches")
+        .select("id")
+        .eq("id", resolvedBranchId)
+        .maybeSingle();
+      if (branchError) throw new Error(`Failed to validate branch: ${branchError.message}`);
+      if (!branch) throw new Error("Selected branch does not exist");
+    }
+
     // Create user in Supabase Auth
     const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
       email,
@@ -73,22 +84,50 @@ serve(async (req: Request): Promise<Response> => {
     if (!authData.user) throw new Error("Failed to create auth user");
 
     // Upsert into profiles table
-    const { error: profileError } = await supabaseAdmin
-      .from("profiles")
-      .upsert({
+    const { error: profileError } = await supabaseAdmin.from("profiles").upsert({
         id: authData.user.id,
         email,
         full_name: fullName,
         role,
-        phone,
-        expertise,
+        phone: phone || null,
+        expertise: expertise || null,
+        branch_id: resolvedBranchId,
+        customer_type: role === "customer" ? customerType : null,
         avatar_url: fullName.charAt(0).toUpperCase(),
       });
 
-    if (profileError) throw profileError;
+    if (profileError) {
+      console.error("Create user profile error:", profileError);
+      await supabaseAdmin.auth.admin.deleteUser(authData.user.id);
+      throw new Error(`Failed to create profile: ${profileError.message}`);
+    }
+
+    let customer = null;
+    if (role === "customer") {
+      const customerPayload = {
+        user_id: authData.user.id,
+        full_name: fullName,
+        phone: phone || null,
+        email,
+        customer_type: customerType || "Retail",
+        branch_id: resolvedBranchId,
+      };
+      const { data: customerData, error: customerError } = await supabaseAdmin
+        .from("customers")
+        .insert(customerPayload)
+        .select("id, user_id, full_name, email, customer_type, branch_id")
+        .single();
+      if (customerError) {
+        console.error("Create user customer record error:", customerError);
+        await supabaseAdmin.from("profiles").delete().eq("id", authData.user.id);
+        await supabaseAdmin.auth.admin.deleteUser(authData.user.id);
+        throw new Error(`Failed to create customer record: ${customerError.message}`);
+      }
+      customer = customerData;
+    }
 
     return new Response(
-      JSON.stringify({ success: true, user: authData.user }),
+      JSON.stringify({ success: true, user: authData.user, customer }),
       {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
         status: 200,

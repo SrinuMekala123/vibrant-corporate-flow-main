@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, UserPlus, Mail, Phone, Shield, Wrench, Search, ShieldAlert, Trash2, Eye, EyeOff, Edit, X, Download, Upload } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import StaffImportModal from "@/components/StaffImportModal";
@@ -18,13 +18,18 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
+type UserRole = "customer" | "technician" | "supervisor" | "admin";
+type StaffRole = Exclude<UserRole, "customer" | "admin">;
+
 export default function UsersPage() {
   const { user, session, signUp } = useAuth();
+  const queryClient = useQueryClient();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [fullName, setFullName] = useState("");
   const [phone, setPhone] = useState("");
-  const [role, setRole] = useState("");
+  const [role, setRole] = useState<UserRole | "">("");
+  const [staffImportRole, setStaffImportRole] = useState<StaffRole | "">("");
   const [selectedExpertise, setSelectedExpertise] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -90,7 +95,7 @@ export default function UsersPage() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from('profiles')
-        .select('*')
+        .select('id, full_name, email, phone, role, branch_id, customer_type, expertise, created_at')
         .order('full_name', { ascending: true });
       if (error) throw error;
       return data || [];
@@ -138,7 +143,7 @@ export default function UsersPage() {
     setEditEmail(profile.email || "");
     setEditPhone(profile.phone || "");
     setEditRole(profile.role || "customer");
-    setEditExpertise(profile.expertise ? profile.expertise.split(", ").filter(Boolean) : []);
+    setEditExpertise(profile.expertise ? profile.expertise.split(",").map((item: string) => item.trim()).filter(Boolean) : []);
     setEditPassword("");
     setEditConfirmPassword("");
     setShowPassword(false);
@@ -223,62 +228,28 @@ export default function UsersPage() {
         ? selectedExpertise.join(", ")
         : undefined;
 
-      // Create user using our AuthContext signUp helper
-      const { error: signUpError } = await signUp(
-        trimmedEmail,
-        password,
-        trimmedName,
-        role as any,
-        cleanPhone || undefined,
-        expertiseString
-      );
-
-      if (signUpError) throw signUpError;
-
-      // Fetch the newly created profile to get the user ID
-      const { data: newProfile } = await supabase
-        .from("profiles")
-        .select("id")
-        .eq("email", trimmedEmail)
-        .maybeSingle();
-
-      if (newProfile?.id) {
-        const profileUpdates: any = {
-          branch_id: branchId || null,
-        };
-
-        if (role === "customer") {
-          profileUpdates.customer_type = customerType;
-        }
-
-        const { error: profileUpdateError } = await supabase
-          .from("profiles")
-          .update(profileUpdates)
-          .eq("id", newProfile.id);
-
-        if (profileUpdateError) {
-          console.error("Profile update error:", profileUpdateError);
-        }
-
-        // If role is 'customer', also create a customer record in the customers table
-        if (role === "customer") {
-          const { error: customerError } = await supabase
-            .from("customers")
-            .insert([{
-              user_id: newProfile.id,
-              full_name: trimmedName,
-              phone: cleanPhone || null,
-              email: trimmedEmail,
-              customer_type: customerType,
-              branch_id: branchId || null,
-            }]);
-
-          if (customerError) {
-            console.error("Auto-create customer record error:", customerError);
-            toast.warning("User created but customer record could not be auto-created. Please add manually in Customers page.");
-          }
-        }
+      const { data: createdUser, error: createUserError } = await supabase.functions.invoke("create-user", {
+        body: {
+          email: trimmedEmail,
+          password,
+          fullName: trimmedName,
+          role,
+          phone: cleanPhone,
+          expertise: expertiseString,
+          branchId: branchId || null,
+          customerType: role === "customer" ? customerType : null,
+        },
+      });
+      if (createUserError) throw new Error(createUserError.message || "Failed to create user");
+      const newUserId = createdUser?.user?.id;
+      if (!newUserId) throw new Error("User was created but no user ID was returned");
+      if (role === "customer" && !createdUser?.customer?.id) {
+        throw new Error("User created but customer record was not created");
       }
+      console.log("User and related records created:", {
+        userId: newUserId,
+        customerId: createdUser?.customer?.id || null,
+      });
 
       toast.success(`User ${trimmedName} created successfully!`);
       
@@ -293,7 +264,9 @@ export default function UsersPage() {
       setCustomerType("Retail");
       
       // Refresh user list
-      refetch();
+      await refetch();
+      await queryClient.invalidateQueries({ queryKey: ["customers-list"] });
+      await queryClient.invalidateQueries({ queryKey: ["customer-profiles-to-link"] });
     } catch (error: any) {
       toast.error(error.message || "Failed to create user");
     } finally {
@@ -403,7 +376,9 @@ export default function UsersPage() {
 
       toast.success("User profile and password updated successfully");
       setSelectedUser(null);
-      refetch();
+      await refetch();
+      await queryClient.invalidateQueries({ queryKey: ["customers-list"] });
+      await queryClient.invalidateQueries({ queryKey: ["customer-profiles-to-link"] });
     } catch (error: any) {
       toast.error(error.message || "Failed to update profile");
     } finally {
@@ -433,7 +408,9 @@ export default function UsersPage() {
       }
 
       toast.success("User and auth account deleted successfully");
-      refetch();
+      await refetch();
+      await queryClient.invalidateQueries({ queryKey: ["customers-list"] });
+      await queryClient.invalidateQueries({ queryKey: ["customer-profiles-to-link"] });
     } catch (e: any) {
       toast.error(e.message || "Failed to delete user");
     }
@@ -483,8 +460,8 @@ export default function UsersPage() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => { setRole('technician'); setIsStaffImportOpen(true); }}>Technician</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => { setRole('supervisor'); setIsStaffImportOpen(true); }}>Supervisor</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => { setStaffImportRole('technician'); setIsStaffImportOpen(true); }}>Technician</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => { setStaffImportRole('supervisor'); setIsStaffImportOpen(true); }}>Supervisor</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
 
@@ -618,7 +595,7 @@ export default function UsersPage() {
 
             <div className="space-y-1.5">
               <label className="text-xs font-semibold text-slate-600 block">System Role</label>
-              <Select value={role} onValueChange={setRole} disabled={loading}>
+              <Select value={role} onValueChange={(value) => setRole(value as UserRole)} disabled={loading}>
                 <SelectTrigger className="w-full">
                   <SelectValue placeholder="Select role" />
                 </SelectTrigger>
@@ -1185,9 +1162,13 @@ export default function UsersPage() {
       <StaffImportModal
         open={isStaffImportOpen}
         onOpenChange={setIsStaffImportOpen}
-        onSuccess={() => refetch()}
-        role={role}
-        onRoleChange={setRole}
+        onSuccess={() => {
+          refetch();
+          queryClient.invalidateQueries({ queryKey: ["customers-list"] });
+          queryClient.invalidateQueries({ queryKey: ["customer-profiles-to-link"] });
+        }}
+        role={staffImportRole}
+        onRoleChange={setStaffImportRole}
       />
     </div>
   );

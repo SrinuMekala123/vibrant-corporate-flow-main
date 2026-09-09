@@ -7,7 +7,7 @@ import { useDropzone } from 'react-dropzone';
 import { toast } from 'sonner';
 import { parseFile } from '@/lib/importHelpers';
 import { supabase } from '@/lib/supabase';
-import { Download, Upload, X, Loader2 } from 'lucide-react';
+import { Upload, Loader2 } from 'lucide-react';
 
 interface StaffImportModalProps {
   open: boolean;
@@ -19,7 +19,7 @@ interface StaffImportModalProps {
 
 type StaffRole = 'technician' | 'supervisor';
 
-const COMMON_FIELDS = ['full_name', 'email', 'phone', 'branch', 'password'];
+const COMMON_FIELDS = ['full_name', 'email', 'phone', 'branch', 'expertise', 'password'];
 const TECHNICIAN_FIELDS = ['full_name', 'email', 'phone', 'branch', 'expertise', 'password'];
 const SUPERVISOR_FIELDS = [...COMMON_FIELDS];
 
@@ -39,25 +39,6 @@ export default function StaffImportModal({ open, onOpenChange, onSuccess, role =
   };
 
   const fields = currentRole === 'technician' ? TECHNICIAN_FIELDS : currentRole === 'supervisor' ? SUPERVISOR_FIELDS : [];
-
-  const downloadSample = () => {
-    if (!role) return;
-    const headers = fields.join(',');
-    const exampleRow = role === 'technician'
-      ? '"John Doe",john@test.com,9999999999,Hyderabad,"CCTV,Solar",TechPass123!'
-      : '"Jane Smith",jane@test.com,8888888888,Bangalore,SuperPass123!';
-
-    const csvContent = [headers, exampleRow].join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    const url = URL.createObjectURL(blob);
-    link.setAttribute('href', url);
-    link.setAttribute('download', `${role}_sample.csv`);
-    link.style.visibility = 'hidden';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     if (acceptedFiles.length === 0) return;
@@ -169,13 +150,9 @@ export default function StaffImportModal({ open, onOpenChange, onSuccess, role =
               {role === 'technician'
                 ? 'Technician CSV requires: full_name, email, phone, branch, expertise, password'
                 : role === 'supervisor'
-                  ? 'Supervisor CSV requires: full_name, email, phone, branch, password'
+                  ? 'Supervisor CSV: full_name, email, phone, branch, expertise, password'
                   : 'Select a staff type to see required columns.'}
             </p>
-            <Button variant="outline" size="sm" onClick={downloadSample} disabled={!role} className="flex items-center gap-1.5">
-              <Download className="w-3.5 h-3.5" />
-              Download Sample CSV
-            </Button>
           </div>
 
           <div

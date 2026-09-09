@@ -6,140 +6,72 @@ const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
+const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
+  status,
+  headers: { ...corsHeaders, "Content-Type": "application/json" },
+});
 
 serve(async (req: Request): Promise<Response> => {
-  // Handle CORS preflight
-  if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
-  }
-
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   try {
     const body = await req.json();
-    const {
-      email,
-      password,
-      full_name,
-      phone,
-      role = "customer",
-      // Optional: create a customer record alongside the auth user
-      createCustomerRecord = false,
-      customerData = {},
-    } = body;
+    const email = String(body.email || "").trim().toLowerCase();
+    const password = String(body.password || "");
+    const fullName = String(body.full_name || "").trim();
+    const phone = String(body.phone || "").trim();
+    const role = body.role || "customer";
+    const createCustomerRecord = body.createCustomerRecord === true;
+    const customerData = body.customerData || {};
 
-    // --- Validate required fields ---
-    if (!email || !password || !full_name) {
-      throw new Error("Missing required fields: email, password, full_name");
-    }
+    if (!email || !password || !fullName) return json({ error: "Missing required fields: email, password, full_name" }, 400);
+    if (!/^\S+@\S+\.\S+$/.test(email)) return json({ error: "Invalid email address" }, 400);
+    if (password.length < 8) return json({ error: "Password must be at least 8 characters" }, 400);
+    if (!["customer", "technician", "supervisor", "admin"].includes(role)) return json({ error: "Invalid role" }, 400);
 
-    if (password.length < 8) {
-      throw new Error("Password must be at least 8 characters");
-    }
+    const url = Deno.env.get("SUPABASE_URL");
+    const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    if (!url || !key) return json({ error: "Auth service is not configured" }, 500);
+    const admin = createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
 
-    const supabaseUrl = Deno.env.get("SUPABASE_URL");
-    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    const { data: existingProfile, error: profileLookupError } = await admin.from("profiles").select("id").eq("email", email).maybeSingle();
+    if (profileLookupError) throw new Error(`Could not check existing email: ${profileLookupError.message}`);
+    if (existingProfile) return json({ error: "Email already exists" }, 400);
+    const { data: users, error: usersError } = await admin.auth.admin.listUsers({ page: 1, perPage: 1000 });
+    if (usersError) throw new Error(`Could not check existing Auth users: ${usersError.message}`);
+    if (users.users.some((existingUser) => existingUser.email?.toLowerCase() === email)) return json({ error: "Email already exists" }, 400);
 
-    if (!supabaseUrl || !supabaseServiceKey) {
-      throw new Error("Missing environment variables: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
-    }
-
-    // Initialize Supabase client with Service Role Key (bypasses RLS & allows admin auth actions)
-    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false,
-      },
-    });
-
-    // --- Step 1: Create Auth User ---
-    const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
-      email: email.trim().toLowerCase(),
-      password,
-      email_confirm: true,
-      user_metadata: {
-        full_name,
-        role,
-        phone,
-      },
-    });
-
-    if (authError) {
-      // Provide a user-friendly message for duplicate emails
-      if (authError.message?.includes("already been registered") || authError.message?.includes("already exists")) {
-        throw new Error(`An account with email "${email}" already exists.`);
-      }
-      throw authError;
-    }
-
-    if (!authData.user) {
-      throw new Error("Failed to create auth user");
+    const { data: authData, error: authError } = await admin.auth.admin.createUser({ email, password, email_confirm: true, user_metadata: { full_name: fullName, role, phone } });
+    if (authError || !authData.user) {
+      if (/already|exists|registered/i.test(authError?.message || "")) return json({ error: "Email already exists" }, 400);
+      throw new Error(authError?.message || "Failed to create Auth user");
     }
 
     const userId = authData.user.id;
-
-    // --- Step 2: Upsert Profile ---
-    const { error: profileError } = await supabaseAdmin
-      .from("profiles")
-      .upsert({
-        id: userId,
-        email: email.trim().toLowerCase(),
-        full_name,
-        role,
-        phone: phone || null,
-        avatar_url: full_name.charAt(0).toUpperCase(),
+    try {
+      const { error: profileError } = await admin.from("profiles").upsert({
+        id: userId, email, full_name: fullName, role, phone: phone || null,
+        avatar_url: fullName.charAt(0).toUpperCase(), branch_id: customerData.branch_id || null,
+        customer_type: role === "customer" ? customerData.customer_type || "Retail" : null,
       });
+      if (profileError) throw new Error(`Failed to create profile: ${profileError.message}`);
 
-    if (profileError) {
-      console.error("Profile upsert error:", profileError);
-      throw profileError;
-    }
-
-    // --- Step 3: Optionally create Customer record ---
-    let customerId: string | null = null;
-
-    if (createCustomerRecord) {
-      const customerPayload = {
-        user_id: userId,
-        full_name,
-        phone: phone || null,
-        email: email.trim().toLowerCase(),
-        address: customerData.address || null,
-        customer_type: customerData.customer_type || "Retail",
-        branch_id: customerData.branch_id || null,
-      };
-
-      const { data: customerRow, error: customerError } = await supabaseAdmin
-        .from("customers")
-        .insert([customerPayload])
-        .select("id")
-        .single();
-
-      if (customerError) {
-        console.error("Customer insert error:", customerError);
-        throw customerError;
+      let customerId = null;
+      if (createCustomerRecord) {
+        const { data: customer, error: customerError } = await admin.from("customers").insert({
+          user_id: userId, full_name: fullName, phone: phone || null, email,
+          address: customerData.address || null, customer_type: customerData.customer_type || "Retail",
+          branch_id: customerData.branch_id || null,
+        }).select("id").single();
+        if (customerError) throw new Error(`Failed to create customer record: ${customerError.message}`);
+        customerId = customer.id;
       }
-
-      customerId = customerRow?.id || null;
+      return json({ success: true, userId, customerId, user: { id: userId, email, full_name: fullName, role } });
+    } catch (error) {
+      await admin.auth.admin.deleteUser(userId);
+      throw error;
     }
-
-    return new Response(
-      JSON.stringify({
-        success: true,
-        userId,
-        customerId,
-      }),
-      {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-        status: 200,
-      }
-    );
-  } catch (error: any) {
+  } catch (error) {
     console.error("create-customer-user error:", error);
-    return new Response(
-      JSON.stringify({ error: error.message }),
-      {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-        status: 400,
-      }
-    );
+    return json({ error: error?.message || "Customer creation failed" }, 500);
   }
 });
