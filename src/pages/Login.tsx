@@ -526,6 +526,7 @@ import { Input } from "@/components/ui/input";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
+import { isValidEmail, isValidFullName, isValidPhone, normalizePhone } from "@/lib/validation";
 
 const Login = () => {
   const [email, setEmail] = useState("");
@@ -545,6 +546,9 @@ const Login = () => {
   const [fullName, setFullName] = useState("");
   const [phone, setPhone] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [showSignupConfirmation, setShowSignupConfirmation] = useState(false);
+  const [signupOtp, setSignupOtp] = useState("");
 
   const handlePasswordReset = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -599,25 +603,31 @@ const Login = () => {
     e.preventDefault();
     
     const trimmedName = fullName.trim();
-    if (!trimmedName || trimmedName.length < 3) {
-      toast.error("Full Name must be at least 3 characters.");
+    if (!isValidFullName(trimmedName)) {
+      toast.error("Full Name must be 3-100 characters and contain only letters and spaces.");
       return;
     }
 
     const trimmedEmail = email.trim().toLowerCase();
-    if (!trimmedEmail) {
+    if (!isValidEmail(trimmedEmail)) {
       toast.error("Please enter a valid email address.");
       return;
     }
 
-    const cleanPhone = phone.replace(/[\s\-()]/g, "");
-    if (!cleanPhone || cleanPhone.length < 8) {
-      toast.error("Please enter a valid phone number.");
+    const cleanPhone = normalizePhone(phone);
+    if (!isValidPhone(phone)) {
+      toast.error("Please enter a valid 10-digit Indian mobile number");
       return;
     }
 
-    if (password.length < 6) {
-      toast.error("Password must be at least 6 characters.");
+    if (
+      password.length < 8 ||
+      !/[A-Z]/.test(password) ||
+      !/[a-z]/.test(password) ||
+      !/[0-9]/.test(password) ||
+      !/[!@#$%^&*(),.?":{}|<>_\-']/.test(password)
+    ) {
+      toast.error("Password must be at least 8 characters with uppercase, lowercase, number, and special character.");
       return;
     }
 
@@ -645,11 +655,44 @@ const Login = () => {
 
       toast.success("Account created successfully! Check your email to confirm registration.");
       setIsSignUp(false);
-      setPassword("");
-      setConfirmPassword("");
+      setSignupOtp("");
+      setShowSignupConfirmation(true);
     } catch (err: any) {
       console.error("SignUp error:", err);
       toast.error(err.message || "Failed to create account.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSignupOtpVerification = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmedEmail = email.trim().toLowerCase();
+    if (!trimmedEmail || !/^\d{6}$/.test(signupOtp)) {
+      toast.error("Enter your email and the 6-digit verification code.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const { data, error } = await supabase.auth.verifyOtp({
+        email: trimmedEmail,
+        token: signupOtp,
+        type: "signup",
+      });
+      if (error) {
+        toast.error("The verification code is invalid or expired. Please request a new confirmation email.");
+        return;
+      }
+      if (!data.session) {
+        toast.error("Email verification succeeded, but no active session was created. Please sign in.");
+        return;
+      }
+      toast.success("Email verified successfully. Redirecting to your dashboard...");
+      navigate("/dashboard", { replace: true });
+    } catch (err: any) {
+      console.error("Signup OTP verification error:", err);
+      toast.error(err.message || "Unable to verify the code.");
     } finally {
       setLoading(false);
     }
@@ -760,7 +803,63 @@ const Login = () => {
             <span className="font-display font-extrabold text-2xl tracking-tight text-gradient">Brihaspathi FSM</span>
           </div>
 
-          {isSignUp ? (
+          {showSignupConfirmation ? (
+            <>
+              <div className="space-y-2">
+                <div className="mb-5 flex justify-start">
+                  <img src="/highbtlogo-tm-1.webp" alt="Brihaspathi Technologies" className="h-14 object-contain" />
+                </div>
+                <h2 className="text-3xl font-display font-extrabold tracking-tight text-foreground">Confirm Your Email</h2>
+                <p className="text-muted-foreground text-sm">Click the link in your email, or enter the 6-digit code below to confirm your account.</p>
+              </div>
+
+              <form onSubmit={handleSignupOtpVerification} className="space-y-5">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Email Address</label>
+                  <Input
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    required
+                    disabled={loading}
+                    className="w-full h-12 rounded-xl border-border/80 bg-card"
+                  />
+                </div>
+                <div className="relative flex items-center py-1">
+                  <div className="flex-grow border-t border-border/70" />
+                  <span className="mx-3 text-xs text-muted-foreground">Or enter the 6-digit code below:</span>
+                  <div className="flex-grow border-t border-border/70" />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Verification Code</label>
+                  <Input
+                    type="text"
+                    value={signupOtp}
+                    onChange={(e) => setSignupOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                    placeholder="Enter 6-digit code"
+                    inputMode="numeric"
+                    maxLength={6}
+                    autoComplete="one-time-code"
+                    required
+                    disabled={loading}
+                    className="w-full h-12 rounded-xl border-border/80 bg-card tracking-[0.3em]"
+                  />
+                </div>
+                <Button type="submit" className="w-full h-12 rounded-xl gradient-primary text-white font-bold shadow-glow" disabled={loading}>
+                  {loading ? "Verifying..." : "Verify Email"}
+                </Button>
+              </form>
+
+              <button
+                type="button"
+                onClick={() => { setShowSignupConfirmation(false); setIsSignUp(true); }}
+                className="w-full text-xs font-semibold text-primary hover:underline"
+                disabled={loading}
+              >
+                Back to Sign Up
+              </button>
+            </>
+          ) : isSignUp ? (
             <>
               <div className="space-y-2">
                 <div className="mb-5 flex justify-start">
@@ -782,6 +881,7 @@ const Login = () => {
                       onChange={(e) => setFullName(e.target.value)}
                       className="pl-11 h-12 rounded-xl border-border/80 focus:border-primary focus:ring-primary/20 bg-card"
                       required
+                      maxLength={100}
                       disabled={loading}
                     />
                   </div>
@@ -830,7 +930,7 @@ const Login = () => {
                       onChange={(e) => setPassword(e.target.value)}
                       className="pl-11 pr-11 h-12 rounded-xl border-border/80 focus:border-primary focus:ring-primary/20 bg-card"
                       required
-                      minLength={6}
+                      minLength={8}
                       disabled={loading}
                     />
                     <button
@@ -849,15 +949,24 @@ const Login = () => {
                   <div className="relative">
                     <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                     <Input
-                      type={showPass ? "text" : "password"}
+                      type={showConfirmPassword ? "text" : "password"}
                       placeholder="••••••••"
                       value={confirmPassword}
                       onChange={(e) => setConfirmPassword(e.target.value)}
                       className="pl-11 pr-11 h-12 rounded-xl border-border/80 focus:border-primary focus:ring-primary/20 bg-card"
                       required
-                      minLength={6}
+                      minLength={8}
                       disabled={loading}
                     />
+                    <button
+                      type="button"
+                      onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                      className="absolute right-3.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                      disabled={loading}
+                      aria-label={showConfirmPassword ? "Hide confirm password" : "Show confirm password"}
+                    >
+                      {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
                   </div>
                 </div>
 

@@ -186,4 +186,31 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+
+  /* Global mobile overflow prevention */
+  .truncate-max {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .break-words-max {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+}
+
+/* Prevent horizontal overflow globally */
+body {
+  overflow-x: hidden;
+}
+
+/* Ensure cards don't overflow */
+.glass-card,
+.bg-card,
+[class*="bg-white"] {
+  max-width: 100%;
+  overflow-x: hidden;
 }

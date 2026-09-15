@@ -147,7 +147,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setSession(session);
       if (session?.user) {
         setLoading(true);
-        await fetchProfile(session.user.id);
+        // Do not await network work inside Supabase's auth callback lock.
+        // Awaiting here can block the first recovery updateUser request.
+        void fetchProfile(session.user.id);
       } else {
         setUser(null);
         setLoading(false);

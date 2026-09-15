@@ -114,7 +114,7 @@ serve(async (req: Request): Promise<Response> => {
       };
       const { data: customerData, error: customerError } = await supabaseAdmin
         .from("customers")
-        .insert(customerPayload)
+        .upsert(customerPayload, { onConflict: "user_id" })
         .select("id, user_id, full_name, email, customer_type, branch_id")
         .single();
       if (customerError) {

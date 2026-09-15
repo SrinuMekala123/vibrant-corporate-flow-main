@@ -364,7 +364,9 @@ const AppRoutes = () => {
       if (event === "PASSWORD_RECOVERY") {
         console.log(" Password recovery event detected! Redirecting to /update-password...");
         toast.info("Password recovery session started. Please set a new password.");
-        navigate("/update-password");
+        if (window.location.pathname !== "/update-password") {
+          navigate(`/update-password${window.location.search}${window.location.hash}`);
+        }
       }
     });
     return () => subscription.unsubscribe();

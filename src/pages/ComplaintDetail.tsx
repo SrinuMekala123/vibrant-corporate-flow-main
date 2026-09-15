@@ -711,7 +711,8 @@ const ComplaintDetail = () => {
       resolved_remotely: true,
       resolution_type: 'telephonic_triage',
       resolved_at: now,
-      resolved_by: user?.id || null
+      resolved_by: user?.id || null,
+      resolved_by_name: currentUserFullName || null
     } as any, {
       onSuccess: () => {
         setShowRemoteResolutionModal(false);
@@ -1984,8 +1985,8 @@ const ComplaintDetail = () => {
               </div>
             </div>
             <div className="bg-white p-3 rounded-lg border mt-3">
-              <span className="text-xs text-muted-foreground block mb-1">💬 Customer Feedback Comments:</span>
-              <p className="text-slate-700 font-normal break-words bg-slate-50 border p-2 rounded overflow-hidden">
+              <span className="text-xs text-muted-foreground block mb-1">Customer Feedback Comments:</span>
+              <p className="text-slate-700 font-normal break-words whitespace-pre-wrap max-w-full bg-slate-50 border p-2 rounded overflow-hidden">
                 {ticket.feedback_comments || 'No comments collected yet'}
               </p>
             </div>
@@ -2025,7 +2026,7 @@ const ComplaintDetail = () => {
             </h1>
             <div className="text-xs text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1.5 min-w-0 w-full">
               <span className="flex items-center gap-1">
-                Customer: <span className="font-semibold text-foreground break-all">{ticket.customer_name || ticket.profiles?.full_name || ticket.created_by_name || "Customer"}</span>
+                Customer: <span className="font-semibold text-foreground truncate max-w-[200px] sm:max-w-none">{ticket.customer_name || ticket.profiles?.full_name || ticket.created_by_name || "Customer"}</span>
               </span>
               <span className="text-muted-foreground/45 hidden sm:inline">•</span>
               <span className="flex items-center gap-1">
@@ -2035,7 +2036,7 @@ const ComplaintDetail = () => {
                 <>
                   <span className="text-muted-foreground/45 hidden sm:inline">•</span>
                   <span className="flex items-center gap-1">
-                    Supervisor: <span className="font-semibold text-primary break-all">{ticket.assigned_supervisor}</span>
+                    Supervisor: <span className="font-semibold text-primary truncate max-w-[150px] sm:max-w-none">{ticket.assigned_supervisor}</span>
                   </span>
                 </>
               )}
@@ -2043,7 +2044,7 @@ const ComplaintDetail = () => {
                 <>
                   <span className="text-muted-foreground/45 hidden sm:inline">•</span>
                   <span className="flex items-center gap-1">
-                    Technician: <span className="font-semibold text-warning break-all">{ticket.assigned_technician}</span>
+                    Technician: <span className="font-semibold text-warning truncate max-w-[150px] sm:max-w-none">{ticket.assigned_technician}</span>
                   </span>
                 </>
               )}
@@ -2070,16 +2071,16 @@ const ComplaintDetail = () => {
         <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-xl p-4 border-l-4 border-l-info bg-info/5">
           <div className="flex items-start gap-3">
             <CheckCircle2 className="w-5 h-5 text-info flex-shrink-0 mt-0.5" />
-            <div className="flex-1">
+            <div className="flex-1 min-w-0">
               <p className="font-semibold text-sm text-info">✅ Resolved Remotely</p>
               <p className="text-xs text-muted-foreground mt-1">
-                This ticket was resolved via telephonic triage by {ticket.resolved_by || supervisorName || 'supervisor'}.
+                This ticket was resolved via telephonic triage by {ticket.resolved_by_name || supervisorName || 'supervisor'}.
                 {ticket.resolved_at && ` • ${formatIndianDateTime(ticket.resolved_at)}`}
               </p>
               {ticket.resolution_notes && (
                 <div className="mt-2 p-2 rounded bg-muted/50">
                   <p className="text-xs text-muted-foreground mb-1">Resolution Notes:</p>
-                  <p className="text-sm whitespace-pre-wrap">{ticket.resolution_notes}</p>
+                  <p className="text-sm whitespace-pre-wrap break-words">{ticket.resolution_notes}</p>
                 </div>
               )}
             </div>
@@ -2112,7 +2113,7 @@ const ComplaintDetail = () => {
               {ticket.feedback_comments && (
                 <div className="mt-2 p-2 rounded bg-muted/50">
                   <p className="text-xs text-muted-foreground mb-1">Customer Comments:</p>
-                  <p className="text-sm italic">"{ticket.feedback_comments}"</p>
+                  <p className="text-sm italic break-words whitespace-pre-wrap max-w-full">"{ticket.feedback_comments}"</p>
                 </div>
               )}
             </div>
@@ -2473,7 +2474,7 @@ const ComplaintDetail = () => {
                             <img src={uploadedSignaturePreview} alt="Uploaded Signature Preview" className="max-h-32 border rounded bg-gray-50" />
                           </div>
                           <div className="flex items-center justify-between">
-                            <p className="text-xs text-success font-medium">✅ Signature uploaded successfully</p>
+                            <p className="text-xs text-success font-medium">Signature uploaded successfully</p>
                             <Button variant="ghost" size="sm" onClick={clearUploadedSignature} className="text-xs text-destructive">
                               <XCircle className="w-3 h-3 mr-1" /> Remove
                             </Button>
@@ -2483,7 +2484,21 @@ const ComplaintDetail = () => {
                         <div className="text-center py-4">
                           <ImageIcon className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
                           <p className="text-sm text-muted-foreground mb-3">Upload customer's signature image</p>
-                          <input type="file" accept="image/png,image/jpeg,image/jpg" onChange={handleSignatureUpload} disabled={isUploading} className="text-sm file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary/10 file:text-primary hover:file:bg-primary/20" />
+                          <input
+                            id="signature-upload-input"
+                            type="file"
+                            accept="image/png,image/jpeg,image/jpg"
+                            onChange={handleSignatureUpload}
+                            disabled={isUploading}
+                            className="hidden"
+                          />
+                          <label
+                            htmlFor="signature-upload-input"
+                            className="inline-flex items-center gap-2 px-4 py-2 bg-primary/10 text-primary rounded-lg cursor-pointer hover:bg-primary/20 transition-colors text-sm font-medium"
+                          >
+                            <Upload className="w-4 h-4" />
+                            Upload Signature
+                          </label>
                           <p className="text-xs text-muted-foreground mt-2">Supported: PNG, JPG, JPEG (Max 5MB)</p>
                         </div>
                       )}
@@ -2516,7 +2531,7 @@ const ComplaintDetail = () => {
 
       {/* Phase 6: Verification & Universal Feedback Panel */}
       {showVerification && canVerify && (
-        <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-xl p-5 border-l-4 border-l-warning">
+        <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-xl p-5 border-l-4 border-l-warning pb-24 sm:pb-5 overflow-x-hidden">
           <h2 className="font-semibold mb-3 flex items-center gap-2">
             <ShieldCheck className="w-5 h-5 text-warning" /> Phase 6: QA & Closing
           </h2>
@@ -2738,7 +2753,7 @@ const ComplaintDetail = () => {
             <div className="space-y-3 text-sm">
               <div>
                 <span className="text-muted-foreground">Customer:</span>
-                <span className="font-medium ml-2">{customerName}</span>
+                <span className="font-medium ml-2 truncate max-w-[200px] sm:max-w-none inline-block align-bottom">{customerName}</span>
               </div>
               {customerPhone && (
                 <div className="flex items-center gap-2">
@@ -2760,13 +2775,13 @@ const ComplaintDetail = () => {
               {ticket.field_of_work && (
                 <div><span className="text-muted-foreground">Field:</span> <span className="font-medium ml-2">{ticket.field_of_work}</span></div>
               )}
-              <div><span className="text-muted-foreground">Customer:</span> <span className="font-medium ml-2">{ticket.customer_name || ticket.profiles?.full_name || ticket.created_by_name || "Customer"}</span></div>
+              <div><span className="text-muted-foreground">Customer:</span> <span className="font-medium ml-2 truncate max-w-[200px] sm:max-w-none inline-block align-bottom">{ticket.customer_name || ticket.profiles?.full_name || ticket.created_by_name || "Customer"}</span></div>
               <div className="flex items-center gap-2"><Clock className="w-3 h-3 text-muted-foreground" /> Created {formatIndianDateTime(ticket.created_at)}</div>
               <div className="flex items-center gap-2"><Clock className="w-3 h-3 text-muted-foreground" /> Updated {formatIndianDateTime(ticket.updated_at)}</div>
               {ticket.description && (
                 <div className="pt-3 border-t mt-3">
                   <span className="text-muted-foreground block mb-1">Description:</span>
-                  <p className="font-normal text-slate-700 whitespace-pre-line break-words bg-muted/30 p-2.5 rounded-lg border overflow-hidden">{ticket.description}</p>
+                  <p className="font-normal text-slate-700 whitespace-pre-line break-words bg-muted/30 p-2.5 rounded-lg border overflow-hidden max-w-full">{ticket.description}</p>
                 </div>
               )}
               {ticket.complaint_images && ticket.complaint_images.length > 0 && (
@@ -2783,30 +2798,30 @@ const ComplaintDetail = () => {
 
           <motion.div initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-xl p-5 space-y-4">
             <h2 className="font-semibold flex items-center gap-2"><User className="w-4 h-4 text-primary" /> Assigned Team</h2>
-            {supervisorName && (
-              <div className="flex items-center gap-3 p-3 rounded-lg bg-muted/50 min-w-0">
-                <div className="w-10 h-10 rounded-full gradient-cool flex items-center justify-center text-white text-xs font-bold shrink-0">
-                  {supervisorName.charAt(0).toUpperCase()}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="font-medium text-sm break-all">{supervisorName}</p>
-                  <p className="text-xs text-muted-foreground">Supervisor</p>
-                </div>
-              </div>
-            )}
-            {technicianName ? (
-              <div className="flex items-center gap-3 p-3 rounded-lg bg-muted/50 min-w-0">
-                <div className="w-10 h-10 rounded-full gradient-warm flex items-center justify-center text-white text-xs font-bold shrink-0">
-                  {technicianName.charAt(0).toUpperCase()}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="font-medium text-sm break-all">{technicianName}</p>
-                  <p className="text-xs text-muted-foreground">Technician</p>
-                </div>
-              </div>
-            ) : (
-              <p className="text-sm text-muted-foreground italic">No technician assigned yet</p>
-            )}
+             {supervisorName && (
+               <div className="flex items-center gap-3 p-3 rounded-lg bg-muted/50 min-w-0">
+                 <div className="w-10 h-10 rounded-full gradient-cool flex items-center justify-center text-white text-xs font-bold shrink-0">
+                   {supervisorName.charAt(0).toUpperCase()}
+                 </div>
+                 <div className="min-w-0 flex-1">
+                   <p className="font-medium text-sm truncate" title={supervisorName}>{supervisorName}</p>
+                   <p className="text-xs text-muted-foreground">Supervisor</p>
+                 </div>
+               </div>
+             )}
+             {technicianName ? (
+               <div className="flex items-center gap-3 p-3 rounded-lg bg-muted/50 min-w-0">
+                 <div className="w-10 h-10 rounded-full gradient-warm flex items-center justify-center text-white text-xs font-bold shrink-0">
+                   {technicianName.charAt(0).toUpperCase()}
+                 </div>
+                 <div className="min-w-0 flex-1">
+                   <p className="font-medium text-sm truncate" title={technicianName}>{technicianName}</p>
+                   <p className="text-xs text-muted-foreground">Technician</p>
+                 </div>
+               </div>
+             ) : (
+               <p className="text-sm text-muted-foreground italic">No technician assigned yet</p>
+             )}
           </motion.div>
         </div>
 

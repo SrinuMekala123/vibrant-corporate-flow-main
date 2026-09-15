@@ -60,10 +60,20 @@ serve(async (req: Request): Promise<Response> => {
               });
               throw new Error(`Branch lookup failed for '${branchValue}': ${fallbackError.message}`);
             }
-            resolvedBranch = branchRows?.find((item) => item.branch_name?.trim().toLowerCase() === branchValue.toLowerCase());
+            const normalizedBranchValue = branchValue.toLowerCase().replace(/\s+/g, " ").trim();
+            resolvedBranch = branchRows?.find((item) => {
+              const normalizedName = item.branch_name?.toLowerCase().replace(/\s+/g, " ").trim() || "";
+              return normalizedName === normalizedBranchValue ||
+                normalizedName.includes(normalizedBranchValue) ||
+                normalizedBranchValue.includes(normalizedName);
+            });
           }
-          if (!resolvedBranch) throw new Error(`Branch '${branchValue}' not found`);
-          branchId = resolvedBranch.id;
+          if (resolvedBranch) {
+            branchId = resolvedBranch.id;
+          } else {
+            // Branch assignment is optional; allow import and let an admin assign it later.
+            console.warn(`Row ${index + 1}: Branch '${branchValue}' not found; importing without a branch`);
+          }
         }
         const suppliedPassword = String(row.password || "").trim();
         const defaultPassword = role === "supervisor" ? "SupPass123!" : "TechPass123!";

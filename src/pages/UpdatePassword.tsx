@@ -19,13 +19,12 @@ import { toast } from "sonner";
  *    - Production URL equivalents when deployed
  */
 
-// Global lock for concurrent PKCE code exchanges
-let globalCodeExchangePromise: Promise<any> | null = null;
-
 const UpdatePassword = () => {
   const navigate = useNavigate();
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [email, setEmail] = useState("");
+  const [otpCode, setOtpCode] = useState("");
   
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
@@ -39,60 +38,38 @@ const UpdatePassword = () => {
 
     const verifySession = async () => {
       try {
-        const params = new URLSearchParams(window.location.search);
-        const urlError = params.get("error");
-        if (urlError) {
-          console.warn("Found error query param in recovery URL:", urlError);
+        const { data: { session } } = await supabase.auth.getSession();
+        
+        if (session && session.user) {
           if (isMounted) {
-            setIsValidSession(false);
+            setIsValidSession(true);
             setCheckingSession(false);
           }
           return;
         }
 
-        // Check if there is a 'code' parameter to exchange for a session (PKCE)
-        const code = params.get("code");
-        if (code) {
-          if (!globalCodeExchangePromise) {
-            console.log("PKCE flow detected. Exchanging code for session...");
-            globalCodeExchangePromise = supabase.auth.exchangeCodeForSession(code);
-          } else {
-            console.log("PKCE code exchange already in progress/completed. Awaiting existing promise...");
-          }
-          const { error: exchangeError } = await globalCodeExchangePromise;
-          if (exchangeError) {
-            console.error("Code exchange failed:", exchangeError);
-            // Reset global promise on failure to allow re-attempts
-            globalCodeExchangePromise = null;
+        // Wait briefly for detectSessionInUrl to finish processing recovery tokens
+        let attempts = 0;
+        const maxAttempts = 10;
+        const delayMs = 300;
+        
+        while (attempts < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+          const { data: { session: retrySession } } = await supabase.auth.getSession();
+          
+          if (retrySession?.user) {
             if (isMounted) {
-              setIsValidSession(false);
+              setIsValidSession(true);
               setCheckingSession(false);
             }
             return;
           }
-          console.log("Code exchange successful, session established!");
-          // Clean up URL query parameters to avoid double-processing on page reloads/Strict Mode remounts
-          window.history.replaceState({}, document.title, window.location.pathname);
+          attempts++;
         }
 
-        const { data: { session } } = await supabase.auth.getSession();
-        
-        const isRecoveryUrl = window.location.hash.includes("type=recovery") || 
-                             window.location.hash.includes("access_token=") ||
-                             window.location.search.includes("type=recovery") ||
-                             window.location.search.includes("code=") ||
-                             window.location.href.includes("recovery");
-
-        if (session && session.user && session.user.aud === "authenticated") {
-          if (isMounted) {
-            setIsValidSession(true);
-            setCheckingSession(false);
-          }
-        } else if (!isRecoveryUrl) {
-          if (isMounted) {
-            setIsValidSession(false);
-            setCheckingSession(false);
-          }
+        if (isMounted) {
+          setIsValidSession(false);
+          setCheckingSession(false);
         }
       } catch (err) {
         console.error("Session verification failed:", err);
@@ -105,31 +82,19 @@ const UpdatePassword = () => {
 
     verifySession();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (!isMounted) return;
       console.log("Auth State Change Event inside UpdatePassword:", event);
 
-      if (event === "PASSWORD_RECOVERY" || (session && session.user && session.user.aud === "authenticated")) {
+      if ((event === "PASSWORD_RECOVERY" || event === "SIGNED_IN") && session?.user) {
         setIsValidSession(true);
         setCheckingSession(false);
       }
     });
 
-    const timer = setTimeout(() => {
-      if (isMounted && checkingSession) {
-        supabase.auth.getSession().then(({ data: { session } }) => {
-          if (!session || !session.user || session.user.aud !== "authenticated") {
-            setIsValidSession(false);
-            setCheckingSession(false);
-          }
-        });
-      }
-    }, 2500);
-
     return () => {
       isMounted = false;
       subscription.unsubscribe();
-      clearTimeout(timer);
     };
   }, []);
 
@@ -147,37 +112,41 @@ const UpdatePassword = () => {
     }
 
     setUpdating(true);
-    console.log("Password update initiated...");
     try {
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Password update request timed out (30s limit). Please check your connection and try again.")), 30000)
-      );
+      const trimmedEmail = email.trim().toLowerCase();
+      const hasOtp = trimmedEmail.length > 0 || otpCode.length > 0;
 
-      const updatePromise = (async () => {
-        console.log("Calling supabase.auth.updateUser...");
-        const result = await supabase.auth.updateUser({ password: newPassword });
-        console.log("supabase.auth.updateUser completed successfully:", result);
-        return result;
-      })();
+      if (hasOtp) {
+        if (!trimmedEmail || !/^\d{6}$/.test(otpCode)) {
+          toast.error("Enter your email and the 6-digit verification code.");
+          return;
+        }
 
-      const result = await Promise.race([updatePromise, timeoutPromise]) as any;
+        const { error: otpError } = await supabase.auth.verifyOtp({
+          email: trimmedEmail,
+          token: otpCode,
+          type: "recovery",
+        });
 
-      if (result.error) {
-        console.error("Supabase auth error during password update:", result.error);
-        throw result.error;
+        if (otpError) {
+          throw new Error("The verification code is invalid or expired. Please request a new reset email.");
+        }
       }
 
-      console.log("Password updated successfully. Logging out recovery session...");
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) {
+        throw new Error("Your password reset session has expired. Please request a new reset email.");
+      }
+
+      const { error: updateError } = await supabase.auth.updateUser({ password: newPassword });
+      if (updateError) throw updateError;
+
       toast.success("Password updated successfully! Redirecting to login...");
 
-      // Attempt signout but catch any issues to avoid blocking the user flow
-      try {
-        await supabase.auth.signOut();
-      } catch (signOutErr) {
+      // Cleanup must never delay or mask a successful password update.
+      void supabase.auth.signOut().catch((signOutErr) => {
         console.warn("Signout during password update cleanup failed (non-critical):", signOutErr);
-      }
-
-      console.log("Redirecting user to login page.");
+      });
       navigate("/", { replace: true });
     } catch (err: any) {
       console.error("Password update error caught:", err);
@@ -261,7 +230,7 @@ const UpdatePassword = () => {
             </p>
           </div>
 
-          {!isValidSession ? (
+          {!isValidSession && (
             <div className="space-y-4 pt-2">
               <div className="p-4 bg-destructive/10 border border-destructive/20 rounded-xl flex items-start gap-3">
                 <ShieldAlert className="w-5 h-5 text-destructive shrink-0 mt-0.5" />
@@ -273,23 +242,45 @@ const UpdatePassword = () => {
                 </div>
               </div>
               
-              <Button
-                className="w-full gradient-primary text-white font-bold h-12 rounded-xl shadow-glow transition-all duration-300 hover:opacity-95"
-                onClick={() => navigate("/?forgot-password=true")}
-              >
-                <Sparkles className="w-4 h-4 mr-2" /> Request New Reset Link
-              </Button>
-
-              <Button
-                variant="outline"
-                className="w-full border-border/80 hover:bg-muted text-foreground h-12 rounded-xl font-medium"
-                onClick={() => navigate("/")}
-              >
-                <ArrowLeft className="w-4 h-4 mr-2" /> Back to Login
-              </Button>
             </div>
-          ) : (
+          )}
+
             <form onSubmit={handleSubmit} className="space-y-5">
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Email Address <span className="normal-case font-normal">(for code recovery)</span></label>
+                <Input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="you@example.com"
+                  autoComplete="email"
+                  disabled={updating}
+                  className="w-full h-12 rounded-xl border-border/80 bg-card text-foreground"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Verification Code</label>
+                <Input
+                  type="text"
+                  value={otpCode}
+                  onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                  placeholder="Enter 6-digit code"
+                  inputMode="numeric"
+                  maxLength={6}
+                  autoComplete="one-time-code"
+                  disabled={updating}
+                  className="w-full h-12 rounded-xl border-border/80 bg-card text-foreground tracking-[0.3em]"
+                />
+                <p className="text-xs text-muted-foreground">Click the link in your email, or enter the 6-digit code below:</p>
+              </div>
+
+              <div className="relative flex items-center py-1">
+                <div className="flex-grow border-t border-border/70" />
+                <span className="mx-3 text-xs text-muted-foreground">Or use your reset link</span>
+                <div className="flex-grow border-t border-border/70" />
+              </div>
+
               {/* New Password */}
               <div className="space-y-1.5">
                 <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">New Password</label>
@@ -351,7 +342,6 @@ const UpdatePassword = () => {
                 )}
               </Button>
             </form>
-          )}
         </motion.div>
       </div>
     </div>

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
@@ -6,11 +6,13 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, UserPlus, Mail, Phone, Shield, Wrench, Search, ShieldAlert, Trash2, Eye, EyeOff, Edit, X, Download, Upload } from "lucide-react";
+import { Loader2, UserPlus, Mail, Phone, Shield, Wrench, Search, ShieldAlert, Trash2, Eye, EyeOff, Edit, X, Download, Upload, CheckSquare, Square } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import StaffImportModal from "@/components/StaffImportModal";
 import { downloadCSV, generateSampleCSV } from "@/utils/csvHelpers";
 import ExportButton from "@/components/ExportButton";
+import { isValidEmail, isValidFullName, isValidPhone, normalizePhone } from "@/lib/validation";
+import { useFormDraft } from "@/hooks/useFormDraft";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -53,18 +55,59 @@ export default function UsersPage() {
   const [editBranchId, setEditBranchId] = useState("");
   const [customerType, setCustomerType] = useState("Retail");
   const [editCustomerType, setEditCustomerType] = useState("Retail");
+  const [selectedUserIds, setSelectedUserIds] = useState<Set<string>>(new Set());
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
 
   const isNameValid = (name: string) => {
     if (!name) return true;
-    const trimmed = name.trim();
-    return trimmed.length >= 3 && trimmed.length <= 50 && /^[a-zA-Z\s.,'-]+$/.test(trimmed);
+    return isValidFullName(name);
   };
 
   const isPhoneValid = (num: string) => {
     if (!num) return true;
-    const cleanNum = num.replace(/[\s\-()]/g, "");
-    return /^(?:\+91|0)?[6-9]\d{9}$/.test(cleanNum);
+    return isValidPhone(num);
   };
+
+  const createUserDraft = useFormDraft({
+    key: 'draft_create_user',
+    enabled: true,
+    excludeFields: ['password'],
+    fields: {
+      fullName: { value: fullName, setter: setFullName },
+      email: { value: email, setter: setEmail },
+      phone: { value: phone, setter: setPhone },
+      role: { value: role, setter: setRole },
+      selectedExpertise: { value: selectedExpertise, setter: setSelectedExpertise },
+      branchId: { value: branchId, setter: setBranchId },
+      customerType: { value: customerType, setter: setCustomerType },
+    },
+  });
+
+  useEffect(() => {
+    createUserDraft.restore();
+  }, []);
+
+  // Scroll to/create form section when a draft exists on mount
+  useEffect(() => {
+    if (createUserDraft.hasDraft()) {
+      const formEl = document.getElementById('create-user-form');
+      if (formEl) {
+        formEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    return createUserDraft.save();
+  }, [fullName, email, phone, role, selectedExpertise, branchId, customerType]);
+
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      createUserDraft.clear();
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [createUserDraft]);
 
   const getPasswordStrength = (pwd: string) => {
     if (!pwd) return null;
@@ -166,12 +209,8 @@ export default function UsersPage() {
 
     // 1. Full Name Validation
     const trimmedName = fullName.trim();
-    if (!trimmedName || trimmedName.length < 3 || trimmedName.length > 50) {
-      toast.error("Name must be 3-50 characters and contain only letters");
-      return;
-    }
-    if (!/^[a-zA-Z\s.,'-]+$/.test(trimmedName)) {
-      toast.error("Name must be 3-50 characters and contain only letters");
+    if (!isValidFullName(trimmedName)) {
+      toast.error("Name must be 3-100 characters and contain only letters and spaces");
       return;
     }
 
@@ -181,7 +220,7 @@ export default function UsersPage() {
       toast.error("Please enter a valid email address");
       return;
     }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+    if (!isValidEmail(trimmedEmail)) {
       toast.error("Please enter a valid email address");
       return;
     }
@@ -194,9 +233,9 @@ export default function UsersPage() {
     }
 
     // 4. Phone Number Validation
-    const cleanPhone = phone.replace(/[\s\-()]/g, "");
-    if (!cleanPhone || !/^(?:\+91|0)?[6-9]\d{9}$/.test(cleanPhone)) {
-      toast.error("Please enter a valid 10-digit Indian phone number");
+    const cleanPhone = normalizePhone(phone);
+    if (!cleanPhone || !isValidPhone(phone)) {
+      toast.error("Please enter a valid 10-digit Indian mobile number (e.g., +91 9876543210)");
       return;
     }
 
@@ -240,7 +279,22 @@ export default function UsersPage() {
           customerType: role === "customer" ? customerType : null,
         },
       });
-      if (createUserError) throw new Error(createUserError.message || "Failed to create user");
+      if (createUserError) {
+        let errorMessage = createUserError.message || "";
+        const errorResponse = createUserError.context as Response | undefined;
+        if (errorResponse && typeof errorResponse.clone === "function") {
+          try {
+            const errorBody = await errorResponse.clone().json();
+            errorMessage = String(errorBody?.error || errorBody?.message || errorMessage);
+          } catch {
+            // Keep the client error message when the Edge Function body is unavailable.
+          }
+        }
+        if (/already exists|email.*(duplicate|exists)|user.*already/i.test(errorMessage)) {
+          throw new Error("An account with this email already exists.");
+        }
+        throw new Error(errorMessage || "Failed to create user");
+      }
       const newUserId = createdUser?.user?.id;
       if (!newUserId) throw new Error("User was created but no user ID was returned");
       if (role === "customer" && !createdUser?.customer?.id) {
@@ -252,6 +306,9 @@ export default function UsersPage() {
       });
 
       toast.success(`User ${trimmedName} created successfully!`);
+      
+      // Clear draft
+      createUserDraft.clear();
       
       // Clear form
       setEmail("");
@@ -265,6 +322,7 @@ export default function UsersPage() {
       
       // Refresh user list
       await refetch();
+      await queryClient.invalidateQueries({ queryKey: ["admin-profiles-list"] });
       await queryClient.invalidateQueries({ queryKey: ["customers-list"] });
       await queryClient.invalidateQueries({ queryKey: ["customer-profiles-to-link"] });
     } catch (error: any) {
@@ -280,12 +338,8 @@ export default function UsersPage() {
 
     // 1. Full Name Validation
     const trimmedName = editFullName.trim();
-    if (!trimmedName || trimmedName.length < 3 || trimmedName.length > 50) {
-      toast.error("Name must be 3-50 characters and contain only letters");
-      return;
-    }
-    if (!/^[a-zA-Z\s.,'-]+$/.test(trimmedName)) {
-      toast.error("Name must be 3-50 characters and contain only letters");
+    if (!isValidFullName(trimmedName)) {
+      toast.error("Name must be 3-100 characters and contain only letters and spaces");
       return;
     }
 
@@ -295,15 +349,15 @@ export default function UsersPage() {
       toast.error("Please enter a valid email address");
       return;
     }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+    if (!isValidEmail(trimmedEmail)) {
       toast.error("Please enter a valid email address");
       return;
     }
 
     // 3. Phone Number Validation
-    const cleanPhone = editPhone.replace(/[\s\-()]/g, "");
-    if (!cleanPhone || !/^(?:\+91|0)?[6-9]\d{9}$/.test(cleanPhone)) {
-      toast.error("Please enter a valid 10-digit Indian phone number");
+    const cleanPhone = normalizePhone(editPhone);
+    if (!cleanPhone || !isValidPhone(editPhone)) {
+      toast.error("Please enter a valid 10-digit Indian mobile number (e.g., +91 9876543210)");
       return;
     }
 
@@ -427,44 +481,105 @@ export default function UsersPage() {
     return matchesSearch && matchesRole;
   }) || [];
 
+  const handleBulkDelete = async () => {
+    const isCurrentUserAdmin = user?.role === "admin";
+    if (!isCurrentUserAdmin) {
+      toast.error("Only administrators can delete users.");
+      return;
+    }
+
+    const selectedCount = selectedUserIds.size;
+    if (selectedCount === 0) return;
+
+    if (!confirm(`Are you sure you want to delete ${selectedCount} selected user(s)? This will permanently remove profiles, linked customer records, and auth accounts.`)) {
+      return;
+    }
+
+    setIsBulkDeleting(true);
+    try {
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/bulk-delete-users`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session?.access_token}`,
+        },
+        body: JSON.stringify({ ids: Array.from(selectedUserIds) }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to bulk delete users');
+      }
+
+      const result = await response.json();
+      if (result.failedCount > 0) {
+        toast.warning(`Deleted ${result.deletedCount} user(s). ${result.failedCount} failed.`);
+      } else {
+        toast.success(`${result.deletedCount} user(s) deleted successfully.`);
+      }
+      setSelectedUserIds(new Set());
+      await refetch();
+      await queryClient.invalidateQueries({ queryKey: ["customers-list"] });
+      await queryClient.invalidateQueries({ queryKey: ["customer-profiles-to-link"] });
+    } catch (e: any) {
+      toast.error(e.message || "Failed to bulk delete users.");
+    } finally {
+      setIsBulkDeleting(false);
+    }
+  };
+
+  const toggleSelectAllUsers = () => {
+    if (selectedUserIds.size === filteredProfiles.length) {
+      setSelectedUserIds(new Set());
+    } else {
+      setSelectedUserIds(new Set(filteredProfiles.map((p: any) => p.id)));
+    }
+  };
+
+  const toggleSelectUser = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setSelectedUserIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const clearUserSelection = () => setSelectedUserIds(new Set());
+
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+    <div className="space-y-6 overflow-x-hidden">
+      {/* Header Section with Title and Buttons */}
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 relative z-10 pr-12 md:pr-16">
         <div className="min-w-0">
-          <h1 className="text-2xl font-display font-bold">User Management</h1>
-          <p className="text-muted-foreground font-light text-sm">Create and manage accounts for Customers, Supervisors, and Technicians.</p>
+          <h1 className="text-2xl sm:text-3xl font-bold">User Management</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Create and manage accounts for Customers, Supervisors, and Technicians.
+          </p>
         </div>
-        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 overflow-x-auto max-w-full">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="flex items-center gap-1.5 whitespace-nowrap">
-                <Download className="w-4 h-4 shrink-0" />
-                <span className="hidden sm:inline">Sample CSV</span>
-                <span className="sm:hidden">Sample</span>
-                <span className="text-[10px]">▼</span>
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => downloadSample("technician")}>For Technicians</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => downloadSample("supervisor")}>For Supervisors</DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="flex items-center gap-1.5 whitespace-nowrap">
-                <Upload className="w-4 h-4 shrink-0" />
-                <span className="hidden sm:inline">Import Staff</span>
-                <span className="sm:hidden">Import</span>
-                <span className="text-[10px]">▼</span>
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => { setStaffImportRole('technician'); setIsStaffImportOpen(true); }}>Technician</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => { setStaffImportRole('supervisor'); setIsStaffImportOpen(true); }}>Supervisor</DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-
+        <div className="flex flex-wrap gap-2 w-full sm:w-auto">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => downloadSample("technician")}
+            className="flex items-center gap-1.5 whitespace-nowrap flex-1 sm:flex-none min-w-[80px] justify-center"
+          >
+            <Download className="w-4 h-4 shrink-0" />
+            <span className="text-xs sm:text-sm">Sample</span>
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => { setStaffImportRole('technician'); setIsStaffImportOpen(true); }}
+            className="flex items-center gap-1.5 whitespace-nowrap flex-1 sm:flex-none min-w-[80px] justify-center"
+          >
+            <Upload className="w-4 h-4 shrink-0" />
+            <span className="text-xs sm:text-sm">Import</span>
+          </Button>
           <ExportButton variant="staff" />
         </div>
       </div>
@@ -479,22 +594,22 @@ export default function UsersPage() {
           <h2 className="text-lg font-semibold flex items-center gap-2 text-primary">
             <UserPlus className="w-5 h-5" /> Create New User
           </h2>
-          <form onSubmit={handleCreateUser} className="space-y-4">
+          <form id="create-user-form" onSubmit={handleCreateUser} className="space-y-4">
             <div className="space-y-1.5">
               <div className="flex justify-between items-center">
                 <label className="text-xs font-semibold text-slate-600">Full Name</label>
-                <span className="text-[10px] font-medium text-slate-400">{fullName.length} / 50</span>
+                <span className="text-[10px] font-medium text-slate-400">{fullName.length} / 100</span>
               </div>
               <Input
                 value={fullName}
                 onChange={(e) => setFullName(e.target.value)}
                 placeholder="John Doe"
                 required
-                maxLength={50}
+                maxLength={100}
                 disabled={loading}
               />
               {!isNameValid(fullName) && fullName.length > 0 && (
-                <p className="text-[10px] text-destructive font-medium mt-1">Name must be 3-50 characters and contain only letters</p>
+                <p className="text-[10px] text-destructive font-medium mt-1">Name must be 3-100 characters and contain only letters and spaces</p>
               )}
             </div>
 
@@ -575,7 +690,7 @@ export default function UsersPage() {
                 disabled={loading}
               />
               {!isPhoneValid(phone) && phone.length > 0 && (
-                <p className="text-[10px] text-destructive font-medium mt-1">Please enter a valid 10-digit Indian phone number</p>
+                <p className="text-[10px] text-destructive font-medium mt-1">Please enter a valid 10-digit Indian mobile number (e.g., +91 9876543210)</p>
               )}
             </div>
 
@@ -663,11 +778,34 @@ export default function UsersPage() {
               </div>
             )}
 
-            <Button 
-              type="submit" 
-              className="w-full mt-2 gradient-primary text-primary-foreground shadow-glow" 
-              disabled={loading}
-            >
+            <div className="flex items-center gap-2">
+              {createUserDraft.hasDraft() && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    createUserDraft.clear();
+                    setEmail("");
+                    setPassword("");
+                    setFullName("");
+                    setPhone("");
+                    setRole("");
+                    setSelectedExpertise([]);
+                    setBranchId("");
+                    setCustomerType("Retail");
+                    toast.success("Draft cleared");
+                  }}
+                  className="text-xs text-slate-500 hover:text-destructive"
+                >
+                  Clear Draft
+                </Button>
+              )}
+              <Button 
+                type="submit" 
+                className="flex-1 gradient-primary text-primary-foreground shadow-glow" 
+                disabled={loading}
+              >
               {loading ? (
                 <>
                   <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Creating Account...
@@ -676,7 +814,8 @@ export default function UsersPage() {
                 "Create User Account"
               )}
             </Button>
-          </form>
+          </div>
+        </form>
         </motion.div>
 
         {/* Users List */}
@@ -728,9 +867,25 @@ export default function UsersPage() {
                 <div 
                   key={p.id} 
                   onClick={() => handleOpenModal(p, "view")}
-                  className="flex flex-col sm:flex-row sm:items-center justify-between p-3.5 rounded-lg bg-muted/40 border border-slate-100 hover:border-slate-200 hover:bg-muted/70 cursor-pointer transition-colors gap-3"
+                  className={`flex flex-col sm:flex-row sm:items-center justify-between p-3.5 rounded-lg border cursor-pointer transition-colors gap-3 ${selectedUserIds.has(p.id) ? 'bg-blue-50/60 border-blue-200' : 'bg-muted/40 border-slate-100 hover:border-slate-200 hover:bg-muted/70'}`}
                 >
                   <div className="flex items-start gap-3 w-full sm:w-auto min-w-0">
+                    {user?.role === 'admin' && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleSelectUser(p.id, e);
+                        }}
+                        className="text-slate-500 hover:text-slate-700 shrink-0 mt-0.5"
+                      >
+                        {selectedUserIds.has(p.id) ? (
+                          <CheckSquare className="w-4 h-4 text-blue-600" />
+                        ) : (
+                          <Square className="w-4 h-4" />
+                        )}
+                      </button>
+                    )}
                     <div className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold text-white uppercase shrink-0 ${
                       p.role === 'admin' ? 'bg-rose-500' :
                       p.role === 'supervisor' ? 'bg-indigo-500' :
@@ -806,6 +961,31 @@ export default function UsersPage() {
             </div>
           )}
         </motion.div>
+
+        {/* Bulk Action Bar */}
+        {user?.role === 'admin' && selectedUserIds.size > 0 && (
+          <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-4">
+            <span className="text-sm font-medium">{selectedUserIds.size} selected</span>
+            <button
+              onClick={clearUserSelection}
+              className="text-xs font-semibold text-slate-300 hover:text-white uppercase tracking-wider"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleBulkDelete}
+              disabled={isBulkDeleting}
+              className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 text-white px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider disabled:opacity-50"
+            >
+              {isBulkDeleting ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Trash2 className="w-3.5 h-3.5" />
+              )}
+              Delete
+            </button>
+          </div>
+        )}
       </div>
 
       {/* View & Edit Overlay Modal */}
@@ -853,9 +1033,9 @@ export default function UsersPage() {
                   <div className="space-y-4 bg-muted/40 p-4 rounded-xl border border-slate-100">
                     <h4 className="text-xs font-bold text-primary uppercase tracking-wider">Account Details</h4>
                     <div className="grid grid-cols-2 gap-4">
-                      <div>
+                      <div className="min-w-0">
                         <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Full Name</span>
-                        <span className="text-sm font-semibold text-slate-800">{selectedUser.full_name || "No Name"}</span>
+                        <span className="text-sm font-semibold text-slate-800 truncate max-w-[calc(100%-80px)]" title={selectedUser.full_name}>{selectedUser.full_name || "No Name"}</span>
                       </div>
                       <div>
                         <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Role</span>
@@ -934,18 +1114,18 @@ export default function UsersPage() {
                   <div className="space-y-1.5">
                     <div className="flex justify-between items-center">
                       <label className="text-xs font-semibold text-slate-600">Full Name</label>
-                      <span className="text-[10px] font-medium text-slate-400">{editFullName.length} / 50</span>
+                      <span className="text-[10px] font-medium text-slate-400">{editFullName.length} / 100</span>
                     </div>
                     <Input
                       value={editFullName}
                       onChange={(e) => setEditFullName(e.target.value)}
                       placeholder="John Doe"
                       required
-                      maxLength={50}
+                      maxLength={100}
                       disabled={savingEdit}
                     />
                     {!isNameValid(editFullName) && editFullName.length > 0 && (
-                      <p className="text-[10px] text-destructive font-medium mt-1">Name must be 3-50 characters and contain only letters</p>
+                      <p className="text-[10px] text-destructive font-medium mt-1">Name must be 3-100 characters and contain only letters and spaces</p>
                     )}
                   </div>
 
@@ -975,7 +1155,7 @@ export default function UsersPage() {
                       disabled={savingEdit}
                     />
                     {!isPhoneValid(editPhone) && editPhone.length > 0 && (
-                      <p className="text-[10px] text-destructive font-medium mt-1">Please enter a valid 10-digit Indian phone number</p>
+                      <p className="text-[10px] text-destructive font-medium mt-1">Please enter a valid 10-digit Indian mobile number (e.g., +91 9876543210)</p>
                     )}
                   </div>
 

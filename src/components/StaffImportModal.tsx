@@ -65,6 +65,10 @@ export default function StaffImportModal({ open, onOpenChange, onSuccess, role =
       toast.error('No file selected');
       return;
     }
+    if (!currentRole) {
+      toast.error('Select a staff type before importing');
+      return;
+    }
 
     setImporting(true);
     try {
@@ -88,7 +92,7 @@ export default function StaffImportModal({ open, onOpenChange, onSuccess, role =
       const { data, error } = await supabase.functions.invoke('bulk-import-staff', {
         body: {
           rows: validRows,
-          role,
+          role: currentRole,
         },
       });
 
@@ -96,10 +100,11 @@ export default function StaffImportModal({ open, onOpenChange, onSuccess, role =
 
       const results = data?.results || { success: 0, failed: 0, errors: [] };
       if (results.success > 0) {
-        toast.success(`✅ ${results.success} ${role}(s) created successfully.`);
+        toast.success(`✅ ${results.success} ${currentRole}(s) created successfully.`);
       }
       if (results.failed > 0) {
-        toast.error(`⚠️ ${results.failed} failed. Check details.`);
+        const firstError = results.errors?.[0] ? ` ${results.errors[0]}` : '';
+        toast.error(`⚠️ ${results.failed} failed.${firstError}`);
         console.warn('Import failures:', results.errors);
       }
 
@@ -123,7 +128,7 @@ export default function StaffImportModal({ open, onOpenChange, onSuccess, role =
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-2xl bg-white rounded-lg shadow-lg">
+      <DialogContent className="w-[calc(100%-2rem)] sm:max-w-2xl max-h-[90vh] overflow-y-auto bg-white rounded-lg shadow-lg">
         <DialogHeader>
           <DialogTitle>Import Staff</DialogTitle>
           <DialogDescription>
@@ -175,8 +180,8 @@ export default function StaffImportModal({ open, onOpenChange, onSuccess, role =
           </div>
 
           {preview.length > 0 && (
-            <div className="mt-4 max-h-64 overflow-y-auto border rounded-lg">
-              <table className="w-full table-auto">
+            <div className="mt-4 max-h-64 overflow-auto border rounded-lg">
+              <table className="min-w-[720px] w-full table-auto">
                 <thead className="bg-gray-100">
                   <tr>
                     {fields.map((col) => (

@@ -31,8 +31,8 @@ export function downloadCSV(csvContent: string, filename: string): void {
 
 export function generateSampleCSV(type: "customer" | "asset" | "technician" | "supervisor"): string {
   if (type === "customer") {
-    const headers = ["full_name", "email", "phone", "password"];
-    const example = ["John Doe", "john@test.com", "9876543210", "Welcome@123"];
+    const headers = ["full_name", "email", "phone", "customer_type", "branch", "password"];
+    const example = ["John Doe", "john@test.com", "9876543210", "Retail", "Hyderabad", "Welcome@123!"];
     return [headers.join(","), example.join(",")].join("\n");
   }
 

@@ -46,24 +46,68 @@ export default function CustomerImportModal({ open, onOpenChange, onSuccess }: C
     setImporting(true);
     try {
       const parsed = await parseFile(file);
-      // Map CSV/Excel column names to DB fields (case‑insensitive) and trim values
-      const mapped = parsed.map((row) => ({
-        full_name: (row['Full Name'] ?? row['full_name'] ?? '').trim(),
-        phone: (row['Phone Number'] ?? row['phone'] ?? '').trim(),
-        email: (row['Email Address'] ?? row['email'] ?? '').trim(),
-        customer_type: (row['Customer Type'] ?? row['customer_type'] ?? '').trim(),
-        branch_id: row['Branch Location'] ?? row['branch_id'] ? Number(row['Branch Location'] ?? row['branch_id']) : null,
-        address: (row['Physical Address'] ?? row['address'] ?? '').trim(),
+      const normalizeKey = (key: string) => key.toLowerCase().replace(/[\s\-_]/g, "").replace(/\./g, "");
+      const normalizedRows = parsed.map((row) => {
+        const out: Record<string, string> = {};
+        Object.entries(row).forEach(([key, value]) => {
+          const normalizedKey = normalizeKey(key);
+          const strVal = String(value ?? "").trim();
+          if (normalizedKey.includes("name") && !normalizedKey.includes("company") && !normalizedKey.includes("business")) out.full_name = strVal;
+          else if (normalizedKey.includes("phone") || normalizedKey.includes("mobile") || normalizedKey.includes("contact")) out.phone = strVal;
+          else if (normalizedKey.includes("email") || normalizedKey.includes("e-mail") || normalizedKey === "test") out.email = strVal;
+          else if (normalizedKey.includes("password")) out.password = strVal;
+          else if (normalizedKey.includes("type") && !normalizedKey.includes("customer")) out.customer_type = strVal;
+          else if (normalizedKey.includes("customer")) out.customer_type = strVal;
+          else if (normalizedKey.includes("branch")) out.branch_id = strVal;
+          else if (normalizedKey.includes("address") || normalizedKey.includes("location")) out.address = strVal;
+        });
+        return out;
+      });
+      const mapped = normalizedRows.map((row) => ({
+        full_name: (row.full_name || '').trim(),
+        phone: (row.phone || '').trim(),
+        email: (row.email || '').trim().toLowerCase(),
+        password: (row.password || '').trim(),
+        customer_type: (row.customer_type || '').trim(),
+        branch_id: (row.branch_id || '').trim() || null,
+        address: (row.address || '').trim(),
       }));
       const required = ['full_name', 'phone', 'email'];
-      const validRows = mapped.filter((r) => required.every((k) => r[k] && r[k].length > 0));
+      const validRows = mapped.filter((r) =>
+        required.every((key) => r[key] && r[key].length > 0)
+      );
       if (validRows.length === 0) {
-        toast.error('No valid rows to import');
+        toast.error('No valid rows to import. Ensure full_name, phone, and email columns are present in your CSV.');
         return;
       }
-      const { error } = await supabase.from('customers').insert(validRows);
-      if (error) throw error;
-      toast.success(`Imported ${validRows.length} customers`);
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/bulk-import-customers`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`,
+        },
+        body: JSON.stringify({ customers: validRows }),
+      });
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Import failed');
+      }
+      const result = await response.json();
+      
+      if (result.success > 0) {
+        toast.success(`Successfully imported ${result.success} customer(s)`);
+      }
+      
+      if (result.failed > 0) {
+        toast.warning(`Imported with issues: ${result.failed} row(s) failed. Check console.`);
+        console.warn('Import issues:', result.errors);
+      } else {
+        toast.success(`Successfully imported ${result.success} customer(s)`);
+      }
+      
+      if (result.success === 0 && result.failed === 0) {
+        toast.error('No valid rows to import. Check your CSV format.');
+      }
       onSuccess?.();
       onOpenChange(false);
     } catch (e: any) {
@@ -77,16 +121,19 @@ export default function CustomerImportModal({ open, onOpenChange, onSuccess }: C
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg bg-white rounded-lg shadow-lg">
+      <DialogContent className="w-[calc(100%-2rem)] max-w-lg max-h-[90vh] overflow-y-auto bg-white rounded-lg shadow-lg">
         <DialogHeader>
           <DialogTitle>Import Customers</DialogTitle>
         </DialogHeader>
-        <DialogDescription className="mt-2">
-          <Button variant="link" asChild>
+        <DialogDescription className="mt-2 space-y-2">
+          <Button variant="link" asChild className="p-0 h-auto">
             <a href="/templates/customers_template.csv" download>
               Download Sample CSV
             </a>
           </Button>
+          <p className="text-xs text-muted-foreground">
+            Password is optional. If left blank, default password <span className="font-mono bg-muted px-1 rounded">Welcome@123!</span> will be used.
+          </p>
         </DialogDescription>
         <div
           {...getRootProps()}

@@ -33,11 +33,15 @@ import {
   ShieldCheck,
   UserCheck,
   Lock,
-  Download
+  Download,
+  CheckSquare,
+  Square
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { downloadCSV, generateSampleCSV } from "@/utils/csvHelpers";
 import ExportButton from "@/components/ExportButton";
+import { isValidEmail, isValidFullName, isValidPhone, normalizePhone } from "@/lib/validation";
+import { useFormDraft } from "@/hooks/useFormDraft";
 
 export default function Customers() {
   const { user, session } = useAuth();
@@ -63,12 +67,47 @@ export default function Customers() {
   const [customerType, setCustomerType] = useState("Retail");
   const [branchId, setBranchId] = useState("");
   const [profileUserId, setProfileUserId] = useState("");
+  const [selectedCustomerIds, setSelectedCustomerIds] = useState<Set<string>>(new Set());
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
 
   // Login account creation states
   const [createLoginAccount, setCreateLoginAccount] = useState(false);
   const [loginPassword, setLoginPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [creatingAccount, setCreatingAccount] = useState(false);
+
+  const customerDraft = useFormDraft({
+    key: 'draft_create_customer',
+    enabled: modalMode === "add",
+    excludeFields: ['loginPassword'],
+    fields: {
+      fullName: { value: fullName, setter: setFullName },
+      phone: { value: phone, setter: setPhone },
+      email: { value: email, setter: setEmail },
+      address: { value: address, setter: setAddress },
+      customerType: { value: customerType, setter: setCustomerType },
+      branchId: { value: branchId, setter: setBranchId },
+      createLoginAccount: { value: createLoginAccount, setter: setCreateLoginAccount },
+    },
+  });
+
+  useEffect(() => {
+    if (modalMode === "add") {
+      customerDraft.restore();
+    }
+  }, [modalMode]);
+
+  useEffect(() => {
+    return customerDraft.save();
+  }, [fullName, phone, email, address, customerType, branchId, createLoginAccount]);
+
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      customerDraft.clear();
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [customerDraft]);
 
   // Role permissions
   const isAdmin = user?.role === "admin";
@@ -190,27 +229,27 @@ export default function Customers() {
     }
 
     const trimmedName = fullName.trim();
-    if (!trimmedName || trimmedName.length < 3) {
-      toast.error("Full Name must be at least 3 characters.");
+    if (!isValidFullName(trimmedName)) {
+      toast.error("Name must be 3-100 characters and contain only letters and spaces.");
       return;
     }
 
-    const cleanPhone = phone.replace(/[\s\-()]/g, "");
-    if (!cleanPhone || cleanPhone.length < 8) {
-      toast.error("Please enter a valid phone number.");
+    const cleanPhone = normalizePhone(phone);
+    if (!isValidPhone(phone)) {
+      toast.error("Please enter a valid 10-digit Indian mobile number (e.g., +91 9876543210)");
       return;
     }
 
     const trimmedEmail = email.trim().toLowerCase();
+    if (trimmedEmail && !isValidEmail(trimmedEmail)) {
+      toast.error("Please enter a valid email address");
+      return;
+    }
 
     // Validate login account fields when checkbox is checked
     if (createLoginAccount && !profileUserId) {
       if (!trimmedEmail) {
         toast.error("Email is required to create a login account.");
-        return;
-      }
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
-        toast.error("Please enter a valid email address.");
         return;
       }
       if (!loginPassword || loginPassword.length < 8) {
@@ -240,7 +279,22 @@ export default function Customers() {
           },
         });
 
-        if (fnError) throw new Error(fnError.message || "Failed to create login account.");
+        if (fnError) {
+          let errorMessage = fnError.message || "";
+          const errorResponse = fnError.context;
+          if (errorResponse instanceof Response) {
+            try {
+              const errorBody = await errorResponse.clone().json();
+              errorMessage = errorBody?.error || errorMessage;
+            } catch {
+              // Keep the client error message when the Edge Function body is unavailable.
+            }
+          }
+          if (/already exists|email.*(duplicate|exists)|user.*already/i.test(errorMessage)) {
+            throw new Error("An account with this email already exists.");
+          }
+          throw new Error(errorMessage || "Failed to create login account.");
+        }
         if (data?.error) throw new Error(data.error);
         if (!data?.userId) throw new Error("Did not receive user ID from server.");
 
@@ -295,6 +349,7 @@ export default function Customers() {
       }
 
       setSelectedCustomer(null);
+      customerDraft.clear();
       await refetch();
       await queryClient.invalidateQueries({ queryKey: ["admin-profiles-list"] });
       await queryClient.invalidateQueries({ queryKey: ["customer-profiles-to-link"] });
@@ -344,6 +399,75 @@ export default function Customers() {
     }
   };
 
+  const handleBulkDelete = async () => {
+    if (!isAdmin) {
+      toast.error("Only administrators can delete customers.");
+      return;
+    }
+
+    const selectedCount = selectedCustomerIds.size;
+    if (selectedCount === 0) return;
+
+    if (!confirm(`Are you sure you want to delete ${selectedCount} selected customer(s)? This will permanently remove customer records, linked profiles, and auth accounts.`)) {
+      return;
+    }
+
+    setIsBulkDeleting(true);
+    try {
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/bulk-delete-customers`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session?.access_token}`,
+        },
+        body: JSON.stringify({ ids: Array.from(selectedCustomerIds) }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to bulk delete customers');
+      }
+
+      const result = await response.json();
+      if (result.failedCount > 0) {
+        toast.warning(`Deleted ${result.deletedCount} customer(s). ${result.failedCount} failed.`);
+      } else {
+        toast.success(`${result.deletedCount} customer(s) deleted successfully.`);
+      }
+      setSelectedCustomerIds(new Set());
+      await refetch();
+      await queryClient.invalidateQueries({ queryKey: ["admin-profiles-list"] });
+      await queryClient.invalidateQueries({ queryKey: ["customer-profiles-to-link"] });
+    } catch (e: any) {
+      toast.error(e.message || "Failed to bulk delete customers.");
+    } finally {
+      setIsBulkDeleting(false);
+    }
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedCustomerIds.size === filteredCustomers.length) {
+      setSelectedCustomerIds(new Set());
+    } else {
+      setSelectedCustomerIds(new Set(filteredCustomers.map((c: any) => c.id)));
+    }
+  };
+
+  const toggleSelectCustomer = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setSelectedCustomerIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const clearSelection = () => setSelectedCustomerIds(new Set());
+
   const filteredCustomers = customers?.filter((c: any) => {
     const matchesSearch = 
       (c.full_name || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -371,54 +495,51 @@ export default function Customers() {
         : [1, "ellipsis", currentPage - 1, currentPage, currentPage + 1, "ellipsis", totalPages];
 
   return (
-    <div className="space-y-8 relative">
-      {/* Header section */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-border/40 pb-6 relative z-10 pr-12 md:pr-16">
-        <div>
-          <h1 className="text-2xl font-display font-bold text-slate-800">Customer Profiles</h1>
-          <p className="text-muted-foreground font-light text-sm">
-            {user?.role === "customer" 
-              ? "View your registered customer details." 
-              : "Manage customer directory, branching details, and client configurations."}
+    <div className="space-y-8 relative overflow-x-hidden">
+      {/* Header Section with Title and Buttons */}
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 relative z-10">
+        {/* Page Title & Description */}
+        <div className="flex-1 min-w-0">
+          <h1 className="text-2xl sm:text-3xl font-bold">Customer Profiles</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Manage customer directory, branching details, and client configurations.
           </p>
         </div>
-
+        
+        {/* Action Buttons - Responsive Layout */}
         {canModify && (
-          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 justify-end overflow-x-auto max-w-full">
+          <div className="flex flex-wrap gap-2 w-full sm:w-auto">
             <ExportButton variant="customer" />
             <button
               onClick={downloadSample}
-              className="px-3 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 flex items-center gap-1.5 whitespace-nowrap"
+              className="px-3 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 flex items-center gap-1.5 whitespace-nowrap flex-1 sm:flex-none min-w-[80px] justify-center"
             >
               <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                   d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
               </svg>
-              <span className="hidden sm:inline">Sample CSV</span>
-              <span className="sm:hidden">Sample</span>
+              <span className="text-xs sm:text-sm">Sample</span>
             </button>
             <button
               onClick={() => setIsCustomerImportOpen(true)}
-              className="px-3 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 flex items-center gap-1.5 whitespace-nowrap"
+              className="px-3 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 flex items-center gap-1.5 whitespace-nowrap flex-1 sm:flex-none min-w-[80px] justify-center"
             >
               <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                   d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
               </svg>
-              <span className="hidden sm:inline">Import</span>
-              <span className="sm:hidden">Import</span>
+              <span className="text-xs sm:text-sm">Import</span>
             </button>
             <Button 
               onClick={() => handleOpenModal(null, "add")}
-              className="gradient-primary text-primary-foreground shadow-glow shrink-0 rounded-xl whitespace-nowrap"
+              className="flex items-center gap-1.5 whitespace-nowrap flex-1 sm:flex-none min-w-[80px] justify-center bg-gradient-to-r from-blue-600 to-teal-600 text-white"
             >
-              <Plus className="w-4 h-4 mr-1.5" /> 
-              <span className="hidden sm:inline">Add Customer</span>
-              <span className="sm:hidden">Add</span>
+              <Plus className="w-4 h-4 shrink-0" />
+              <span className="text-xs sm:text-sm">Add</span>
             </Button>
           </div>
         )}
-
+        
         {isViewOnly && (
           <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-100 border border-slate-200 text-slate-600 text-xs font-semibold uppercase tracking-wider">
             <ShieldCheck className="w-4 h-4 text-slate-500" /> View Only
@@ -484,6 +605,21 @@ export default function Customers() {
             <table className="w-full text-left border-collapse text-sm">
               <thead className="bg-[#f8fafc] text-slate-500 font-semibold border-b border-slate-200">
                 <tr>
+                  {isAdmin && (
+                    <th className="py-3.5 px-4 w-10">
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); toggleSelectAll(); }}
+                        className="text-slate-500 hover:text-slate-700"
+                      >
+                        {selectedCustomerIds.size === filteredCustomers.length && filteredCustomers.length > 0 ? (
+                          <CheckSquare className="w-4 h-4" />
+                        ) : (
+                          <Square className="w-4 h-4" />
+                        )}
+                      </button>
+                    </th>
+                  )}
                   <th className="py-3.5 px-4 font-semibold text-xs uppercase tracking-wider">Customer Name</th>
                   <th className="py-3.5 px-4 font-semibold text-xs uppercase tracking-wider">Phone</th>
                   <th className="py-3.5 px-4 font-semibold text-xs uppercase tracking-wider">Branch</th>
@@ -495,9 +631,24 @@ export default function Customers() {
                 {paginatedCustomers.map((c: any) => (
                   <tr 
                     key={c.id} 
-                    className="hover:bg-slate-50/80 transition-colors cursor-pointer"
+                    className={`${selectedCustomerIds.has(c.id) ? 'bg-blue-50/60' : 'hover:bg-slate-50/80'} transition-colors cursor-pointer`}
                     onClick={() => handleOpenModal(c, "view")}
                   >
+                    {isAdmin && (
+                      <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          type="button"
+                          onClick={(e) => toggleSelectCustomer(c.id, e)}
+                          className="text-slate-500 hover:text-slate-700"
+                        >
+                          {selectedCustomerIds.has(c.id) ? (
+                            <CheckSquare className="w-4 h-4 text-blue-600" />
+                          ) : (
+                            <Square className="w-4 h-4" />
+                          )}
+                        </button>
+                      </td>
+                    )}
                      <td className="py-3 px-4">
                        <div className="font-semibold text-slate-800 truncate max-w-[180px] sm:max-w-[260px]" title={c.full_name}>{c.full_name}</div>
                        {c.email && <div className="text-xs text-slate-400 mt-0.5 truncate max-w-[180px] sm:max-w-[260px]" title={c.email}>{c.email}</div>}
@@ -567,123 +718,168 @@ export default function Customers() {
             </table>
           </div>
 
+          {/* Bulk Action Bar */}
+          {isAdmin && selectedCustomerIds.size > 0 && (
+            <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-4">
+              <span className="text-sm font-medium">{selectedCustomerIds.size} selected</span>
+              <button
+                onClick={clearSelection}
+                className="text-xs font-semibold text-slate-300 hover:text-white uppercase tracking-wider"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleBulkDelete}
+                disabled={isBulkDeleting}
+                className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 text-white px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider disabled:opacity-50"
+              >
+                {isBulkDeleting ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="w-3.5 h-3.5" />
+                )}
+                Delete
+              </button>
+            </div>
+          )}
+
           {/* Mobile Card List View */}
           <div className="grid grid-cols-1 gap-4 md:hidden">
-            {paginatedCustomers.map((c: any) => (
-              <div 
-                key={c.id} 
-                className="bg-white border border-slate-200 p-4 rounded-xl shadow-sm hover:border-slate-300 transition-all flex flex-col gap-3.5 cursor-pointer"
-                onClick={() => handleOpenModal(c, "view")}
-              >
-                <div className="flex items-start justify-between gap-2">
-                   <div>
-                     <h3 className="font-semibold text-slate-800 text-base truncate" title={c.full_name}>{c.full_name}</h3>
-                     {c.email && <p className="text-xs text-slate-400 font-light mt-0.5 truncate" title={c.email}>{c.email}</p>}
-                   </div>
-                  <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider shrink-0 ${
-                    c.customer_type === 'Corporate' ? 'bg-indigo-50 border border-indigo-200 text-indigo-600' :
-                    c.customer_type === 'Government' ? 'bg-rose-50 border border-rose-200 text-rose-600' :
-                    c.customer_type === 'Partner' ? 'bg-amber-50 border border-amber-200 text-amber-600' :
-                    'bg-teal-50 border border-teal-200 text-teal-600'
-                  }`}>
-                    {c.customer_type || 'Retail'}
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2 text-xs border-t border-slate-100 pt-3 text-slate-500">
-                  <div className="flex items-center gap-1.5">
-                    <Phone className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                    <span>{c.phone}</span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <Building className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                    <span className="truncate">{c.branches?.branch_name || "No branch"}</span>
-                  </div>
-                </div>
-
-                <div 
-                  className="flex items-center justify-end gap-2 border-t border-slate-100 pt-3"
-                  onClick={(e) => e.stopPropagation()}
+            {paginatedCustomers.map((c: any) => {
+              const isSelected = selectedCustomerIds.has(c.id);
+              return (
+                <div
+                  key={c.id}
+                  className={`bg-white border border-slate-200 p-4 rounded-xl shadow-sm hover:border-slate-300 transition-all flex flex-col gap-3.5 cursor-pointer ${isSelected ? 'bg-blue-50/60 border-blue-200' : ''}`}
+                  onClick={() => handleOpenModal(c, "view")}
                 >
-                  <Button 
-                    variant="outline" 
-                    size="sm" 
-                    onClick={() => handleOpenModal(c, "view")}
-                    className="text-xs rounded-lg h-8 font-semibold flex-1"
-                  >
-                    <Eye className="w-3.5 h-3.5 mr-1.5" /> Details
-                  </Button>
-                  {canModify && (
-                    <Button 
-                      variant="outline" 
-                      size="sm" 
-                      onClick={() => handleOpenModal(c, "edit")}
-                      className="text-xs rounded-lg h-8 font-semibold flex-1 border-indigo-100 text-indigo-600 hover:bg-indigo-50/50"
-                    >
-                      <Edit className="w-3.5 h-3.5 mr-1.5" /> Edit
-                    </Button>
-                  )}
                   {isAdmin && (
-                    <Button 
-                      variant="ghost" 
-                      size="sm" 
-                      onClick={() => handleDelete(c.id, c.user_id, c.full_name)}
-                      disabled={deletingCustomerId === c.id}
-                      className="text-xs rounded-lg h-8 font-semibold text-destructive hover:bg-destructive/5 shrink-0"
-                    >
-                      {deletingCustomerId === c.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
-                    </Button>
+                    <div className="flex justify-end" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        onClick={(e) => toggleSelectCustomer(c.id, e)}
+                        className="text-slate-500 hover:text-slate-700"
+                      >
+                        {isSelected ? (
+                          <CheckSquare className="w-4 h-4 text-blue-600" />
+                        ) : (
+                          <Square className="w-4 h-4" />
+                        )}
+                      </button>
+                    </div>
                   )}
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <h3 className="font-semibold text-slate-800 text-base truncate" title={c.full_name}>{c.full_name}</h3>
+                      {c.email && <p className="text-xs text-slate-400 font-light mt-0.5 truncate" title={c.email}>{c.email}</p>}
+                    </div>
+                    <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider shrink-0 ${
+                      c.customer_type === 'Corporate' ? 'bg-indigo-50 border border-indigo-200 text-indigo-600' :
+                      c.customer_type === 'Government' ? 'bg-rose-50 border border-rose-200 text-rose-600' :
+                      c.customer_type === 'Partner' ? 'bg-amber-50 border border-amber-200 text-amber-600' :
+                      'bg-teal-50 border border-teal-200 text-teal-600'
+                    }`}>
+                      {c.customer_type || 'Retail'}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 text-xs border-t border-slate-100 pt-3 text-slate-500">
+                    <div className="flex items-center gap-1.5">
+                      <Phone className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                      <span>{c.phone}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <Building className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                      <span className="truncate">{c.branches?.branch_name || "No branch"}</span>
+                    </div>
+                  </div>
+
+                  <div
+                    className="flex items-center justify-end gap-2 border-t border-slate-100 pt-3"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleOpenModal(c, "view")}
+                      className="text-xs rounded-lg h-8 font-semibold flex-1"
+                    >
+                      <Eye className="w-3.5 h-3.5 mr-1.5" /> Details
+                    </Button>
+                    {canModify && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleOpenModal(c, "edit")}
+                        className="text-xs rounded-lg h-8 font-semibold flex-1 border-indigo-100 text-indigo-600 hover:bg-indigo-50/50"
+                      >
+                        <Edit className="w-3.5 h-3.5 mr-1.5" /> Edit
+                      </Button>
+                    )}
+                    {isAdmin && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleDelete(c.id, c.user_id, c.full_name)}
+                        disabled={deletingCustomerId === c.id}
+                        className="text-xs rounded-lg h-8 font-semibold text-destructive hover:bg-destructive/5 shrink-0"
+                      >
+                        {deletingCustomerId === c.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                      </Button>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </>
       )}
 
       {filteredCustomers.length > ITEMS_PER_PAGE && (
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-3 pt-2">
-          <p className="text-xs text-muted-foreground">
-            Showing {((currentPage - 1) * ITEMS_PER_PAGE) + 1}-{Math.min(currentPage * ITEMS_PER_PAGE, filteredCustomers.length)} of {filteredCustomers.length}
-          </p>
-          <Pagination className="w-full sm:w-auto mx-0 justify-end overflow-x-auto">
-            <PaginationContent className="flex-nowrap">
-              <PaginationItem>
-                <PaginationPrevious
-                  href="#"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    setCurrentPage((p) => Math.max(1, p - 1));
-                  }}
-                  className={currentPage === 1 ? "pointer-events-none opacity-50" : undefined}
-                />
-              </PaginationItem>
-              {pageNumbers.map((page, index) => (
-                <PaginationItem key={page === "ellipsis" ? `ellipsis-${index}` : page}>
-                  {page === "ellipsis" ? <PaginationEllipsis /> : <PaginationLink
+        <div className="flex flex-col sm:flex-row items-center justify-end gap-3 pt-2">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <p className="text-xs text-muted-foreground">
+              Showing {((currentPage - 1) * ITEMS_PER_PAGE) + 1}-{Math.min(currentPage * ITEMS_PER_PAGE, filteredCustomers.length)} of {filteredCustomers.length}
+            </p>
+            <Pagination className="w-full sm:w-auto mx-0 justify-end overflow-x-auto">
+              <PaginationContent className="flex-nowrap">
+                <PaginationItem>
+                  <PaginationPrevious
                     href="#"
-                    isActive={currentPage === page}
                     onClick={(e) => {
                       e.preventDefault();
-                      setCurrentPage(page);
+                      setCurrentPage((p) => Math.max(1, p - 1));
                     }}
-                  >
-                    {page}
-                  </PaginationLink>}
+                    className={currentPage === 1 ? "pointer-events-none opacity-50" : undefined}
+                  />
                 </PaginationItem>
-              ))}
-              <PaginationItem>
-                <PaginationNext
-                  href="#"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    setCurrentPage((p) => Math.min(totalPages, p + 1));
-                  }}
-                  className={currentPage === totalPages ? "pointer-events-none opacity-50" : undefined}
-                />
-              </PaginationItem>
-            </PaginationContent>
-          </Pagination>
+                {pageNumbers.map((page, index) => (
+                  <PaginationItem key={page === "ellipsis" ? `ellipsis-${index}` : page}>
+                    {page === "ellipsis" ? <PaginationEllipsis /> : <PaginationLink
+                      href="#"
+                      isActive={currentPage === page}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        setCurrentPage(page);
+                      }}
+                    >
+                      {page}
+                    </PaginationLink>}
+                  </PaginationItem>
+                ))}
+                <PaginationItem>
+                  <PaginationNext
+                    href="#"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      setCurrentPage((p) => Math.min(totalPages, p + 1));
+                    }}
+                    className={currentPage === totalPages ? "pointer-events-none opacity-50" : undefined}
+                  />
+                </PaginationItem>
+              </PaginationContent>
+            </Pagination>
+          </div>
         </div>
       )}
 
@@ -805,8 +1001,9 @@ export default function Customers() {
                         onChange={(e) => setFullName(e.target.value)}
                         placeholder="Customer Full Name"
                         required
+                        maxLength={100}
                         disabled={loading}
-                        className="rounded-lg border-slate-200 h-10"
+                        className="w-full rounded-lg border-slate-200 h-10"
                       />
                     </div>
 
@@ -819,7 +1016,7 @@ export default function Customers() {
                           placeholder="Contact phone"
                           required
                           disabled={loading}
-                          className="rounded-lg border-slate-200 h-10"
+                          className="w-full rounded-lg border-slate-200 h-10"
                         />
                       </div>
 
@@ -831,7 +1028,7 @@ export default function Customers() {
                           onChange={(e) => setEmail(e.target.value)}
                           placeholder="customer@example.com"
                           disabled={loading}
-                          className="rounded-lg border-slate-200 h-10"
+                          className="w-full rounded-lg border-slate-200 h-10"
                         />
                       </div>
                     </div>
@@ -953,6 +1150,29 @@ export default function Customers() {
                   </div>
 
                   <div className="flex items-center gap-3 pt-6 border-t border-slate-100 mt-6">
+                    {modalMode === "add" && customerDraft.hasDraft() && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          customerDraft.clear();
+                          setFullName("");
+                          setPhone("");
+                          setEmail("");
+                          setAddress("");
+                          setCustomerType("Retail");
+                          setBranchId("");
+                          setProfileUserId("");
+                          setCreateLoginAccount(false);
+                          setLoginPassword("");
+                          toast.success("Draft cleared");
+                        }}
+                        className="text-xs text-slate-500 hover:text-destructive"
+                      >
+                        Clear Draft
+                      </Button>
+                    )}
                     <Button 
                       type="button" 
                       variant="outline" 

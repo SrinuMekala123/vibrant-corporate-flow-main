@@ -516,15 +516,15 @@ const ComplaintsList = () => {
 
           {/* Pagination Controls */}
           {totalPages > 1 && (
-            <div className="flex flex-col sm:flex-row items-center justify-between border-t border-border/30 pt-4 mt-6 gap-4">
-              <p className="text-xs text-muted-foreground">
-                Showing <span className="font-semibold text-foreground">{startIndex + 1}</span> to{" "}
-                <span className="font-semibold text-foreground">
-                  {Math.min(startIndex + itemsPerPage, filtered.length)}
-                </span>{" "}
-                of <span className="font-semibold text-foreground">{filtered.length}</span> complaints
-              </p>
+            <div className="flex flex-col sm:flex-row items-center justify-end border-t border-border/30 pt-4 mt-6 gap-4">
               <div className="flex items-center gap-1.5 flex-wrap">
+                <p className="text-xs text-muted-foreground">
+                  Showing <span className="font-semibold text-foreground">{startIndex + 1}</span> to{" "}
+                  <span className="font-semibold text-foreground">
+                    {Math.min(startIndex + itemsPerPage, filtered.length)}
+                  </span>{" "}
+                  of <span className="font-semibold text-foreground">{filtered.length}</span> complaints
+                </p>
                 <Button
                   variant="outline"
                   size="sm"

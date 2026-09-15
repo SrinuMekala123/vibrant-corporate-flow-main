@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { useQuery } from "@tanstack/react-query";
+import { useFormDraft } from "@/hooks/useFormDraft";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -37,14 +38,17 @@ import {
   Wrench,
   ShieldCheck,
   Download,
-  ChevronDown
+  ChevronDown,
+  CheckSquare,
+  Square
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { downloadCSV, generateSampleCSV } from "@/utils/csvHelpers";
 import ExportButton from "@/components/ExportButton";
+import { Calendar as CalendarPicker } from "@/components/ui/calendar";
 
 export default function Assets() {
-  const { user } = useAuth();
+  const { user, session } = useAuth();
   const [searchQuery, setSearchQuery] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [warrantyFilter, setWarrantyFilter] = useState("all"); // all, active, expired
@@ -71,16 +75,69 @@ export default function Assets() {
   const [modelNumber, setModelNumber] = useState("");
   const [serialNumber, setSerialNumber] = useState("");
   const [purchaseDate, setPurchaseDate] = useState("");
+  const [purchaseDatePickerOpen, setPurchaseDatePickerOpen] = useState(false);
   const [warrantyMonths, setWarrantyMonths] = useState(12);
   const [installationDate, setInstallationDate] = useState("");
+  const [installationDatePickerOpen, setInstallationDatePickerOpen] = useState(false);
   const [status, setStatus] = useState("Active");
   const [notes, setNotes] = useState("");
+  const [selectedAssetIds, setSelectedAssetIds] = useState<Set<string>>(new Set());
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+
+  const assetDraft = useFormDraft({
+    key: 'draft_create_asset',
+    enabled: modalMode === "add",
+    excludeFields: [],
+    fields: {
+      customerId: { value: customerId, setter: setCustomerId },
+      branchId: { value: branchId, setter: setBranchId },
+      category: { value: category, setter: setCategory },
+      productName: { value: productName, setter: setProductName },
+      modelNumber: { value: modelNumber, setter: setModelNumber },
+      serialNumber: { value: serialNumber, setter: setSerialNumber },
+      purchaseDate: { value: purchaseDate, setter: setPurchaseDate },
+      warrantyMonths: { value: warrantyMonths, setter: setWarrantyMonths as any },
+      installationDate: { value: installationDate, setter: setInstallationDate },
+      status: { value: status, setter: setStatus },
+      notes: { value: notes, setter: setNotes },
+    },
+  });
+
+  useEffect(() => {
+    if (modalMode === "add") {
+      assetDraft.restore();
+    }
+  }, [modalMode]);
+
+  useEffect(() => {
+    return assetDraft.save();
+  }, [customerId, branchId, category, productName, modelNumber, serialNumber, purchaseDate, warrantyMonths, installationDate, status, notes]);
+
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      assetDraft.clear();
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [assetDraft]);
 
   // Role permissions
   const isAdmin = user?.role === "admin";
   const isSupervisor = user?.role === "supervisor";
   const canModify = isAdmin || isSupervisor;
   const isViewOnly = !canModify;
+  const today = new Date();
+  today.setHours(23, 59, 59, 999);
+  const dateFromInput = (value: string) => value ? new Date(`${value}T00:00:00`) : undefined;
+  const dateToInput = (date: Date) => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  };
+  const formatFormDate = (value: string) => value
+    ? dateFromInput(value)?.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+    : "Select date";
 
   const downloadSample = () => {
     const csv = generateSampleCSV("asset");
@@ -242,6 +299,8 @@ export default function Assets() {
       setInstallationDate("");
       setStatus("Active");
       setNotes("");
+      // Restore draft after resetting form
+      setTimeout(() => assetDraft.restore(), 0);
     } else {
       setSelectedAsset(asset);
       setCustomerId(asset.customer_id || "");
@@ -287,6 +346,10 @@ export default function Assets() {
       toast.error("Purchase Date is required.");
       return;
     }
+    if (dateFromInput(purchaseDate)! > today || (installationDate && dateFromInput(installationDate)! > today)) {
+      toast.error("Purchase and installation dates cannot be in the future.");
+      return;
+    }
 
     setLoading(true);
     try {
@@ -308,6 +371,7 @@ export default function Assets() {
         const { error } = await supabase.from('customer_assets').insert([payload]);
         if (error) throw error;
         toast.success(`Asset "${trimmedProduct}" added successfully!`);
+        assetDraft.clear();
       } else {
         const { error } = await supabase
           .from('customer_assets')
@@ -345,6 +409,69 @@ export default function Assets() {
       toast.error(e.message || "Failed to delete asset.");
     }
   };
+
+  const handleBulkDelete = async () => {
+    if (!isAdmin) {
+      toast.error("Only administrators can delete assets.");
+      return;
+    }
+
+    const selectedCount = selectedAssetIds.size;
+    if (selectedCount === 0) return;
+
+    if (!confirm(`Are you sure you want to delete ${selectedCount} selected asset(s)? This action cannot be undone.`)) {
+      return;
+    }
+
+    setIsBulkDeleting(true);
+    try {
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/bulk-delete-assets`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${(session as any)?.access_token}`,
+        },
+        body: JSON.stringify({ ids: Array.from(selectedAssetIds) }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to bulk delete assets');
+      }
+
+      const result = await response.json();
+      toast.success(result.deletedCount > 0 ? `${result.deletedCount} asset(s) deleted successfully.` : "No assets deleted.");
+      setSelectedAssetIds(new Set());
+      await refetch();
+    } catch (e: any) {
+      toast.error(e.message || "Failed to bulk delete assets.");
+    } finally {
+      setIsBulkDeleting(false);
+    }
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedAssetIds.size === filteredAssets.length) {
+      setSelectedAssetIds(new Set());
+    } else {
+      setSelectedAssetIds(new Set(filteredAssets.map((a: any) => a.id)));
+    }
+  };
+
+  const toggleSelectAsset = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setSelectedAssetIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const clearSelection = () => setSelectedAssetIds(new Set());
 
   // Filters logic
   const filteredAssets = assets?.filter((a: any) => {
@@ -390,50 +517,47 @@ export default function Assets() {
   ) || [];
 
   return (
-    <div className="space-y-8 relative">
-      {/* Header section */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-border/40 pb-6 relative z-10 pr-12 md:pr-16">
-        <div>
-          <h1 className="text-2xl font-display font-bold text-slate-800">Customer Assets</h1>
-          <p className="text-muted-foreground font-light text-sm">
-            {user?.role === "customer"
-              ? "Track your bought equipments, purchase warranties, and deployment locations."
-              : "Monitor client equipment profiles, warranty lifespans, and product deployments."}
+    <div className="space-y-8 relative overflow-x-hidden">
+      {/* Header Section with Title and Buttons */}
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 relative z-10">
+        {/* Page Title & Description */}
+        <div className="flex-1 min-w-0">
+          <h1 className="text-2xl sm:text-3xl font-bold">Customer Assets</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Monitor client equipment profiles, warranty lifespans, and product deployments.
           </p>
         </div>
-
+        
+        {/* Action Buttons - Responsive Layout */}
         {canModify && (
-          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 justify-end overflow-x-auto max-w-full">
+          <div className="flex flex-wrap gap-2 w-full sm:w-auto">
             <ExportButton variant="asset" />
             <Button
               variant="outline"
               onClick={downloadSample}
-              className="flex items-center gap-1.5 border-slate-300 text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+              className="flex items-center gap-1.5 whitespace-nowrap flex-1 sm:flex-none min-w-[80px] justify-center border-slate-300 text-slate-700 hover:bg-slate-50"
             >
               <Download className="w-4 h-4 shrink-0" />
-              <span className="hidden sm:inline">Sample CSV</span>
-              <span className="sm:hidden">Sample</span>
+              <span className="text-xs sm:text-sm">Sample</span>
             </Button>
             <Button
               variant="outline"
               onClick={() => setIsAssetImportOpen(true)}
-              className="flex items-center gap-1.5 border-slate-300 text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+              className="flex items-center gap-1.5 whitespace-nowrap flex-1 sm:flex-none min-w-[80px] justify-center border-slate-300 text-slate-700 hover:bg-slate-50"
             >
               <Upload className="w-4 h-4 shrink-0" />
-              <span className="hidden sm:inline">Import Assets</span>
-              <span className="sm:hidden">Import</span>
+              <span className="text-xs sm:text-sm">Import</span>
             </Button>
             <Button
               onClick={() => handleOpenModal(null, 'add')}
-              className="flex items-center gap-1.5 bg-gradient-to-r from-blue-600 to-teal-500 hover:from-blue-700 hover:to-teal-600 text-white whitespace-nowrap"
+              className="flex items-center gap-1.5 whitespace-nowrap flex-1 sm:flex-none min-w-[80px] justify-center bg-gradient-to-r from-blue-600 to-teal-500 hover:from-blue-700 hover:to-teal-600 text-white"
             >
               <Plus className="w-4 h-4 shrink-0" />
-              <span className="hidden sm:inline">Add Asset</span>
-              <span className="sm:hidden">Add</span>
+              <span className="text-xs sm:text-sm">Add</span>
             </Button>
           </div>
         )}
-
+        
         {isViewOnly && (
           <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-100 border border-slate-200 text-slate-600 text-xs font-semibold uppercase tracking-wider">
             <ShieldCheck className="w-4 h-4 text-slate-500" /> View Only
@@ -517,6 +641,21 @@ export default function Assets() {
             <table className="w-full text-left border-collapse text-sm">
               <thead className="bg-[#f8fafc] text-slate-500 font-semibold border-b border-slate-200">
                 <tr>
+                  {isAdmin && (
+                    <th className="py-3.5 px-4 w-10">
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); toggleSelectAll(); }}
+                        className="text-slate-500 hover:text-slate-700"
+                      >
+                        {selectedAssetIds.size === filteredAssets.length && filteredAssets.length > 0 ? (
+                          <CheckSquare className="w-4 h-4" />
+                        ) : (
+                          <Square className="w-4 h-4" />
+                        )}
+                      </button>
+                    </th>
+                  )}
                   <th className="py-3.5 px-4 font-semibold text-xs uppercase tracking-wider">Customer Name</th>
                   <th className="py-3.5 px-4 font-semibold text-xs uppercase tracking-wider">Product details</th>
                   <th className="py-3.5 px-4 font-semibold text-xs uppercase tracking-wider">Category</th>
@@ -528,12 +667,28 @@ export default function Assets() {
               <tbody className="divide-y divide-slate-100 text-slate-700">
                 {paginatedAssets.map((a: any) => {
                   const wInfo = getWarrantyInfo(a.purchase_date, a.warranty_months);
+                  const isSelected = selectedAssetIds.has(a.id);
                   return (
                     <tr
                       key={a.id}
-                      className="hover:bg-slate-50/80 transition-colors cursor-pointer"
+                      className={`${isSelected ? 'bg-blue-50/60' : 'hover:bg-slate-50/80'} transition-colors cursor-pointer`}
                       onClick={() => handleOpenModal(a, "view")}
                     >
+                      {isAdmin && (
+                        <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            type="button"
+                            onClick={(e) => toggleSelectAsset(a.id, e)}
+                            className="text-slate-500 hover:text-slate-700"
+                          >
+                            {isSelected ? (
+                              <CheckSquare className="w-4 h-4 text-blue-600" />
+                            ) : (
+                              <Square className="w-4 h-4" />
+                            )}
+                          </button>
+                        </td>
+                      )}
                       <td className="py-3 px-4 font-semibold text-slate-800">
                         {a.customers?.full_name || "Unknown Customer"}
                       </td>
@@ -611,6 +766,31 @@ export default function Assets() {
             </table>
           </div>
 
+          {/* Bulk Action Bar */}
+          {isAdmin && selectedAssetIds.size > 0 && (
+            <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-4">
+              <span className="text-sm font-medium">{selectedAssetIds.size} selected</span>
+              <button
+                onClick={clearSelection}
+                className="text-xs font-semibold text-slate-300 hover:text-white uppercase tracking-wider"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleBulkDelete}
+                disabled={isBulkDeleting}
+                className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 text-white px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider disabled:opacity-50"
+              >
+                {isBulkDeleting ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="w-3.5 h-3.5" />
+                )}
+                Delete
+              </button>
+            </div>
+          )}
+
           {/* Mobile Card List View */}
           <div className="grid grid-cols-1 gap-4 md:hidden">
             {paginatedAssets.map((a: any) => {
@@ -618,9 +798,24 @@ export default function Assets() {
               return (
                 <div
                   key={a.id}
-                  className="bg-white border border-slate-200 p-4 rounded-xl shadow-sm hover:border-slate-300 transition-all flex flex-col gap-3.5 cursor-pointer"
+                  className={`bg-white border border-slate-200 p-4 rounded-xl shadow-sm hover:border-slate-300 transition-all flex flex-col gap-3.5 cursor-pointer ${selectedAssetIds.has(a.id) ? 'bg-blue-50/60 border-blue-200' : ''}`}
                   onClick={() => handleOpenModal(a, "view")}
                 >
+                  {isAdmin && (
+                    <div className="flex justify-end" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        onClick={(e) => toggleSelectAsset(a.id, e)}
+                        className="text-slate-500 hover:text-slate-700"
+                      >
+                        {selectedAssetIds.has(a.id) ? (
+                          <CheckSquare className="w-4 h-4 text-blue-600" />
+                        ) : (
+                          <Square className="w-4 h-4" />
+                        )}
+                      </button>
+                    </div>
+                  )}
                   <div className="flex items-start justify-between gap-2 border-b border-slate-100 pb-2.5">
                     <div>
                       <h4 className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Client</h4>
@@ -694,48 +889,50 @@ export default function Assets() {
       )}
 
       {filteredAssets.length > ITEMS_PER_PAGE && (
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-3 pt-2">
-          <p className="text-xs text-muted-foreground">
-            Showing {((currentPage - 1) * ITEMS_PER_PAGE) + 1}-{Math.min(currentPage * ITEMS_PER_PAGE, filteredAssets.length)} of {filteredAssets.length}
-          </p>
-          <Pagination className="w-full sm:w-auto mx-0 justify-end overflow-x-auto">
-            <PaginationContent className="flex-nowrap">
-              <PaginationItem>
-                <PaginationPrevious
-                  href="#"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    setCurrentPage((p) => Math.max(1, p - 1));
-                  }}
-                  className={currentPage === 1 ? "pointer-events-none opacity-50" : undefined}
-                />
-              </PaginationItem>
-              {pageNumbers.map((page, index) => (
-                <PaginationItem key={page === "ellipsis" ? `ellipsis-${index}` : page}>
-                  {page === "ellipsis" ? <PaginationEllipsis /> : <PaginationLink
+        <div className="flex flex-col sm:flex-row items-center justify-end gap-3 pt-2">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <p className="text-xs text-muted-foreground">
+              Showing {((currentPage - 1) * ITEMS_PER_PAGE) + 1}-{Math.min(currentPage * ITEMS_PER_PAGE, filteredAssets.length)} of {filteredAssets.length}
+            </p>
+            <Pagination className="w-full sm:w-auto mx-0 justify-end overflow-x-auto">
+              <PaginationContent className="flex-nowrap">
+                <PaginationItem>
+                  <PaginationPrevious
                     href="#"
-                    isActive={currentPage === page}
                     onClick={(e) => {
                       e.preventDefault();
-                      setCurrentPage(page);
+                      setCurrentPage((p) => Math.max(1, p - 1));
                     }}
-                  >
-                    {page}
-                  </PaginationLink>}
+                    className={currentPage === 1 ? "pointer-events-none opacity-50" : undefined}
+                  />
                 </PaginationItem>
-              ))}
-              <PaginationItem>
-                <PaginationNext
-                  href="#"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    setCurrentPage((p) => Math.min(totalPages, p + 1));
-                  }}
-                  className={currentPage === totalPages ? "pointer-events-none opacity-50" : undefined}
-                />
-              </PaginationItem>
-            </PaginationContent>
-          </Pagination>
+                {pageNumbers.map((page, index) => (
+                  <PaginationItem key={page === "ellipsis" ? `ellipsis-${index}` : page}>
+                    {page === "ellipsis" ? <PaginationEllipsis /> : <PaginationLink
+                      href="#"
+                      isActive={currentPage === page}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        setCurrentPage(page);
+                      }}
+                    >
+                      {page}
+                    </PaginationLink>}
+                  </PaginationItem>
+                ))}
+                <PaginationItem>
+                  <PaginationNext
+                    href="#"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      setCurrentPage((p) => Math.min(totalPages, p + 1));
+                    }}
+                    className={currentPage === totalPages ? "pointer-events-none opacity-50" : undefined}
+                  />
+                </PaginationItem>
+              </PaginationContent>
+            </Pagination>
+          </div>
         </div>
       )}
 
@@ -748,7 +945,7 @@ export default function Assets() {
               animate={{ x: 0 }}
               exit={{ x: "100%" }}
               transition={{ type: "spring", damping: 26, stiffness: 220 }}
-              className="bg-white w-full max-w-xl h-full rounded-lg p-6 md:p-8 relative flex flex-col gap-6 overflow-y-auto shadow-xl border border-gray-200"
+              className="bg-white w-full max-w-xl h-full rounded-lg p-4 sm:p-6 md:p-8 relative flex flex-col gap-6 overflow-y-auto shadow-xl border border-gray-200"
             >
               {/* Close Button */}
               <button
@@ -1002,8 +1199,9 @@ export default function Assets() {
                           onChange={(e) => setProductName(e.target.value)}
                           placeholder="e.g. Solar Panel 400W"
                           required
+                          maxLength={50}
                           disabled={loading}
-                          className="rounded-lg border-slate-200 h-10"
+                          className="w-full rounded-lg border-slate-200 h-10"
                         />
                       </div>
 
@@ -1032,8 +1230,9 @@ export default function Assets() {
                           value={modelNumber}
                           onChange={(e) => setModelNumber(e.target.value)}
                           placeholder="e.g. SP-400-X"
+                          maxLength={50}
                           disabled={loading}
-                          className="rounded-lg border-slate-200 h-10"
+                          className="w-full rounded-lg border-slate-200 h-10"
                         />
                       </div>
 
@@ -1043,23 +1242,34 @@ export default function Assets() {
                           value={serialNumber}
                           onChange={(e) => setSerialNumber(e.target.value)}
                           placeholder="e.g. SN1234567890"
+                          maxLength={50}
                           disabled={loading}
-                          className="rounded-lg border-slate-200 h-10"
+                          className="w-full rounded-lg border-slate-200 h-10"
                         />
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                       <div className="space-y-1.5">
                         <label className="text-xs font-semibold text-slate-600">Purchase Date <span className="text-destructive">*</span></label>
-                        <Input
-                          type="date"
-                          value={purchaseDate}
-                          onChange={(e) => setPurchaseDate(e.target.value)}
-                          required
-                          disabled={loading}
-                          className="rounded-lg border-slate-200 h-10"
-                        />
+                        <Popover open={purchaseDatePickerOpen} onOpenChange={setPurchaseDatePickerOpen}>
+                          <PopoverTrigger asChild>
+                            <Button type="button" variant="outline" disabled={loading} className="w-full h-10 justify-start rounded-lg border-slate-200 font-normal">
+                              <Calendar className="mr-2 h-4 w-4 text-slate-400" />
+                              {formatFormDate(purchaseDate)}
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-[calc(100vw-2rem)] sm:w-auto p-0" align="start">
+                            <CalendarPicker
+                              mode="single"
+                              selected={dateFromInput(purchaseDate)}
+                              onSelect={(date) => { if (date) setPurchaseDate(dateToInput(date)); setPurchaseDatePickerOpen(false); }}
+                              disabled={(date) => date > today || date < new Date('1900-01-01')}
+                              initialFocus
+                            />
+                          </PopoverContent>
+                        </Popover>
+                        <input type="hidden" value={purchaseDate} required readOnly />
                       </div>
 
                       <div className="space-y-1.5">
@@ -1071,19 +1281,29 @@ export default function Assets() {
                           min={0}
                           required
                           disabled={loading}
-                          className="rounded-lg border-slate-200 h-10"
+                          className="w-full rounded-lg border-slate-200 h-10"
                         />
                       </div>
 
                       <div className="space-y-1.5">
                         <label className="text-xs font-semibold text-slate-600">Installation Date</label>
-                        <Input
-                          type="date"
-                          value={installationDate}
-                          onChange={(e) => setInstallationDate(e.target.value)}
-                          disabled={loading}
-                          className="rounded-lg border-slate-200 h-10"
-                        />
+                        <Popover open={installationDatePickerOpen} onOpenChange={setInstallationDatePickerOpen}>
+                          <PopoverTrigger asChild>
+                            <Button type="button" variant="outline" disabled={loading} className="w-full h-10 justify-start rounded-lg border-slate-200 font-normal">
+                              <Calendar className="mr-2 h-4 w-4 text-slate-400" />
+                              {formatFormDate(installationDate)}
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-[calc(100vw-2rem)] sm:w-auto p-0" align="start">
+                            <CalendarPicker
+                              mode="single"
+                              selected={dateFromInput(installationDate)}
+                              onSelect={(date) => { setInstallationDate(date ? dateToInput(date) : ""); setInstallationDatePickerOpen(false); }}
+                              disabled={(date) => date > today || date < new Date('1900-01-01')}
+                              initialFocus
+                            />
+                          </PopoverContent>
+                        </Popover>
                       </div>
                     </div>
 
@@ -1118,6 +1338,31 @@ export default function Assets() {
                   </div>
 
                   <div className="flex items-center gap-3 pt-6 border-t border-slate-100 mt-6">
+                    {modalMode === "add" && assetDraft.hasDraft() && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          assetDraft.clear();
+                          setCustomerId("");
+                          setBranchId("");
+                          setCategory("Solar PV");
+                          setProductName("");
+                          setModelNumber("");
+                          setSerialNumber("");
+                          setPurchaseDate(new Date().toISOString().split('T')[0]);
+                          setWarrantyMonths(12);
+                          setInstallationDate("");
+                          setStatus("Active");
+                          setNotes("");
+                          toast.success("Draft cleared");
+                        }}
+                        className="text-xs text-slate-500 hover:text-destructive"
+                      >
+                        Clear Draft
+                      </Button>
+                    )}
                     <Button
                       type="button"
                       variant="outline"

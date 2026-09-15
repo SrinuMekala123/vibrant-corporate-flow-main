@@ -16,6 +16,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import browserImageCompression from "browser-image-compression";
 import { notificationService } from "@/services/notificationService";
+import { useFormDraft } from "@/hooks/useFormDraft";
 
 const formatDateTimeLocal = (dateStr?: string) => {
   if (!dateStr) return "";
@@ -31,6 +32,15 @@ const formatDateTimeLocal = (dateStr?: string) => {
   const minutes = pad(d.getMinutes());
   
   return `${year}-${month}-${day}T${hours}:${minutes}`;
+};
+
+const isAssetWarrantyActive = (purchaseDate: string, warrantyMonths: number) => {
+  if (!purchaseDate) return false;
+  const expiryDate = new Date(purchaseDate);
+  expiryDate.setMonth(expiryDate.getMonth() + Number(warrantyMonths || 0));
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return expiryDate >= today;
 };
 
 const ComplaintEdit = () => {
@@ -179,6 +189,70 @@ const ComplaintEdit = () => {
   const [customerAssets, setCustomerAssets] = useState<any[]>([]);
   const [availableFieldOfWork, setAvailableFieldOfWork] = useState<string[]>([]);
   const [isCustomerPopoverOpen, setIsCustomerPopoverOpen] = useState(false);
+  const [supervisorError, setSupervisorError] = useState("");
+
+  const complaintDraft = useFormDraft({
+    key: 'draft_create_complaint',
+    enabled: isNew,
+    excludeFields: [],
+    fields: {
+      title: { value: form.title, setter: (v) => setForm((prev) => ({ ...prev, title: v as string })) },
+      customerId: { value: form.customerId, setter: (v) => setForm((prev) => ({ ...prev, customerId: v as string })) },
+      customerName: { value: form.customerName, setter: (v) => setForm((prev) => ({ ...prev, customerName: v as string })) },
+      customerPhone: { value: form.customerPhone, setter: (v) => setForm((prev) => ({ ...prev, customerPhone: v as string })) },
+      location: { value: form.location, setter: (v) => setForm((prev) => ({ ...prev, location: v as string })) },
+      fieldOfWork: { value: form.fieldOfWork, setter: (v) => setForm((prev) => ({ ...prev, fieldOfWork: v as string })) },
+      status: { value: form.status, setter: (v) => setForm((prev) => ({ ...prev, status: v as string })) },
+      severity: { value: form.severity, setter: (v) => setForm((prev) => ({ ...prev, severity: v as SeverityTier })) },
+      assignedSupervisor: { value: form.assignedSupervisor, setter: (v) => setForm((prev) => ({ ...prev, assignedSupervisor: v as string })) },
+      assignedTechnician: { value: form.assignedTechnician, setter: (v) => setForm((prev) => ({ ...prev, assignedTechnician: v as string })) },
+      description: { value: form.description, setter: (v) => setForm((prev) => ({ ...prev, description: v as string })) },
+      supervisor_notes: { value: form.supervisor_notes, setter: (v) => setForm((prev) => ({ ...prev, supervisor_notes: v as string })) },
+      targetEndTime: { value: form.targetEndTime, setter: (v) => setForm((prev) => ({ ...prev, targetEndTime: v as string })) },
+    },
+  });
+
+  useEffect(() => {
+    if (isNew) {
+      complaintDraft.restore();
+    }
+  }, [isNew]);
+
+  useEffect(() => {
+    return complaintDraft.save();
+  }, [form.title, form.customerId, form.customerName, form.customerPhone, form.location, form.fieldOfWork, form.status, form.severity, form.assignedSupervisor, form.assignedTechnician, form.description, form.supervisor_notes, form.targetEndTime]);
+
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      complaintDraft.clear();
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [complaintDraft]);
+
+  const clearSupervisorError = () => {
+    if (supervisorError) setSupervisorError("");
+  };
+
+  const calculateAutoStatus = () => {
+    if (isNew) {
+      if (form.assignedTechnician) return "dispatched";
+      if (form.assignedSupervisor) return "assigned";
+      return "unassigned";
+    }
+
+    const phase = existingComplaint?.current_phase || 1;
+    if (form.assignedTechnician) return "dispatched";
+    if (form.assignedSupervisor) return "assigned";
+    if (phase >= 6) return "closed";
+    if (phase >= 5) return "completed";
+    if (phase >= 4) return "in-progress";
+    if (phase >= 3) return "dispatched";
+    if (phase >= 2) return "assigned";
+    return "unassigned";
+  };
+
+  const autoStatus = calculateAutoStatus();
 
   useEffect(() => {
     const fetchCategories = async () => {
@@ -203,7 +277,7 @@ const ComplaintEdit = () => {
           if (customerRecord) {
             const { data: assets, error: assetsError } = await supabase
               .from('customer_assets')
-              .select('category')
+              .select('category, purchase_date, warranty_months')
               .eq('customer_id', customerRecord.id)
               .order('category', { ascending: true });
 
@@ -214,7 +288,11 @@ const ComplaintEdit = () => {
             }
 
             if (assets) {
-              const uniqueCategories = [...new Set(assets.map((a: any) => a.category).filter(Boolean))] as string[];
+              const activeAssets = assets.filter((asset: any) =>
+                isAssetWarrantyActive(asset.purchase_date, asset.warranty_months)
+              );
+              const uniqueCategories = [...new Set(activeAssets.map((a: any) => a.category).filter(Boolean))] as string[];
+              setCustomerAssets(activeAssets);
               setAvailableCategories(uniqueCategories);
             } else {
               setAvailableCategories([]);
@@ -659,10 +737,45 @@ const ComplaintEdit = () => {
       return;
     }
 
+    if (form.status === "assigned" && !form.assignedSupervisor) {
+      toast.error("Please select a supervisor before marking as Assigned");
+      return;
+    }
+
     setIsSaving(true);
     try {
       if (isNew) {
-        let status = form.status || "unassigned";
+        if (isCustomer) {
+          const { data: customerRecord, error: customerError } = await supabase
+            .from('customers')
+            .select('id')
+            .eq('user_id', user.id)
+            .maybeSingle();
+
+          if (customerError) throw customerError;
+
+          const { data: assets, error: assetsError } = customerRecord
+            ? await supabase
+              .from('customer_assets')
+              .select('category, purchase_date, warranty_months')
+              .eq('customer_id', customerRecord.id)
+              .eq('category', form.fieldOfWork)
+            : { data: [], error: null };
+
+          if (assetsError) throw assetsError;
+
+          const hasActiveWarranty = (assets || []).some((asset: any) =>
+            isAssetWarrantyActive(asset.purchase_date, asset.warranty_months)
+          );
+
+          if (!hasActiveWarranty) {
+            toast.error("You cannot raise a complaint because the warranty for this asset has expired.");
+            return;
+          }
+        }
+
+        const autoStatus = calculateAutoStatus();
+        let status = autoStatus;
         let phase = 1;
         if (status === "unassigned") {
           phase = 1;
@@ -674,15 +787,6 @@ const ComplaintEdit = () => {
           phase = 4;
         } else if (status === "completed" || status === "closed") {
           phase = 6;
-        }
-
-        if (form.assignedSupervisor && !isCustomer && status === "unassigned") {
-          status = "assigned";
-          phase = 2;
-        }
-        if (form.assignedTechnician && !isCustomer && (status === "unassigned" || status === "assigned")) {
-          status = "dispatched";
-          phase = 3;
         }
 
         const newComplaint = await complaintService.create({
@@ -778,59 +882,30 @@ const ComplaintEdit = () => {
 
         if (isCustomer) {
           toast.success("Complaint submitted! Our team will contact you soon.");
+          complaintDraft.clear();
           navigate("/dashboard");
         } else {
           toast.success("Complaint created successfully!");
+          complaintDraft.clear();
           navigate("/complaints");
         }
       } else {
+        const autoStatus = calculateAutoStatus();
         let nextPhase = existingComplaint?.current_phase || 1;
-        let nextStatus = form.status;
+        let nextStatus = autoStatus;
 
-        // Sync phase based on the manually selected status if it has changed
-        if (form.status !== existingComplaint?.status) {
-          if (form.status === "unassigned") {
-            nextPhase = 1;
-          } else if (form.status === "assigned") {
-            nextPhase = 2;
-          } else if (form.status === "dispatched") {
-            nextPhase = 3;
-          } else if (["in-progress", "in_progress", "pir_submitted_awaiting_approval", "pir_approved_work_in_progress", "rework_required"].includes(form.status)) {
-            nextPhase = 4;
-          } else if (form.status === "completed") {
-            nextPhase = 6;
-          } else if (form.status === "closed") {
-            nextPhase = 6;
-          }
+        if (autoStatus === "unassigned") {
+          nextPhase = 1;
+        } else if (autoStatus === "assigned") {
+          nextPhase = 2;
+        } else if (autoStatus === "dispatched") {
+          nextPhase = 3;
+        } else if (autoStatus === "in-progress") {
+          nextPhase = 4;
+        } else if (autoStatus === "completed" || autoStatus === "closed") {
+          nextPhase = 6;
         }
 
-        // 🔥 If supervisor is assigned and we're in Phase 1, move to Phase 2 (status: 'assigned')
-        if (form.assignedSupervisor && !isCustomer) {
-          if (existingComplaint?.current_phase === 1) {
-            nextPhase = 2;
-            nextStatus = "assigned";
-            console.log("🚀 Auto-advancing to Phase 2 (Triage)");
-            toast.success("Supervisor assigned! Moving to Phase 2: Triage");
-          }
-        } else if (!form.assignedSupervisor && !isCustomer) {
-          if (existingComplaint?.current_phase === 2) {
-            nextPhase = 1;
-            nextStatus = "unassigned";
-            console.log("🚀 Auto-reverting to Phase 1 (Unassigned)");
-            toast.success("Supervisor unassigned! Reverting to Phase 1");
-          }
-        }
-
-        // 🔥 If technician is assigned, move to Phase 3 (status: 'dispatched')
-        if (form.assignedTechnician && !isCustomer) {
-          if (existingComplaint?.current_phase < 3) {
-            nextPhase = 3;
-            nextStatus = "dispatched";
-            console.log("🚀 Auto-advancing to Phase 3 (Dispatch)");
-            toast.success("Technician assigned! Moving to Phase 3: Dispatch");
-          }
-        }
-        
         const supervisorChanged = form.assignedSupervisor && form.assignedSupervisor !== existingComplaint?.assigned_supervisor;
         const technicianChanged = form.assignedTechnician && form.assignedTechnician !== existingComplaint?.assigned_technician;
 
@@ -926,7 +1001,7 @@ const ComplaintEdit = () => {
   }
 
   return (
-    <div className="space-y-6 w-full">
+    <div className="space-y-6 w-full pb-20">
       <div className="flex items-center gap-3">
         <button onClick={() => navigate(-1)} className="w-9 h-9 rounded-lg bg-muted hover:bg-muted/80 flex items-center justify-center" disabled={isSaving}>
           <ArrowLeft className="w-4 h-4" />
@@ -1010,7 +1085,7 @@ const ComplaintEdit = () => {
                           {form.customerName ? (
                             <span className="truncate font-medium">{form.customerName}</span>
                           ) : (
-                            <span className="text-muted-foreground">Search customer by name, phone, or email...</span>
+                            <span className="text-muted-foreground">Search by name, phone, or email...</span>
                           )}
                           <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                         </Button>
@@ -1223,21 +1298,20 @@ const ComplaintEdit = () => {
                 onValueChange={(v) => {
                   const actualVal = v === "clear_unassigned" ? "" : v;
                   if (!actualVal) {
-                    setSelectedSupervisorId("");
-                    let updatedStatus = form.status;
-                    if (form.status === "assigned") {
-                      updatedStatus = "unassigned";
+                    if (form.assignedSupervisor && form.status === "assigned") {
+                      const confirmed = window.confirm("Unassigning supervisor will revert status to Unassigned. Continue?");
+                      if (!confirmed) return;
                     }
-                    setForm({ ...form, assignedSupervisor: "", status: updatedStatus });
+                    setSelectedSupervisorId("");
+                    setForm({ ...form, assignedSupervisor: "", status: "unassigned" });
+                    setSupervisorError("");
                   } else {
                     const match = supervisors?.find((s: any) => s.id === actualVal);
                     if (match) {
                       setSelectedSupervisorId(match.id);
-                      let updatedStatus = form.status;
-                      if (form.status === "unassigned") {
-                        updatedStatus = "assigned";
-                      }
-                      setForm({ ...form, assignedSupervisor: match.full_name, status: updatedStatus });
+                      setForm({ ...form, assignedSupervisor: match.full_name, status: "assigned" });
+                      setSupervisorError("");
+                      toast.success("Status automatically updated to 'Assigned'");
                     }
                   }
                 }} 
@@ -1287,18 +1361,22 @@ const ComplaintEdit = () => {
 
           {isAdminOrSupervisor && (
             <div className="space-y-2">
-              <label className="text-sm font-medium">Status</label>
-              <Select value={form.status} onValueChange={(v) => setForm({ ...form, status: v })} disabled={isSaving}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="unassigned">Unassigned</SelectItem>
-                  <SelectItem value="assigned">Assigned</SelectItem>
-                  <SelectItem value="dispatched">Dispatched</SelectItem>
-                  <SelectItem value="in-progress">In Progress</SelectItem>
-                  <SelectItem value="completed">Completed</SelectItem>
-                  <SelectItem value="closed">Closed</SelectItem>
-                </SelectContent>
-              </Select>
+              <label className="text-sm font-medium text-muted-foreground">Current Status</label>
+              <div className="px-4 py-2.5 bg-muted/50 rounded-lg border border-border">
+                <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium ${
+                  autoStatus === 'assigned' ? 'bg-indigo-100 text-indigo-700' :
+                  autoStatus === 'dispatched' ? 'bg-orange-100 text-orange-700' :
+                  autoStatus === 'in-progress' ? 'bg-yellow-100 text-yellow-700' :
+                  autoStatus === 'completed' ? 'bg-emerald-100 text-emerald-700' :
+                  autoStatus === 'closed' ? 'bg-slate-200 text-slate-700' :
+                  'bg-slate-100 text-slate-600'
+                }`}>
+                  {autoStatus.charAt(0).toUpperCase() + autoStatus.slice(1).replace('-', ' ')}
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Status updates automatically based on phase progression and assignments
+              </p>
             </div>
           )}
 
@@ -1315,12 +1393,14 @@ const ComplaintEdit = () => {
                   const actualVal = v === "clear_unassigned" ? "" : v;
                   if (!actualVal) {
                     setSelectedTechnicianId("");
-                    setForm({ ...form, assignedTechnician: "" });
+                    const nextStatus = form.assignedSupervisor ? "assigned" : "unassigned";
+                    setForm({ ...form, assignedTechnician: "", status: nextStatus });
                   } else {
                     const match = technicians?.find((t: any) => t.id === actualVal);
                     if (match) {
                       setSelectedTechnicianId(match.id);
-                      setForm({ ...form, assignedTechnician: match.full_name });
+                      setForm({ ...form, assignedTechnician: match.full_name, status: "dispatched" });
+                      toast.success("Status automatically updated to 'Dispatched'");
                     }
                   }
                 }} 
@@ -1388,7 +1468,7 @@ const ComplaintEdit = () => {
             />
           </div>
 
-          {(isAdmin || isSupervisor) && (
+          {isSupervisor && form.assignedSupervisor && form.assignedTechnician && (
             <div className="md:col-span-2 min-w-0 max-w-full space-y-2">
               <label className="text-sm font-medium">Supervisor Notes / Key Points for Technician</label>
               <Textarea
@@ -1399,7 +1479,6 @@ const ComplaintEdit = () => {
                 disabled={isSaving}
                 className="w-full min-w-0 max-w-full resize-y break-words"
               />
-              <p className="text-xs text-muted-foreground">Optional: Add key symptoms or instructions for the technician.</p>
             </div>
           )}
 
@@ -1440,13 +1519,51 @@ const ComplaintEdit = () => {
           </div>
         </div>
 
-        <div className="flex gap-3 justify-end pt-4 border-t">
-          <Button type="button" variant="outline" onClick={() => navigate(-1)} disabled={isSaving}>Cancel</Button>
-          <Button type="submit" className="gradient-primary text-primary-foreground shadow-glow hover:opacity-90" disabled={isSaving}>
-            {isSaving ? (<span className="flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" />Saving...</span>) : (
-              <><Save className="w-4 h-4 mr-2" />{isNew ? (isCustomer ? "Submit Complaint" : "Create Complaint") : "Save Changes"}</>
-            )}
-          </Button>
+        <div className="space-y-3 pt-4 border-t">
+          {isNew && complaintDraft.hasDraft() && (
+            <div className="w-full bg-amber-50 border border-amber-200 rounded-lg p-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <span className="text-xs font-medium text-amber-800">Draft saved</span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  complaintDraft.clear();
+                  setForm({
+                    title: "",
+                    customerId: "",
+                    customerName: "",
+                    customerPhone: "",
+                    location: "",
+                    fieldOfWork: "",
+                    status: "unassigned",
+                    severity: "minor",
+                    assignedSupervisor: "",
+                    assignedTechnician: "",
+                    description: "",
+                    supervisor_notes: "",
+                    targetEndTime: "",
+                    customerLat: null,
+                    customerLng: null,
+                  });
+                  setSelectedSupervisorId("");
+                  setSelectedTechnicianId("");
+                  toast.success("Draft cleared");
+                }}
+                className="text-xs text-amber-700 hover:text-amber-900 self-end sm:self-auto"
+              >
+                Clear Draft
+              </Button>
+            </div>
+          )}
+          <div className="flex flex-col sm:flex-row gap-3 justify-end">
+            <Button type="button" variant="outline" onClick={() => navigate(-1)} disabled={isSaving} className="w-full sm:w-auto">Cancel</Button>
+            <Button type="submit" className="gradient-primary text-primary-foreground shadow-glow hover:opacity-90 w-full sm:w-auto" disabled={isSaving}>
+              {isSaving ? (<span className="flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" />Saving...</span>) : (
+                <><Save className="w-4 h-4 mr-2" />{isNew ? (isCustomer ? "Submit Complaint" : "Create Complaint") : "Save Changes"}</>
+              )}
+            </Button>
+          </div>
         </div>
       </motion.form>
     </div>

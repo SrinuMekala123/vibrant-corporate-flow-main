@@ -217,7 +217,7 @@ export function NotificationCenter() {
       {/* Bell Button */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="relative p-2 rounded-full bg-white border border-slate-200/80 shadow-sm text-slate-600 hover:text-[#0083a2] hover:bg-slate-50 transition-all flex items-center justify-center"
+        className="relative p-2 rounded-full bg-white border border-slate-200/80 shadow-sm text-slate-600 hover:text-[#0083a2] hover:bg-slate-50 transition-all flex items-center justify-center min-w-[44px] min-h-[44px]"
         aria-label="Notifications"
       >
         <motion.div
@@ -245,7 +245,7 @@ export function NotificationCenter() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 10, scale: 0.95 }}
             transition={{ duration: 0.15 }}
-            className={`absolute right-0 mt-3.5 w-80 md:w-96 max-h-[500px] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl z-50 flex flex-col border-t-4 ${getRoleAccent()}`}
+            className={`fixed top-16 right-4 w-[calc(100vw-2rem)] sm:w-80 md:w-96 max-w-[90vw] max-h-[70vh] overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-xl z-50 flex flex-col border-t-4 ${getRoleAccent()}`}
           >
             {/* Header */}
             <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
@@ -328,7 +328,7 @@ export function NotificationCenter() {
       <div
         key={n.id}
         onClick={() => handleMarkAsRead(n.id, n.action_url)}
-        className={`px-4 py-3 flex gap-3 hover:bg-slate-50/80 transition-all cursor-pointer items-start relative border-l-2 ${
+        className={`px-4 py-3 min-h-[44px] flex gap-3 hover:bg-slate-50/80 transition-all cursor-pointer items-start relative border-l-2 ${
           n.is_read ? "border-l-transparent" : "bg-blue-50/10 border-l-[#0083a2]"
         }`}
       >
