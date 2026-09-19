@@ -95,8 +95,7 @@ export default function LiveRouteTrackingModal({
           setPlaybackIndex(formatted.length > 0 ? formatted.length - 1 : 0);
         }
       } catch (err) {
-        console.error("Error loading route tracking:", err);
-        toast.error("Failed to load tracking data");
+        console.warn("Could not load route tracking points:", err);
       } finally {
         setLoading(false);
       }
@@ -152,9 +151,9 @@ export default function LiveRouteTrackingModal({
   useEffect(() => {
     if (!mapContainerRef.current) return;
 
-    // Center map around customer destination or default center
-    const destLat = ticket.customer_lat ? Number(ticket.customer_lat) : 25.2048; // Dubai default
-    const destLng = ticket.customer_lng ? Number(ticket.customer_lng) : 55.2708;
+    // Center map around customer destination or default center (Hyderabad / India default)
+    const destLat = (ticket.customer_lat && !isNaN(Number(ticket.customer_lat))) ? Number(ticket.customer_lat) : 17.3850;
+    const destLng = (ticket.customer_lng && !isNaN(Number(ticket.customer_lng))) ? Number(ticket.customer_lng) : 78.4867;
 
     const map = L.map(mapContainerRef.current, {
       zoomControl: false,
@@ -350,10 +349,27 @@ export default function LiveRouteTrackingModal({
               <div className="h-4 w-48 bg-muted animate-pulse rounded"></div>
             </div>
           ) : points.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground space-y-2">
+            <div className="text-center py-8 text-muted-foreground space-y-3">
               <HelpCircle className="w-8 h-8 mx-auto text-muted-foreground/60" />
-              <p className="text-sm font-semibold">No journey data recorded yet.</p>
-              <p className="text-xs">Location coordinates will record once the transit starts.</p>
+              <div>
+                <p className="text-sm font-semibold text-foreground">No GPS trail recorded yet</p>
+                <p className="text-xs text-muted-foreground mt-1">Direct map navigation is available below to reach the customer site.</p>
+              </div>
+              {(ticket.location || (ticket.customer_lat && ticket.customer_lng)) && (
+                <Button
+                  size="sm"
+                  className="w-full gradient-primary text-white font-semibold text-xs mt-2"
+                  onClick={() => {
+                    const destination = (ticket.customer_lat && ticket.customer_lng)
+                      ? `${ticket.customer_lat},${ticket.customer_lng}`
+                      : encodeURIComponent(ticket.location?.trim() || "");
+                    const mapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${destination}&travelmode=driving`;
+                    window.open(mapsUrl, "_blank");
+                  }}
+                >
+                  <Navigation className="w-3.5 h-3.5 mr-1.5" /> Navigate with Google Maps
+                </Button>
+              )}
             </div>
           ) : (
             <>

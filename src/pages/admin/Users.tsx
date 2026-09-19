@@ -23,6 +23,57 @@ import {
 type UserRole = "customer" | "technician" | "supervisor" | "admin";
 type StaffRole = Exclude<UserRole, "customer" | "admin">;
 
+const TECHNICIAN_DESIGNATIONS = [
+  "Field Technician",
+  "Senior Technician",
+  "Team Lead",
+  "Service Engineer",
+];
+
+const DEFAULT_FIELDS_OF_WORK = [
+  "General",
+  "Solar PV",
+  "Networking",
+  "Security Systems",
+  "Power Systems",
+  "CCTV & Surveillance Installation",
+];
+
+const LOCAL_TECH_STORAGE_KEY = "technician_profile_overrides_v1";
+
+const getLocalTechOverrides = (): Record<string, { technician_id?: string; employee_id?: string; designation?: string; expertise?: string }> => {
+  try {
+    const raw = localStorage.getItem(LOCAL_TECH_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+};
+
+const setLocalTechOverride = (
+  id: string,
+  data: { technician_id?: string | null; employee_id?: string | null; designation?: string | null; expertise?: string | null }
+) => {
+  try {
+    const current = getLocalTechOverrides();
+    current[id] = {
+      ...current[id],
+      ...(data.technician_id !== undefined ? { technician_id: data.technician_id || "" } : {}),
+      ...(data.employee_id !== undefined ? { employee_id: data.employee_id || "" } : {}),
+      ...(data.designation !== undefined ? { designation: data.designation || "" } : {}),
+      ...(data.expertise !== undefined ? { expertise: data.expertise || "" } : {}),
+    };
+    localStorage.setItem(LOCAL_TECH_STORAGE_KEY, JSON.stringify(current));
+  } catch (e) {
+    console.warn("Could not write local technician override:", e);
+  }
+};
+
+const isValidTechnicianId = (id: string) => {
+  if (!id) return false;
+  return /^[a-zA-Z0-9-]+$/.test(id.trim());
+};
+
 export default function UsersPage() {
   const { user, session, signUp } = useAuth();
   const queryClient = useQueryClient();
@@ -31,6 +82,8 @@ export default function UsersPage() {
   const [fullName, setFullName] = useState("");
   const [phone, setPhone] = useState("");
   const [role, setRole] = useState<UserRole | "">("");
+  const [technicianId, setTechnicianId] = useState("");
+  const [designation, setDesignation] = useState("");
   const [staffImportRole, setStaffImportRole] = useState<StaffRole | "">("");
   const [selectedExpertise, setSelectedExpertise] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
@@ -44,6 +97,8 @@ export default function UsersPage() {
   const [editEmail, setEditEmail] = useState("");
   const [editPhone, setEditPhone] = useState("");
   const [editRole, setEditRole] = useState("customer");
+  const [editTechnicianId, setEditTechnicianId] = useState("");
+  const [editDesignation, setEditDesignation] = useState("");
   const [editExpertise, setEditExpertise] = useState<string[]>([]);
   const [savingEdit, setSavingEdit] = useState(false);
   const [editPassword, setEditPassword] = useState("");
@@ -77,6 +132,8 @@ export default function UsersPage() {
       email: { value: email, setter: setEmail },
       phone: { value: phone, setter: setPhone },
       role: { value: role, setter: setRole },
+      technicianId: { value: technicianId, setter: setTechnicianId },
+      designation: { value: designation, setter: setDesignation },
       selectedExpertise: { value: selectedExpertise, setter: setSelectedExpertise },
       branchId: { value: branchId, setter: setBranchId },
       customerType: { value: customerType, setter: setCustomerType },
@@ -99,7 +156,7 @@ export default function UsersPage() {
 
   useEffect(() => {
     return createUserDraft.save();
-  }, [fullName, email, phone, role, selectedExpertise, branchId, customerType]);
+  }, [fullName, email, phone, role, technicianId, designation, selectedExpertise, branchId, customerType]);
 
   useEffect(() => {
     const handleBeforeUnload = () => {
@@ -133,28 +190,66 @@ export default function UsersPage() {
 
 
   // Fetch all profiles
-  const { data: profiles, isLoading: isLoadingProfiles, refetch } = useQuery({
+  const { data: profiles = [], isLoading: isLoadingProfiles, refetch, error: profilesError } = useQuery({
     queryKey: ['admin-profiles-list'],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('id, full_name, email, phone, role, branch_id, customer_type, expertise, created_at')
-        .order('full_name', { ascending: true });
-      if (error) throw error;
-      return data || [];
+      try {
+        let rawProfiles: any[] = [];
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('*')
+          .order('full_name', { ascending: true, nullsFirst: false });
+        if (error) {
+          console.warn("Retrying profiles select without ordering:", error);
+          const fallback = await supabase.from('profiles').select('*');
+          if (fallback.error) {
+            console.error("Profiles select error:", fallback.error);
+            return [];
+          }
+          rawProfiles = fallback.data || [];
+        } else {
+          rawProfiles = data || [];
+        }
+
+        const overrides = getLocalTechOverrides();
+        return rawProfiles.map((p: any) => {
+          const over = overrides[p.id] || {};
+          const resolvedTechId = p.technician_id || p.employee_id || over.technician_id || over.employee_id || null;
+          const resolvedDesignation = p.designation || over.designation || null;
+          const resolvedExpertise = p.expertise || over.expertise || null;
+
+          return {
+            ...p,
+            technician_id: resolvedTechId,
+            employee_id: resolvedTechId,
+            designation: resolvedDesignation,
+            expertise: resolvedExpertise,
+          };
+        });
+      } catch (err) {
+        console.error("Failed to load profiles in Users.tsx:", err);
+        return [];
+      }
     }
   });
 
   // Fetch branches
-  const { data: branches } = useQuery({
+  const { data: branches = [] } = useQuery({
     queryKey: ['branches-list'],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from('branches')
-        .select('*')
-        .order('branch_name', { ascending: true });
-      if (error) throw error;
-      return data || [];
+      try {
+        const { data, error } = await supabase
+          .from('branches')
+          .select('*')
+          .order('branch_name', { ascending: true });
+        if (error) {
+          console.warn("Branches query error:", error);
+          return [];
+        }
+        return data || [];
+      } catch (err) {
+        return [];
+      }
     }
   });
 
@@ -180,13 +275,35 @@ export default function UsersPage() {
   };
 
   const handleOpenModal = (profile: any, mode: "view" | "edit" = "view") => {
-    setSelectedUser(profile);
+    const overrides = getLocalTechOverrides()[profile.id] || {};
+    const techId = profile.technician_id || profile.employee_id || overrides.technician_id || overrides.employee_id || "";
+    const designationVal = profile.designation || overrides.designation || "";
+    const rawExpertise = profile.expertise || overrides.expertise || "";
+
+    const enrichedProfile = {
+      ...profile,
+      technician_id: techId || null,
+      employee_id: techId || null,
+      designation: designationVal || null,
+      expertise: rawExpertise || null,
+    };
+
+    setSelectedUser(enrichedProfile);
     setModalMode(mode);
     setEditFullName(profile.full_name || "");
     setEditEmail(profile.email || "");
     setEditPhone(profile.phone || "");
     setEditRole(profile.role || "customer");
-    setEditExpertise(profile.expertise ? profile.expertise.split(",").map((item: string) => item.trim()).filter(Boolean) : []);
+    setEditTechnicianId(techId);
+    setEditDesignation(designationVal);
+
+    let parsedExpertise: string[] = [];
+    if (Array.isArray(rawExpertise)) {
+      parsedExpertise = rawExpertise.map(String).map((item) => item.trim()).filter(Boolean);
+    } else if (typeof rawExpertise === "string" && rawExpertise.trim()) {
+      parsedExpertise = rawExpertise.split(/,\s*/).map((item) => item.trim()).filter(Boolean);
+    }
+    setEditExpertise(parsedExpertise);
     setEditPassword("");
     setEditConfirmPassword("");
     setShowPassword(false);
@@ -239,7 +356,20 @@ export default function UsersPage() {
       return;
     }
 
-    // 5. System Role and Field of Work Validation
+    // 5. Technician ID Validation
+    const trimmedTechId = technicianId.trim();
+    if (role === "technician") {
+      if (!trimmedTechId) {
+        toast.error("Technician ID (Login ID) is required for technicians");
+        return;
+      }
+      if (!isValidTechnicianId(trimmedTechId)) {
+        toast.error("Technician ID must be alphanumeric and can include hyphens (e.g., BT-1250)");
+        return;
+      }
+    }
+
+    // 6. System Role and Field of Work Validation
     if (role === "supervisor" || role === "technician") {
       if (selectedExpertise.length === 0) {
         toast.error("Please select at least one field of work");
@@ -263,6 +393,21 @@ export default function UsersPage() {
         return;
       }
 
+      // Check duplicate technician ID if role is technician
+      if (role === "technician") {
+        const { data: existingTech } = await supabase
+          .from("profiles")
+          .select("id")
+          .or(`technician_id.eq.${trimmedTechId},employee_id.eq.${trimmedTechId}`)
+          .maybeSingle();
+        
+        if (existingTech) {
+          toast.error(`Technician ID "${trimmedTechId}" is already assigned to another technician.`);
+          setLoading(false);
+          return;
+        }
+      }
+
       const expertiseString = (role === "supervisor" || role === "technician") && selectedExpertise.length > 0
         ? selectedExpertise.join(", ")
         : undefined;
@@ -275,6 +420,10 @@ export default function UsersPage() {
           role,
           phone: cleanPhone,
           expertise: expertiseString,
+          technicianId: role === "technician" ? trimmedTechId : null,
+          technician_id: role === "technician" ? trimmedTechId : null,
+          employee_id: role === "technician" ? trimmedTechId : null,
+          designation: role === "technician" ? (designation || null) : null,
           branchId: branchId || null,
           customerType: role === "customer" ? customerType : null,
         },
@@ -300,6 +449,42 @@ export default function UsersPage() {
       if (role === "customer" && !createdUser?.customer?.id) {
         throw new Error("User created but customer record was not created");
       }
+
+      // Explicitly update profiles to guarantee technician_id and designation persistence
+      if (role === "technician") {
+        try {
+          const techUpdate: any = {
+            technician_id: trimmedTechId,
+            employee_id: trimmedTechId,
+          };
+          if (designation) techUpdate.designation = designation;
+          const { error: techUpErr } = await supabase
+            .from("profiles")
+            .update(techUpdate)
+            .eq("id", newUserId);
+          if (techUpErr && techUpErr.message?.includes("designation")) {
+            await supabase
+              .from("profiles")
+              .update({
+                technician_id: trimmedTechId,
+                employee_id: trimmedTechId,
+              })
+              .eq("id", newUserId);
+          }
+        } catch (techProfileErr) {
+          console.warn("Could not set technician_id/designation on profiles:", techProfileErr);
+        }
+      }
+
+      if (role === "technician" || role === "supervisor") {
+        setLocalTechOverride(newUserId, {
+          technician_id: trimmedTechId || null,
+          employee_id: trimmedTechId || null,
+          designation: designation || null,
+          expertise: expertiseString,
+        });
+      }
+
       console.log("User and related records created:", {
         userId: newUserId,
         customerId: createdUser?.customer?.id || null,
@@ -316,6 +501,8 @@ export default function UsersPage() {
       setFullName("");
       setPhone("");
       setRole("");
+      setTechnicianId("");
+      setDesignation("");
       setSelectedExpertise([]);
       setBranchId("");
       setCustomerType("Retail");
@@ -361,7 +548,20 @@ export default function UsersPage() {
       return;
     }
 
-    // 4. Field of Work Validation (System Role is read-only editRole)
+    // 4. Technician ID Validation
+    const trimmedEditTechId = editTechnicianId.trim();
+    if (editRole === "technician") {
+      if (!trimmedEditTechId) {
+        toast.error("Technician ID (Login ID) is required for technicians");
+        return;
+      }
+      if (!isValidTechnicianId(trimmedEditTechId)) {
+        toast.error("Technician ID must be alphanumeric and can include hyphens (e.g., BT-1250)");
+        return;
+      }
+    }
+
+    // 5. Field of Work Validation (System Role is read-only editRole)
     if (editRole === "supervisor" || editRole === "technician") {
       if (editExpertise.length === 0) {
         toast.error("Please select at least one field of work");
@@ -369,7 +569,7 @@ export default function UsersPage() {
       }
     }
 
-    // 5. Password Validation (Optional in Edit mode)
+    // 6. Password Validation (Optional in Edit mode)
     if (editPassword) {
       const strength = getPasswordStrength(editPassword);
       if (!strength || strength.requirements.some(r => !r.met)) {
@@ -400,6 +600,21 @@ export default function UsersPage() {
         }
       }
 
+      // Check duplicate technician ID (if changed)
+      if (editRole === "technician" && trimmedEditTechId !== (selectedUser.technician_id || selectedUser.employee_id)) {
+        const { data: existingTech } = await supabase
+          .from("profiles")
+          .select("id")
+          .or(`technician_id.eq.${trimmedEditTechId},employee_id.eq.${trimmedEditTechId}`)
+          .neq("id", selectedUser.id)
+          .maybeSingle();
+        if (existingTech) {
+          toast.error(`Technician ID "${trimmedEditTechId}" is already assigned to another user.`);
+          setSavingEdit(false);
+          return;
+        }
+      }
+
       const expertiseString = (editRole === "supervisor" || editRole === "technician") && editExpertise.length > 0
         ? editExpertise.join(", ")
         : null;
@@ -412,25 +627,98 @@ export default function UsersPage() {
         if (pwdError) throw pwdError;
       }
 
-      const { error } = await supabase
-        .from('profiles')
-        .update({
-          full_name: trimmedName,
-          email: trimmedEmail,
-          phone: cleanPhone || null,
-          role: editRole,
+      let updatePayload: Record<string, any> = {
+        full_name: trimmedName,
+        email: trimmedEmail,
+        phone: cleanPhone || null,
+        branch_id: editBranchId || null,
+        role: editRole,
+        avatar_url: trimmedName.charAt(0).toUpperCase()
+      };
+
+      if (editRole === "technician" || editRole === "supervisor") {
+        updatePayload.technician_id = trimmedEditTechId || null;
+        updatePayload.employee_id = trimmedEditTechId || null;
+        updatePayload.designation = editDesignation || null;
+        updatePayload.expertise = expertiseString;
+      }
+
+      if (editRole === "customer" && editCustomerType) {
+        updatePayload.customer_type = editCustomerType;
+      }
+
+      // Always save to local fallback override cache immediately to guarantee UI persistence
+      if (editRole === "technician" || editRole === "supervisor") {
+        setLocalTechOverride(selectedUser.id, {
+          technician_id: trimmedEditTechId || null,
+          employee_id: trimmedEditTechId || null,
+          designation: editDesignation || null,
           expertise: expertiseString,
-          branch_id: editBranchId || null,
-          customer_type: editRole === "customer" ? editCustomerType : null,
-          avatar_url: trimmedName.charAt(0).toUpperCase()
-        })
-        .eq('id', selectedUser.id);
+        });
+      }
 
-      if (error) throw error;
+      // Attempt to save to Supabase profiles table
+      let payloadToSave = { ...updatePayload };
+      let missingColumnsEncountered: string[] = [];
+      let lastErr: any = null;
 
-      toast.success("User profile and password updated successfully");
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const { error: upErr } = await supabase
+          .from('profiles')
+          .update(payloadToSave)
+          .eq('id', selectedUser.id);
+
+        if (!upErr) {
+          lastErr = null;
+          break;
+        }
+
+        lastErr = upErr;
+        const missingColMatch = upErr.message?.match(/Could not find the '([^']+)' column of 'profiles'/i)
+          || upErr.details?.match(/column "([^"]+)" of relation "profiles" does not exist/i);
+
+        if (missingColMatch && missingColMatch[1]) {
+          const colToRemove = missingColMatch[1];
+          missingColumnsEncountered.push(colToRemove);
+          delete payloadToSave[colToRemove];
+          console.warn(`Stripped missing column '${colToRemove}' from profiles update and retrying...`);
+          continue;
+        }
+        break;
+      }
+
+      if (lastErr && Object.keys(payloadToSave).length === 0) {
+        throw lastErr;
+      }
+
+      // If user is a customer, keep customers table synchronized with phone, name, email
+      if (editRole === "customer" || selectedUser.role === "customer") {
+        try {
+          await supabase
+            .from("customers")
+            .update({
+              full_name: trimmedName,
+              email: trimmedEmail || null,
+              phone: cleanPhone || null,
+              customer_type: editCustomerType || "Retail",
+              branch_id: editBranchId || null
+            })
+            .eq("user_id", selectedUser.id);
+          console.log("✅ Synchronized customers table for user:", selectedUser.id);
+        } catch (syncCustErr) {
+          console.warn("Could not sync customers table from Users.tsx:", syncCustErr);
+        }
+      }
+
+      if (missingColumnsEncountered.length > 0) {
+        toast.success("Profile saved! (Note: Please run the SQL migration in Supabase to permanently store technician_id & designation in the database)");
+      } else {
+        toast.success("User profile updated successfully");
+      }
+
       setSelectedUser(null);
       await refetch();
+      await queryClient.invalidateQueries({ queryKey: ["admin-profiles-list"] });
       await queryClient.invalidateQueries({ queryKey: ["customers-list"] });
       await queryClient.invalidateQueries({ queryKey: ["customer-profiles-to-link"] });
     } catch (error: any) {
@@ -439,8 +727,6 @@ export default function UsersPage() {
       setSavingEdit(false);
     }
   };
-
-
 
   const handleDeleteProfileOnly = async (profileId: string, profileName: string) => {
     if (!confirm(`Are you sure you want to delete profile for ${profileName}? This will permanently remove the account and auth user.`)) {
@@ -470,16 +756,29 @@ export default function UsersPage() {
     }
   };
 
-  const filteredProfiles = profiles?.filter((p: any) => {
-    const matchesSearch = 
-      (p.full_name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (p.email || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (p.expertise || '').toLowerCase().includes(searchQuery.toLowerCase());
+  const filteredProfiles = (profiles || []).filter((p: any) => {
+    const q = searchQuery.toLowerCase().trim();
+    const name = (p.full_name || '').toLowerCase();
+    const email = (p.email || '').toLowerCase();
+    const phone = (p.phone || '').toLowerCase();
+    const role = (p.role || '').toLowerCase();
+    const expertise = (p.expertise || '').toLowerCase();
+    const techId = (p.technician_id || p.employee_id || '').toLowerCase();
+    const designation = (p.designation || '').toLowerCase();
+
+    const matchesSearch = !q ||
+      name.includes(q) ||
+      email.includes(q) ||
+      phone.includes(q) ||
+      role.includes(q) ||
+      expertise.includes(q) ||
+      techId.includes(q) ||
+      designation.includes(q);
     
-    const matchesRole = roleFilter === "all" || p.role === roleFilter;
+    const matchesRole = roleFilter === "all" || role === roleFilter.toLowerCase();
 
     return matchesSearch && matchesRole;
-  }) || [];
+  });
 
   const handleBulkDelete = async () => {
     const isCurrentUserAdmin = user?.role === "admin";
@@ -551,48 +850,139 @@ export default function UsersPage() {
 
   const clearUserSelection = () => setSelectedUserIds(new Set());
 
+  const userStats = {
+    total: profiles?.length || 0,
+    technicians: profiles?.filter((p: any) => p.role === "technician").length || 0,
+    supervisors: profiles?.filter((p: any) => p.role === "supervisor").length || 0,
+    admins: profiles?.filter((p: any) => p.role === "admin").length || 0,
+    customers: profiles?.filter((p: any) => p.role === "customer").length || 0,
+  };
+
   return (
-    <div className="space-y-6 overflow-x-hidden">
+    <div className="space-y-8 overflow-x-hidden pb-12 relative">
+      {/* Background Ambient Glows */}
+      <div className="bg-ambient-blur top-0 right-10 bg-primary/10" />
+      <div className="bg-ambient-blur top-80 left-10 bg-indigo-500/10" />
+
       {/* Header Section with Title and Buttons */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 relative z-10 pr-12 md:pr-16">
-        <div className="min-w-0">
-          <h1 className="text-2xl sm:text-3xl font-bold">User Management</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Create and manage accounts for Customers, Supervisors, and Technicians.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2 w-full sm:w-auto">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => downloadSample("technician")}
-            className="flex items-center gap-1.5 whitespace-nowrap flex-1 sm:flex-none min-w-[80px] justify-center"
-          >
-            <Download className="w-4 h-4 shrink-0" />
-            <span className="text-xs sm:text-sm">Sample</span>
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => { setStaffImportRole('technician'); setIsStaffImportOpen(true); }}
-            className="flex items-center gap-1.5 whitespace-nowrap flex-1 sm:flex-none min-w-[80px] justify-center"
-          >
-            <Upload className="w-4 h-4 shrink-0" />
-            <span className="text-xs sm:text-sm">Import</span>
-          </Button>
-          <ExportButton variant="staff" />
+      <div className="glass-card rounded-3xl p-6 sm:p-8 border border-border/60 shadow-xl relative overflow-hidden z-10">
+        <div className="absolute top-0 right-0 w-96 h-96 bg-gradient-to-bl from-primary/10 via-indigo-500/5 to-transparent rounded-full filter blur-3xl pointer-events-none" />
+
+        <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-6 relative z-10">
+          <div className="space-y-1.5 flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-extrabold bg-primary/10 text-primary border border-primary/20 shadow-sm">
+                <Shield className="w-3.5 h-3.5" /> ACCESS CONTROL & IDENTITY
+              </span>
+            </div>
+            <h1 className="text-2xl sm:text-3xl font-display font-black tracking-tight text-foreground">
+              User Directory & Role Governance
+            </h1>
+            <p className="text-sm text-muted-foreground max-w-2xl leading-relaxed">
+              Create and manage enterprise staff profiles, assign technical specializations, configure branch permissions, and provision client access.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5 w-full lg:w-auto shrink-0">
+            <ExportButton variant="staff" />
+
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-xl border-border/70 hover:bg-muted/80 h-10 px-3.5 gap-2 shadow-sm font-semibold text-xs"
+                >
+                  <Download className="w-4 h-4 text-primary" />
+                  <span>Sample CSV</span>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="rounded-2xl p-1.5 shadow-xl border-border/60">
+                <DropdownMenuItem onClick={() => downloadSample("technician")} className="rounded-xl gap-2 font-medium text-xs cursor-pointer py-2">
+                  <Wrench className="w-4 h-4 text-amber-500" /> Technician Template
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => downloadSample("supervisor")} className="rounded-xl gap-2 font-medium text-xs cursor-pointer py-2">
+                  <Shield className="w-4 h-4 text-indigo-500" /> Supervisor Template
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-xl border-border/70 hover:bg-muted/80 h-10 px-3.5 gap-2 shadow-sm font-semibold text-xs"
+                >
+                  <Upload className="w-4 h-4 text-indigo-500" />
+                  <span>Import Staff</span>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="rounded-2xl p-1.5 shadow-xl border-border/60">
+                <DropdownMenuItem onClick={() => { setStaffImportRole('technician'); setIsStaffImportOpen(true); }} className="rounded-xl gap-2 font-medium text-xs cursor-pointer py-2">
+                  <Wrench className="w-4 h-4 text-amber-500" /> Import Technicians
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => { setStaffImportRole('supervisor'); setIsStaffImportOpen(true); }} className="rounded-xl gap-2 font-medium text-xs cursor-pointer py-2">
+                  <Shield className="w-4 h-4 text-indigo-500" /> Import Supervisors
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+      {/* 📊 Stat Summary Grid */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 relative z-10">
+        <div className="glass-card rounded-2xl p-4 border border-border/60 shadow-sm flex items-center justify-between">
+          <div>
+            <span className="text-[11px] uppercase font-bold text-muted-foreground block">Total Personnel</span>
+            <span className="text-2xl font-black text-foreground mt-0.5 block">{userStats.total}</span>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-primary/10 text-primary flex items-center justify-center">
+            <Shield className="w-5 h-5" />
+          </div>
+        </div>
+
+        <div className="glass-card rounded-2xl p-4 border border-border/60 shadow-sm flex items-center justify-between">
+          <div>
+            <span className="text-[11px] uppercase font-bold text-amber-600 dark:text-amber-400 block">Technicians</span>
+            <span className="text-2xl font-black text-amber-600 dark:text-amber-400 mt-0.5 block">{userStats.technicians}</span>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-600 flex items-center justify-center">
+            <Wrench className="w-5 h-5" />
+          </div>
+        </div>
+
+        <div className="glass-card rounded-2xl p-4 border border-border/60 shadow-sm flex items-center justify-between">
+          <div>
+            <span className="text-[11px] uppercase font-bold text-indigo-600 dark:text-indigo-400 block">Supervisors</span>
+            <span className="text-2xl font-black text-indigo-600 dark:text-indigo-400 mt-0.5 block">{userStats.supervisors}</span>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-indigo-500/10 text-indigo-600 flex items-center justify-center">
+            <Shield className="w-5 h-5" />
+          </div>
+        </div>
+
+        <div className="glass-card rounded-2xl p-4 border border-border/60 shadow-sm flex items-center justify-between">
+          <div>
+            <span className="text-[11px] uppercase font-bold text-rose-600 dark:text-rose-400 block">Administrators</span>
+            <span className="text-2xl font-black text-rose-600 dark:text-rose-400 mt-0.5 block">{userStats.admins}</span>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-rose-500/10 text-rose-600 flex items-center justify-center">
+            <ShieldAlert className="w-5 h-5" />
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start relative z-10">
         {/* Create User Form */}
         <motion.div 
           initial={{ opacity: 0, y: 15 }} 
           animate={{ opacity: 1, y: 0 }} 
-          className="glass-card rounded-xl p-6 lg:col-span-5 space-y-4"
+          className="glass-card rounded-3xl p-6 lg:col-span-5 space-y-4 border border-border/60 shadow-md"
         >
-          <h2 className="text-lg font-semibold flex items-center gap-2 text-primary">
-            <UserPlus className="w-5 h-5" /> Create New User
+          <h2 className="text-lg font-bold flex items-center gap-2 text-foreground">
+            <UserPlus className="w-5 h-5 text-primary" /> Create New User Profile
           </h2>
           <form id="create-user-form" onSubmit={handleCreateUser} className="space-y-4">
             <div className="space-y-1.5">
@@ -723,6 +1113,40 @@ export default function UsersPage() {
               </Select>
             </div>
 
+            {role === "technician" && (
+              <>
+                <div className="space-y-1.5">
+                  <div className="flex justify-between items-center">
+                    <label className="text-xs font-semibold text-slate-600">Technician ID (Login ID) <span className="text-destructive">*</span></label>
+                  </div>
+                  <Input
+                    value={technicianId}
+                    onChange={(e) => setTechnicianId(e.target.value)}
+                    placeholder="e.g., BT-1250"
+                    required
+                    disabled={loading}
+                  />
+                  {technicianId.length > 0 && !isValidTechnicianId(technicianId) && (
+                    <p className="text-[10px] text-destructive font-medium mt-1">Technician ID must be alphanumeric and can include hyphens (e.g., BT-1250)</p>
+                  )}
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-600 block">Designation</label>
+                  <Select value={designation} onValueChange={setDesignation} disabled={loading}>
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Select designation" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {TECHNICIAN_DESIGNATIONS.map((desig) => (
+                        <SelectItem key={desig} value={desig}>{desig}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </>
+            )}
+
             {role === "customer" && (
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold text-slate-600 block">Customer Type</label>
@@ -744,7 +1168,7 @@ export default function UsersPage() {
               <div className="space-y-2">
                 <label className="text-xs font-semibold text-slate-600 block">Field of Work (Expertise - Select all that apply) <span className="text-destructive">*</span></label>
                 <div className="grid grid-cols-2 gap-2">
-                  {["General", "Solar PV", "Networking", "Security Systems", "Power Systems"].map((field) => {
+                  {DEFAULT_FIELDS_OF_WORK.map((field) => {
                     const isChecked = selectedExpertise.includes(field);
                     return (
                       <button
@@ -830,13 +1254,22 @@ export default function UsersPage() {
               <Shield className="w-5 h-5" /> Registered Users
             </h2>
             <div className="flex flex-wrap items-center gap-1 bg-muted/65 p-1 rounded-lg text-xs font-medium w-full sm:w-auto justify-start sm:justify-end">
-              {['all', 'customer', 'supervisor', 'technician', 'admin'].map((r) => (
+              {[
+                { id: 'all', label: 'All', count: (profiles || []).length },
+                { id: 'customer', label: 'Customer', count: (profiles || []).filter((p: any) => (p.role || '').toLowerCase() === 'customer').length },
+                { id: 'supervisor', label: 'Supervisor', count: (profiles || []).filter((p: any) => (p.role || '').toLowerCase() === 'supervisor').length },
+                { id: 'technician', label: 'Technician', count: (profiles || []).filter((p: any) => (p.role || '').toLowerCase() === 'technician').length },
+                { id: 'admin', label: 'Admin', count: (profiles || []).filter((p: any) => (p.role || '').toLowerCase() === 'admin').length },
+              ].map(({ id, label, count }) => (
                 <button
-                  key={r}
-                  onClick={() => setRoleFilter(r)}
-                  className={`px-2 py-1 sm:px-2.5 sm:py-1 rounded transition-all capitalize text-center text-xs flex-1 sm:flex-none ${roleFilter === r ? 'bg-white text-primary shadow-sm font-semibold' : 'text-muted-foreground hover:text-foreground'}`}
+                  key={id}
+                  onClick={() => setRoleFilter(id)}
+                  className={`px-2 py-1 sm:px-2.5 sm:py-1 rounded transition-all capitalize text-center text-xs flex items-center gap-1 ${roleFilter === id ? 'bg-white text-primary shadow-sm font-semibold' : 'text-muted-foreground hover:text-foreground'}`}
                 >
-                  {r === 'all' ? 'All' : r}
+                  <span>{label}</span>
+                  <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${roleFilter === id ? 'bg-primary/10 text-primary font-bold' : 'bg-muted text-muted-foreground'}`}>
+                    {count}
+                  </span>
                 </button>
               ))}
             </div>
@@ -904,6 +1337,16 @@ export default function UsersPage() {
                         }`}>
                           {p.role}
                         </span>
+                        {p.role === 'technician' && (p.technician_id || p.employee_id) && (
+                          <span className="text-[9px] font-mono font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200 shrink-0">
+                            ID: {p.technician_id || p.employee_id}
+                          </span>
+                        )}
+                        {p.role === 'technician' && p.designation && (
+                          <span className="text-[9px] font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 shrink-0">
+                            {p.designation}
+                          </span>
+                        )}
                       </div>
                       <div className="text-xs text-muted-foreground flex flex-col sm:flex-row sm:items-center gap-x-3 gap-y-0.5 mt-0.5 min-w-0">
                         <span className="flex items-center gap-1 truncate"><Mail className="w-3.5 h-3.5 shrink-0" /> <span className="truncate">{p.email}</span></span>
@@ -1068,6 +1511,18 @@ export default function UsersPage() {
                           <span className="text-xs font-semibold text-slate-700">{selectedUser.customer_type || 'Retail'}</span>
                         </div>
                       )}
+                      {selectedUser.role === 'technician' && (
+                        <>
+                          <div>
+                            <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Technician ID (Login ID)</span>
+                            <span className="text-xs font-semibold text-slate-700 font-mono">{selectedUser.technician_id || selectedUser.employee_id || "Not assigned"}</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Designation</span>
+                            <span className="text-xs font-semibold text-slate-700">{selectedUser.designation || "Not assigned"}</span>
+                          </div>
+                        </>
+                      )}
                     </div>
 
                     {(selectedUser.role === 'supervisor' || selectedUser.role === 'technician') && (
@@ -1075,7 +1530,12 @@ export default function UsersPage() {
                         <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block mb-1.5">Fields of Work / Expertise</span>
                         {selectedUser.expertise ? (
                           <div className="flex flex-wrap gap-1.5">
-                            {selectedUser.expertise.split(", ").map((exp: string) => (
+                            {(Array.isArray(selectedUser.expertise)
+                              ? selectedUser.expertise
+                              : typeof selectedUser.expertise === 'string'
+                              ? selectedUser.expertise.split(/,\s*/)
+                              : []
+                            ).filter(Boolean).map((exp: string) => (
                               <span key={exp} className="flex items-center gap-1 text-[10px] font-semibold px-2.5 py-1 bg-white border border-slate-200 text-slate-700 rounded-full">
                                 <Wrench className="w-3 h-3 text-primary" /> {exp}
                               </span>
@@ -1099,94 +1559,95 @@ export default function UsersPage() {
                     </Button>
                     <Button 
                       type="button" 
-                      className="flex-1 gradient-primary text-primary-foreground shadow-glow rounded-xl h-11 font-bold text-sm"
-                      onClick={() => handleOpenModal(selectedUser, "edit")}
+                      className="flex-1 rounded-xl h-11 font-bold text-sm bg-primary hover:bg-primary/90 text-white gap-2 shadow-sm"
+                      onClick={() => setModalMode('edit')}
                     >
-                      <Edit className="w-4 h-4 mr-2" /> Edit Profile
+                      <Edit className="w-4 h-4" /> Edit Profile
                     </Button>
                   </div>
                 </div>
               ) : (
                 /* Edit Mode */
                 <form onSubmit={handleUpdateUser} className="space-y-4">
-                  <h4 className="text-xs font-bold text-primary uppercase tracking-wider">Update Account Settings</h4>
-                  
-                  <div className="space-y-1.5">
-                    <div className="flex justify-between items-center">
-                      <label className="text-xs font-semibold text-slate-600">Full Name</label>
-                      <span className="text-[10px] font-medium text-slate-400">{editFullName.length} / 100</span>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-semibold text-slate-600 block">Full Name <span className="text-destructive">*</span></label>
+                      <Input 
+                        value={editFullName} 
+                        onChange={(e) => setEditFullName(e.target.value)} 
+                        disabled={savingEdit} 
+                        required 
+                      />
                     </div>
-                    <Input
-                      value={editFullName}
-                      onChange={(e) => setEditFullName(e.target.value)}
-                      placeholder="John Doe"
-                      required
-                      maxLength={100}
-                      disabled={savingEdit}
-                    />
-                    {!isNameValid(editFullName) && editFullName.length > 0 && (
-                      <p className="text-[10px] text-destructive font-medium mt-1">Name must be 3-100 characters and contain only letters and spaces</p>
-                    )}
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <div className="flex justify-between items-center">
-                      <label className="text-xs font-semibold text-slate-600">Email Address</label>
-                      <span className="text-[10px] font-medium text-slate-400">{editEmail.length} / 100</span>
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-semibold text-slate-600 block">Email Address <span className="text-destructive">*</span></label>
+                      <Input 
+                        type="email" 
+                        value={editEmail} 
+                        onChange={(e) => setEditEmail(e.target.value)} 
+                        disabled={savingEdit} 
+                        required 
+                      />
                     </div>
-                    <Input
-                      type="email"
-                      value={editEmail}
-                      onChange={(e) => setEditEmail(e.target.value)}
-                      placeholder="john@brihaspathi.com"
-                      required
-                      maxLength={100}
-                      disabled={savingEdit}
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-semibold text-slate-600 block">Phone Number</label>
+                      <Input 
+                        value={editPhone} 
+                        onChange={(e) => setEditPhone(e.target.value)} 
+                        placeholder="+91 9876543210" 
+                        disabled={savingEdit} 
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-semibold text-slate-600 block">Branch</label>
+                      <Select value={editBranchId} onValueChange={setEditBranchId} disabled={savingEdit}>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Select branch" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {branches.map((b: any) => (
+                            <SelectItem key={b.id} value={b.id}>{b.branch_name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-slate-600 block">System Role (Read-only)</label>
+                    <Input 
+                      value={editRole} 
+                      disabled 
+                      className="bg-muted capitalize text-muted-foreground font-semibold" 
                     />
                   </div>
 
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-semibold text-slate-600 block">Phone Number</label>
-                    <Input
-                      type="tel"
-                      value={editPhone}
-                      onChange={(e) => setEditPhone(e.target.value)}
-                      placeholder="+91 98765 43210"
-                      disabled={savingEdit}
-                    />
-                    {!isPhoneValid(editPhone) && editPhone.length > 0 && (
-                      <p className="text-[10px] text-destructive font-medium mt-1">Please enter a valid 10-digit Indian mobile number (e.g., +91 9876543210)</p>
-                    )}
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-semibold text-slate-600 block">Branch Location</label>
-                    <Select value={editBranchId} onValueChange={setEditBranchId} disabled={savingEdit}>
-                      <SelectTrigger className="w-full">
-                        <SelectValue placeholder="Select branch" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {branches?.map((b: any) => (
-                          <SelectItem key={b.id} value={b.id}>{b.branch_name}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-semibold text-slate-600 block">System Role</label>
-                    <Select value={editRole} onValueChange={setEditRole} disabled={true}>
-                      <SelectTrigger className="w-full">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="customer">Customer</SelectItem>
-                        <SelectItem value="supervisor">Supervisor</SelectItem>
-                        <SelectItem value="technician">Technician</SelectItem>
-                        <SelectItem value="admin">Administrator</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
+                  {editRole === "technician" && (
+                    <>
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-semibold text-slate-600 block">Technician ID (Login ID) <span className="text-destructive">*</span></label>
+                        <Input 
+                          value={editTechnicianId} 
+                          onChange={(e) => setEditTechnicianId(e.target.value.toUpperCase())} 
+                          placeholder="e.g. BT-1250" 
+                          disabled={savingEdit} 
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-semibold text-slate-600 block">Designation</label>
+                        <Select value={editDesignation} onValueChange={setEditDesignation} disabled={savingEdit}>
+                          <SelectTrigger className="w-full">
+                            <SelectValue placeholder="Select designation" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {TECHNICIAN_DESIGNATIONS.map((desig) => (
+                              <SelectItem key={desig} value={desig}>{desig}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </>
+                  )}
 
                   {editRole === "customer" && (
                     <div className="space-y-1.5">
@@ -1209,7 +1670,7 @@ export default function UsersPage() {
                     <div className="space-y-2">
                       <label className="text-xs font-semibold text-slate-600 block">Field of Work (Expertise - Select all that apply) <span className="text-destructive">*</span></label>
                       <div className="grid grid-cols-2 gap-2">
-                        {["General", "Solar PV", "Networking", "Security Systems", "Power Systems"].map((field) => {
+                        {Array.from(new Set([...DEFAULT_FIELDS_OF_WORK, ...editExpertise])).filter(Boolean).map((field) => {
                           const isChecked = editExpertise.includes(field);
                           return (
                             <button

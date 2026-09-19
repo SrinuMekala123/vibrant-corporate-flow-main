@@ -1,16 +1,19 @@
 import { useState, useEffect } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Search, Plus, MapPin, Clock, Loader2, X, Calendar } from "lucide-react";
+import { Search, Plus, MapPin, Clock, Loader2, X, Calendar, Upload, Download, FileText } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { StatusBadge, SeverityBadge } from "@/components/Badges";
 import { useQuery } from "@tanstack/react-query";
-import { complaintService } from "@/services/complaintService";
+import { complaintService, formatComplaintTicketId } from "@/services/complaintService";
 import { useAuth } from "@/contexts/AuthContext";
 import { useDebounce } from "@/hooks/useDebounce";
 import { supabase } from "@/lib/supabase";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import ExportButton from "@/components/ExportButton";
+import ComplaintImportModal from "@/components/ComplaintImportModal";
+import { generateSampleCSV, downloadCSV } from "@/utils/csvHelpers";
 
 const statusFilters = [
   "all",
@@ -49,12 +52,27 @@ const formatIndianDateTime = (dateString?: string) => {
 };
 
 const ComplaintsList = () => {
+  const navigate = useNavigate();
   const [search, setSearch] = useState("");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [currentPage, setCurrentPage] = useState(1);
+  const [isComplaintImportOpen, setIsComplaintImportOpen] = useState(false);
+
+  const downloadSample = () => {
+    const csv = generateSampleCSV("complaint");
+    downloadCSV(csv, "complaint_sample.csv");
+  };
+
   const { user, isRole } = useAuth();
+
+  // If a technician navigates to All Complaints list, redirect to their dedicated dashboard
+  useEffect(() => {
+    if (isRole("technician")) {
+      navigate("/technician-dashboard", { replace: true });
+    }
+  }, [user, navigate]);
 
   // Fetch complaints based on role
   const { data: complaints, isLoading, error, refetch } = useQuery({
@@ -197,37 +215,140 @@ const ComplaintsList = () => {
     );
   }
 
+  // Complaint Stats Calculation
+  const complaintStats = {
+    total: complaints?.length || 0,
+    open: complaints?.filter(c => !["completed", "closed"].includes(c.status)).length || 0,
+    urgent: complaints?.filter(c => c.severity === "major" && c.status !== "closed").length || 0,
+    completed: complaints?.filter(c => ["completed", "closed"].includes(c.status)).length || 0,
+  };
+
   return (
-    <div className="space-y-8 relative">
+    <div className="space-y-8 relative pb-12">
       {/* Ambient background glows */}
-      <div className="bg-ambient-blur top-10 right-10 bg-primary/10" />
-      <div className="bg-ambient-blur bottom-20 left-20 bg-amber-500/10" />
+      <div className="bg-ambient-blur top-0 right-10 bg-primary/10" />
+      <div className="bg-ambient-blur top-80 left-10 bg-emerald-500/10" />
 
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-border/40 pb-6 relative z-10">
-        <div>
-          <h1 className="text-3xl font-display font-extrabold tracking-tight text-gradient">
-            {isRole("customer") ? "My Service Requests" : "Complaints Center"}
-          </h1>
-          <p className="text-muted-foreground text-sm mt-1">
-            {isRole("customer")
-              ? "Track your power backup and electrical complaints."
-              : isRole("technician")
-                ? "View and log status logs for active field orders."
-                : "Manage administrative workflows, route dispatches, and verify completions."
-            }
-          </p>
+      <div className="glass-card rounded-3xl p-6 sm:p-8 border border-border/60 shadow-xl relative overflow-hidden z-10">
+        <div className="absolute top-0 right-0 w-96 h-96 bg-gradient-to-bl from-primary/10 via-amber-500/5 to-transparent rounded-full filter blur-3xl pointer-events-none" />
+
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-6 relative z-10">
+          <div className="space-y-1.5 flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-extrabold bg-primary/10 text-primary border border-primary/20 shadow-sm">
+                <Clock className="w-3.5 h-3.5" /> SERVICE OPERATIONS
+              </span>
+            </div>
+            <h1 className="text-2xl sm:text-3xl font-display font-black tracking-tight text-foreground">
+              {isRole("customer") ? "My Service Requests" : "Complaints & Service Center"}
+            </h1>
+            <p className="text-muted-foreground text-sm max-w-2xl leading-relaxed">
+              {isRole("customer")
+                ? "Track and manage your registered complaints, technician visits, and resolution proofs."
+                : isRole("technician")
+                  ? "View your assigned field work orders, update live workflow phases, and upload service evidence."
+                  : "Central dispatch hub to triage incoming tickets, monitor SLAs, and verify field completion sign-offs."
+              }
+            </p>
+          </div>
+
+          <div className="flex items-center flex-wrap gap-2.5 sm:gap-3 shrink-0">
+            {/* Export & Import Actions for Admin & Supervisors */}
+            {!isRole("customer") && (
+              <>
+                <ExportButton variant="complaint" />
+
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={downloadSample}
+                  className="rounded-xl border-border/70 hover:bg-muted/80 h-10 px-3.5 gap-2 shadow-sm font-semibold text-xs"
+                  title="Download Sample CSV Template"
+                >
+                  <FileText className="w-4 h-4 text-emerald-500 shrink-0" />
+                  <span>Sample CSV</span>
+                </Button>
+
+                {isRole("admin") && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setIsComplaintImportOpen(true)}
+                    className="rounded-xl border-border/70 hover:bg-muted/80 h-10 px-3.5 gap-2 shadow-sm font-semibold text-xs"
+                    title="Bulk Import Complaints from CSV"
+                  >
+                    <Upload className="w-4 h-4 text-indigo-500 shrink-0" />
+                    <span>Import CSV</span>
+                  </Button>
+                )}
+              </>
+            )}
+
+            {/* New Complaint Button */}
+            {isRole("admin", "customer") && (
+              <Link to="/complaints/new">
+                <Button className="gradient-primary text-white shadow-glow hover:opacity-95 rounded-xl h-10 px-4 font-bold text-xs gap-1.5">
+                  <Plus className="w-4 h-4" /> New Complaint
+                </Button>
+              </Link>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* 📊 Stat Summary Grid */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 relative z-10">
+        <div 
+          onClick={() => setStatusFilter("all")}
+          className="glass-card rounded-2xl p-4 border border-border/60 shadow-sm flex items-center justify-between cursor-pointer hover:border-primary/40 hover:shadow-glow transition-all"
+        >
+          <div>
+            <span className="text-[11px] uppercase font-bold text-muted-foreground block">Total Registered</span>
+            <span className="text-2xl font-black text-foreground mt-0.5 block">{complaintStats.total}</span>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-primary/10 text-primary flex items-center justify-center">
+            <Clock className="w-5 h-5" />
+          </div>
         </div>
 
-        <div className="flex items-center flex-wrap gap-2.5 sm:gap-3">
-          {/* New Complaint Button */}
-          {isRole("admin", "customer") && (
-            <Link to="/complaints/new">
-              <Button className="gradient-primary text-white shadow-glow hover:opacity-95 rounded-xl h-10 px-4">
-                <Plus className="w-4 h-4 mr-1.5" /> New Complaint
-              </Button>
-            </Link>
-          )}
+        <div 
+          onClick={() => setStatusFilter("active")}
+          className="glass-card rounded-2xl p-4 border border-border/60 shadow-sm flex items-center justify-between cursor-pointer hover:border-amber-500/40 hover:shadow-glow transition-all"
+        >
+          <div>
+            <span className="text-[11px] uppercase font-bold text-amber-600 dark:text-amber-400 block">In-Flight Tasks</span>
+            <span className="text-2xl font-black text-amber-600 dark:text-amber-400 mt-0.5 block">{complaintStats.open}</span>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-600 flex items-center justify-center">
+            <Loader2 className="w-5 h-5" />
+          </div>
+        </div>
+
+        <div 
+          onClick={() => setStatusFilter("all")}
+          className="glass-card rounded-2xl p-4 border border-border/60 shadow-sm flex items-center justify-between cursor-pointer hover:border-rose-500/40 hover:shadow-glow transition-all"
+        >
+          <div>
+            <span className="text-[11px] uppercase font-bold text-rose-600 dark:text-rose-400 block">Critical Issues</span>
+            <span className="text-2xl font-black text-rose-600 dark:text-rose-400 mt-0.5 block">{complaintStats.urgent}</span>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-rose-500/10 text-rose-600 flex items-center justify-center">
+            <Plus className="w-5 h-5 rotate-45 text-rose-500" />
+          </div>
+        </div>
+
+        <div 
+          onClick={() => setStatusFilter("completed")}
+          className="glass-card rounded-2xl p-4 border border-border/60 shadow-sm flex items-center justify-between cursor-pointer hover:border-emerald-500/40 hover:shadow-glow transition-all"
+        >
+          <div>
+            <span className="text-[11px] uppercase font-bold text-emerald-600 dark:text-emerald-400 block">Resolved</span>
+            <span className="text-2xl font-black text-emerald-600 dark:text-emerald-400 mt-0.5 block">{complaintStats.completed}</span>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-emerald-500/10 text-emerald-600 flex items-center justify-center">
+            <Clock className="w-5 h-5 text-emerald-600" />
+          </div>
         </div>
       </div>
 
@@ -465,10 +586,19 @@ const ComplaintsList = () => {
                 <div className="absolute left-0 top-0 bottom-0 w-1 bg-primary opacity-0 group-hover:opacity-100 transition-opacity" />
                 
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1.5">
+                  <div className="flex items-center gap-2 mb-1.5 flex-wrap">
                     <span className="text-xs font-mono text-primary font-bold">
-                      FSM-{ticket.id.slice(0, 4).toUpperCase()}
+                      {formatComplaintTicketId(ticket)}
                     </span>
+                    {ticket.customer_type === 'New / Non-BTL Customer' || ticket.customer_type === 'Non-BTL' || ticket.customer_type === 'Walk-in' || (!ticket.customer_id && !ticket.customer_name) ? (
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                        Walk-in / Non-BTL
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
+                        Existing Customer
+                      </span>
+                    )}
                     <span className="text-xs text-muted-foreground">•</span>
                     {ticket.severity && <SeverityBadge severity={ticket.severity as any} />}
                     {ticket.status && <StatusBadge status={ticket.status} />}
@@ -586,6 +716,11 @@ const ComplaintsList = () => {
           )}
         </div>
       </div>
+      <ComplaintImportModal
+        open={isComplaintImportOpen}
+        onOpenChange={setIsComplaintImportOpen}
+        onImportSuccess={refetch}
+      />
     </div>
   );
 };

@@ -167,7 +167,9 @@ import {
   Zap,
   ChevronLeft,
   ChevronRight,
-  Settings
+  Settings,
+  CalendarDays,
+  Package
 } from "lucide-react";
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
@@ -210,18 +212,30 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   };
 
   const getMenuItems = () => {
+    // 👤 Customer role navigation menu (Profile/Settings accessed via bottom-left user click)
+    if (user?.role === "customer") {
+      return [
+        { path: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+        { path: "/complaints", label: "My Complaints/Tickets", icon: FileText },
+        { path: "/assets", label: "My Assets (View Only)", icon: Zap },
+      ];
+    }
+
     const baseItems = [
-      { path: "/dashboard", label: "Dashboard", icon: LayoutDashboard, roles: ["admin", "supervisor", "technician", "customer"] },
-      { path: "/customers", label: "Customers", icon: Users, roles: ["admin", "supervisor", "customer"] },
-      { path: "/assets", label: "Assets", icon: Zap, roles: ["admin", "supervisor", "customer"] },
+      { path: "/dashboard", label: "Dashboard", icon: LayoutDashboard, roles: ["admin", "supervisor", "technician"] },
+      { path: "/customers", label: "Customers", icon: Users, roles: ["admin", "supervisor"] },
+      { path: "/assets", label: "Assets", icon: Zap, roles: ["admin", "supervisor"] },
       { path: "/complaints", label: "All Complaints", icon: FileText, roles: ["admin", "supervisor"] },
+      { path: "/installations", label: "Installations", icon: Package, roles: ["admin"] },
     ];
 
     const adminSupervisorItems = [
       { path: "/assignments", label: "Assignments", icon: Users, roles: ["admin", "supervisor"] },
+      { path: "/daily-schedule", label: "Daily Schedule", icon: CalendarDays, roles: ["admin", "supervisor", "technician"] },
     ];
 
     const adminOnlyItems = [
+      { path: "/service-reports", label: "Service Reports", title: "Service Reports", icon: FileText, roles: ["admin", "manager"] },
       { path: "/kpi", label: "KPI Analytics", icon: BarChart3, roles: ["admin"] },
       { path: "/admin/users", label: "User Management", icon: UserPlus, roles: ["admin"] },
     ];
@@ -310,23 +324,27 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
 
           {/* User Info & Logout */}
           <div className="p-4 border-t border-slate-200 bg-slate-100/30">
-            {/* User card link to Profile */}
+            {/* User card link to Profile & Settings */}
             <Link 
               to="/profile"
-              className={`flex items-center gap-3 p-2 rounded-xl bg-white border border-slate-200/80 shadow-sm cursor-pointer hover:bg-slate-50 transition-colors relative ${
+              className={`flex items-center gap-3 p-2 rounded-xl bg-white border border-slate-200/80 shadow-xs cursor-pointer hover:bg-slate-50 transition-all hover:border-[#0083a2]/40 relative group ${
                 sidebarCollapsed ? "md:justify-center md:p-1.5" : ""
               }`}
+              title="Click to view and edit Profile / Settings"
             >
-              <div className="w-9 h-9 rounded-full gradient-cool flex items-center justify-center text-white text-xs font-bold shadow-sm shrink-0">
+              <div className="w-9 h-9 rounded-full gradient-cool flex items-center justify-center text-white text-xs font-bold shadow-xs shrink-0 group-hover:scale-105 transition-transform">
                 {getAvatarInitial(user?.name, user?.email)}
               </div>
               {!sidebarCollapsed && (
                 <div className="flex-1 min-w-0 transition-all duration-300">
-                  <p className="font-bold text-xs text-slate-800 truncate">
-                    {user?.role === "admin" ? "Admin" : user?.name || "User"}
-                  </p>
+                  <div className="flex items-center justify-between">
+                    <p className="font-bold text-xs text-slate-800 truncate group-hover:text-[#0083a2] transition-colors">
+                      {user?.role === "admin" ? "Admin" : user?.name || "User"}
+                    </p>
+                    <Settings className="w-3.5 h-3.5 text-slate-400 group-hover:text-[#0083a2] transition-colors shrink-0 ml-1" />
+                  </div>
                   <p className="text-[10px] uppercase tracking-wider font-extrabold text-slate-500 capitalize truncate">
-                    {user?.role === "admin" ? "Admin" : user?.role}
+                    {user?.role === "admin" ? "Admin" : user?.role === "customer" ? "Customer • Settings" : user?.role}
                   </p>
                 </div>
               )}
@@ -366,23 +384,38 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
 
-      {/* 🔥 FIXED: Hamburger Menu Button - Always visible on mobile */}
-      <button
-        type="button"
-        onClick={() => setMobileMenuOpen(true)}
-        className="fixed top-4 left-4 z-30 md:hidden flex items-center justify-center w-10 h-10 rounded-lg bg-background border border-border shadow-sm hover:bg-accent transition-colors"
-        aria-label="Open menu"
-      >
-        <Menu className="w-5 h-5" />
-      </button>
+      {/* 📱 Unified Mobile Top Application Header Bar */}
+      <header className="md:hidden sticky top-0 left-0 right-0 z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200/80 dark:border-slate-800 px-4 h-14 flex items-center justify-between shadow-xs">
+        {/* Hamburger Menu Toggle Button */}
+        <button
+          type="button"
+          onClick={() => setMobileMenuOpen(true)}
+          className="flex items-center justify-center w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors shadow-none active:scale-95"
+          aria-label="Open navigation menu"
+        >
+          <Menu className="w-5 h-5" />
+        </button>
 
-      {/* 🔥 Notification Center - Floating in top-right */}
-      <div className="fixed top-4 right-4 md:top-5 md:right-6 z-40">
+        {/* Center: Brihaspathi Logo Brand */}
+        <Link to="/dashboard" className="flex items-center gap-1.5 focus:outline-none">
+          <div className="flex items-center justify-center bg-white px-2 py-1 rounded-md border border-slate-200/80 shadow-xs max-h-8">
+            <img src="/highbtlogo-tm-1.webp" alt="Brihaspathi Logo" className="h-5 w-auto object-contain" />
+          </div>
+        </Link>
+
+        {/* Right: Notification Center with safe margin from edge */}
+        <div className="flex items-center pr-1 sm:pr-2">
+          <NotificationCenter />
+        </div>
+      </header>
+
+      {/* 🖥️ Desktop Notification Center - Positioned comfortably in top-right with safe margins */}
+      <div className="hidden md:block fixed top-4 right-8 lg:right-10 z-40">
         <NotificationCenter />
       </div>
 
-      {/* 🔥 Main Content - Proper spacing */}
-      <main className={`transition-all duration-300 min-h-screen px-4 py-6 md:p-8 pt-20 md:pt-8 ${
+      {/* 🔥 Main Content - Proper spacing on mobile and desktop */}
+      <main className={`transition-all duration-300 min-h-[calc(100vh-3.5rem)] md:min-h-screen px-3 sm:px-6 md:p-8 pt-4 md:pt-8 ${
         sidebarCollapsed ? "md:ml-20" : "md:ml-64"
       }`}>
         {children}

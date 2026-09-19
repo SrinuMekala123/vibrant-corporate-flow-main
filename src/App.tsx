@@ -273,8 +273,12 @@ import ComplaintEdit from "./pages/ComplaintEdit";
 import Assignments from "./pages/Assignments";
 import KPIAnalytics from "./pages/KPIAnalytics";
 import UsersPage from "./pages/admin/Users";
+import DailySchedule from "./pages/DailySchedule";
+import Installations from "./pages/Installations";
+import InstallationDetail from "./pages/InstallationDetail";
 import Customers from "./pages/Customers";
 import Assets from "./pages/Assets";
+import ServiceReports from "./pages/ServiceReports";
 import Profile from "./pages/Profile";
 import UpdatePassword from "./pages/UpdatePassword";
 import NotFound from "./pages/NotFound";
@@ -432,6 +436,42 @@ const AppRoutes = () => {
         </ProtectedRoute>
       } />
 
+      {/* Installations - Admin ONLY */}
+      <Route path="/installations" element={
+        <ProtectedRoute roles={["admin"]}>
+          <AppLayout>
+            <Installations />
+          </AppLayout>
+        </ProtectedRoute>
+      } />
+
+      {/* Installation Detail - Admin, Supervisor, and Technician */}
+      <Route path="/installations/:id" element={
+        <ProtectedRoute roles={["admin", "supervisor", "technician"]}>
+          <AppLayout>
+            <InstallationDetail />
+          </AppLayout>
+        </ProtectedRoute>
+      } />
+
+      {/* Daily Schedule - Admin, Supervisor, and Technician */}
+      <Route path="/daily-schedule" element={
+        <ProtectedRoute roles={["admin", "supervisor", "technician"]}>
+          <AppLayout>
+            <DailySchedule />
+          </AppLayout>
+        </ProtectedRoute>
+      } />
+
+      {/* Service Reports - Admin and Manager Only */}
+      <Route path="/service-reports" element={
+        <ProtectedRoute roles={["admin", "manager"]}>
+          <AppLayout>
+            <ServiceReports />
+          </AppLayout>
+        </ProtectedRoute>
+      } />
+
       {/* KPI Analytics - Admin ONLY */}
       <Route path="/kpi" element={
         <ProtectedRoute roles={["admin"]}>
@@ -450,9 +490,9 @@ const AppRoutes = () => {
         </ProtectedRoute>
       } />
 
-      {/* Customers Page - All authenticated users */}
+      {/* Customers Page - Admin & Supervisor ONLY */}
       <Route path="/customers" element={
-        <ProtectedRoute>
+        <ProtectedRoute roles={["admin", "supervisor"]}>
           <AppLayout>
             <Customers />
           </AppLayout>

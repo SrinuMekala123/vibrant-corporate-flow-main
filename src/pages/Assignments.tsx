@@ -121,49 +121,115 @@ const Assignments = () => {
     );
   }
 
-  return (
-    <div className="space-y-8 relative">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-border/40 pb-6 relative z-10 pr-12 md:pr-16">
-        <div>
-          <h1 className="text-2xl font-display font-bold">Assignments</h1>
-          <p className="text-muted-foreground">Team dispatch and workload overview</p>
-        </div>
+  const teamStats = {
+    total: supervisors.length + technicians.length,
+    supervisors: supervisors.length,
+    technicians: technicians.length,
+    available: [...supervisors, ...technicians].filter((m: any) => m.available).length
+  };
 
-        {/* Search */}
-        <div className="relative w-full md:w-80">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-          <Input
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search by name, email, or expertise..."
-            className="pl-9 pr-9 text-sm"
-          />
-          {searchQuery && (
-            <button
-              onClick={() => setSearchQuery("")}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-slate-600"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          )}
+  return (
+    <div className="space-y-8 relative pb-12">
+      {/* Ambient background glows */}
+      <div className="bg-ambient-blur top-0 right-10 bg-primary/10" />
+      <div className="bg-ambient-blur top-80 left-10 bg-indigo-500/10" />
+
+      {/* Header */}
+      <div className="glass-card rounded-3xl p-6 sm:p-8 border border-border/60 shadow-xl relative overflow-hidden z-10">
+        <div className="absolute top-0 right-0 w-96 h-96 bg-gradient-to-bl from-primary/10 via-indigo-500/5 to-transparent rounded-full filter blur-3xl pointer-events-none" />
+
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 relative z-10">
+          <div className="space-y-1.5 flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-extrabold bg-primary/10 text-primary border border-primary/20 shadow-sm">
+                <Wrench className="w-3.5 h-3.5" /> FLEET DISPATCH BOARD
+              </span>
+            </div>
+            <h1 className="text-2xl sm:text-3xl font-display font-black tracking-tight text-foreground">
+              Staff Assignments & Workload Radar
+            </h1>
+            <p className="text-sm text-muted-foreground max-w-2xl leading-relaxed">
+              Monitor real-time task allocations across field technicians and supervisors, track live active jobs, and verify availability.
+            </p>
+          </div>
+
+          <div className="relative w-full lg:w-80 shrink-0">
+            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search staff, email, specialty..."
+              className="pl-10 text-xs h-10 rounded-xl border-border/60 bg-card"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery("")}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="flex items-center gap-2 border-b border-border/40">
+      {/* 📊 Stat Summary Grid */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 relative z-10">
+        <div className="glass-card rounded-2xl p-4 border border-border/60 shadow-sm flex items-center justify-between">
+          <div>
+            <span className="text-[11px] uppercase font-bold text-muted-foreground block">Total Personnel</span>
+            <span className="text-2xl font-black text-foreground mt-0.5 block">{teamStats.total}</span>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-primary/10 text-primary flex items-center justify-center">
+            <ClipboardList className="w-5 h-5" />
+          </div>
+        </div>
+
+        <div className="glass-card rounded-2xl p-4 border border-border/60 shadow-sm flex items-center justify-between">
+          <div>
+            <span className="text-[11px] uppercase font-bold text-indigo-600 dark:text-indigo-400 block">Supervisors</span>
+            <span className="text-2xl font-black text-indigo-600 dark:text-indigo-400 mt-0.5 block">{teamStats.supervisors}</span>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-indigo-500/10 text-indigo-600 flex items-center justify-center">
+            <ClipboardList className="w-5 h-5" />
+          </div>
+        </div>
+
+        <div className="glass-card rounded-2xl p-4 border border-border/60 shadow-sm flex items-center justify-between">
+          <div>
+            <span className="text-[11px] uppercase font-bold text-amber-600 dark:text-amber-400 block">Technicians</span>
+            <span className="text-2xl font-black text-amber-600 dark:text-amber-400 mt-0.5 block">{teamStats.technicians}</span>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-600 flex items-center justify-center">
+            <Wrench className="w-5 h-5" />
+          </div>
+        </div>
+
+        <div className="glass-card rounded-2xl p-4 border border-border/60 shadow-sm flex items-center justify-between">
+          <div>
+            <span className="text-[11px] uppercase font-bold text-emerald-600 dark:text-emerald-400 block">Available Now</span>
+            <span className="text-2xl font-black text-emerald-600 dark:text-emerald-400 mt-0.5 block">{teamStats.available}</span>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-emerald-500/10 text-emerald-600 flex items-center justify-center">
+            <Wrench className="w-5 h-5 text-emerald-600" />
+          </div>
+        </div>
+      </div>
+
+      {/* Segmented Tab Filter */}
+      <div className="inline-flex p-1 bg-muted/80 backdrop-blur-md rounded-2xl border border-border/60 relative z-10">
         {[
-          { key: 'all', label: 'All' },
-          { key: 'supervisors', label: 'Supervisors' },
-          { key: 'technicians', label: 'Technicians' },
+          { key: 'all', label: `All Staff (${supervisors.length + technicians.length})` },
+          { key: 'supervisors', label: `Supervisors (${supervisors.length})` },
+          { key: 'technicians', label: `Technicians (${technicians.length})` },
         ].map((tab) => (
           <button
             key={tab.key}
             onClick={() => setActiveTab(tab.key as TabType)}
-            className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+            className={`px-4 py-2 text-xs font-bold rounded-xl transition-all ${
               activeTab === tab.key
-                ? 'border-primary text-primary'
-                : 'border-transparent text-muted-foreground hover:text-slate-700'
+                ? 'bg-card text-primary shadow-sm border border-border/40'
+                : 'text-muted-foreground hover:text-foreground'
             }`}
           >
             {tab.label}
@@ -172,7 +238,7 @@ const Assignments = () => {
       </div>
 
       {/* Results count */}
-      <p className="text-sm text-muted-foreground">
+      <p className="text-xs font-semibold text-muted-foreground relative z-10">
         Showing {filteredData.length === 0 ? 0 : startIndex + 1}-{Math.min(startIndex + itemsPerPage, filteredData.length)} of {filteredData.length} {getTabLabel()}
       </p>
 

@@ -29,7 +29,7 @@ export function downloadCSV(csvContent: string, filename: string): void {
   URL.revokeObjectURL(url);
 }
 
-export function generateSampleCSV(type: "customer" | "asset" | "technician" | "supervisor"): string {
+export function generateSampleCSV(type: "customer" | "asset" | "technician" | "supervisor" | "complaint"): string {
   if (type === "customer") {
     const headers = ["full_name", "email", "phone", "customer_type", "branch", "password"];
     const example = ["John Doe", "john@test.com", "9876543210", "Retail", "Hyderabad", "Welcome@123!"];
@@ -40,13 +40,48 @@ export function generateSampleCSV(type: "customer" | "asset" | "technician" | "s
     const headers = [
       "customer_name",
       "product_name",
+      "brand",
       "model_number",
       "serial_number",
       "category",
       "purchase_date",
       "warranty_months",
     ];
-    const example = ["Lakshmi", "CCTV Camera", "CAM-HD-1080", "SN123456", "CCTV & Security", "2024-01-01", "12"];
+    const example = ["John Doe", "5kW Solar Inverter", "Luminous", "LUM-5000", "SN123456789", "Solar PV", "2025-01-15", "12"];
+    return [headers.join(","), example.join(",")].join("\n");
+  }
+
+  if (type === "complaint") {
+    const headers = [
+      "title",
+      "customer_name",
+      "customer_phone",
+      "category",
+      "coverage",
+      "chargeable_service",
+      "brand",
+      "severity",
+      "priority",
+      "location",
+      "description",
+      "scheduled_date",
+      "scheduled_time",
+    ];
+    const example = [
+      "Inverter error code E02",
+      "Ramesh Kumar",
+      "9876543210",
+      "Solar PV",
+      "Under Warranty",
+      "No",
+      "Luminous",
+      "moderate",
+      "medium",
+      "Hyderabad, Jubilee Hills",
+      "System turns off after 10 minutes of operation",
+      "2026-09-25",
+      "10:30",
+    ];
     return [headers.join(","), example.join(",")].join("\n");
   }
 

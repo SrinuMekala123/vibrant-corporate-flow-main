@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, forwardRef } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { useQuery } from "@tanstack/react-query";
@@ -45,7 +45,8 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import { downloadCSV, generateSampleCSV } from "@/utils/csvHelpers";
 import ExportButton from "@/components/ExportButton";
-import { Calendar as CalendarPicker } from "@/components/ui/calendar";
+import DatePicker from "react-datepicker";
+import "react-datepicker/dist/react-datepicker.css";
 
 export default function Assets() {
   const { user, session } = useAuth();
@@ -65,6 +66,9 @@ export default function Assets() {
   const [isCustomerPopoverOpen, setIsCustomerPopoverOpen] = useState(false);
   const [branchSearch, setBranchSearch] = useState("");
   const [branchDropdownOpen, setBranchDropdownOpen] = useState(false);
+  const [customerLocations, setCustomerLocations] = useState<any[]>([]);
+  const [selectedLocationId, setSelectedLocationId] = useState("");
+  const [isLocationsLoading, setIsLocationsLoading] = useState(false);
 
   // Form States
   const [customerId, setCustomerId] = useState("");
@@ -73,16 +77,33 @@ export default function Assets() {
   const [category, setCategory] = useState("Solar PV");
   const [productName, setProductName] = useState("");
   const [modelNumber, setModelNumber] = useState("");
+  const [brand, setBrand] = useState("");
   const [serialNumber, setSerialNumber] = useState("");
   const [purchaseDate, setPurchaseDate] = useState("");
   const [purchaseDatePickerOpen, setPurchaseDatePickerOpen] = useState(false);
-  const [warrantyMonths, setWarrantyMonths] = useState(12);
   const [installationDate, setInstallationDate] = useState("");
   const [installationDatePickerOpen, setInstallationDatePickerOpen] = useState(false);
+  const [warrantyMonths, setWarrantyMonths] = useState(0);
+  const [customWarrantyMonths, setCustomWarrantyMonths] = useState("");
   const [status, setStatus] = useState("Active");
   const [notes, setNotes] = useState("");
   const [selectedAssetIds, setSelectedAssetIds] = useState<Set<string>>(new Set());
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+
+  const CustomDateInput = forwardRef(({ value, onClick, placeholder }: any, ref: any) => (
+    <Button
+      type="button"
+      variant="outline"
+      ref={ref}
+      onClick={onClick}
+      disabled={loading}
+      className="w-full h-10 justify-start rounded-lg border-slate-200 font-normal"
+    >
+      <Calendar className="mr-2 h-4 w-4 text-slate-400" />
+      <span className={value ? "text-slate-700" : "text-slate-400"}>{value || placeholder || "mm/dd/yyyy"}</span>
+    </Button>
+  ));
+  CustomDateInput.displayName = "CustomDateInput";
 
   const assetDraft = useFormDraft({
     key: 'draft_create_asset',
@@ -93,6 +114,7 @@ export default function Assets() {
       branchId: { value: branchId, setter: setBranchId },
       category: { value: category, setter: setCategory },
       productName: { value: productName, setter: setProductName },
+      brand: { value: brand, setter: setBrand },
       modelNumber: { value: modelNumber, setter: setModelNumber },
       serialNumber: { value: serialNumber, setter: setSerialNumber },
       purchaseDate: { value: purchaseDate, setter: setPurchaseDate },
@@ -111,7 +133,7 @@ export default function Assets() {
 
   useEffect(() => {
     return assetDraft.save();
-  }, [customerId, branchId, category, productName, modelNumber, serialNumber, purchaseDate, warrantyMonths, installationDate, status, notes]);
+  }, [customerId, branchId, category, productName, brand, modelNumber, serialNumber, purchaseDate, warrantyMonths, installationDate, status, notes]);
 
   useEffect(() => {
     const handleBeforeUnload = () => {
@@ -135,9 +157,6 @@ export default function Assets() {
     const day = String(date.getDate()).padStart(2, "0");
     return `${year}-${month}-${day}`;
   };
-  const formatFormDate = (value: string) => value
-    ? dateFromInput(value)?.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
-    : "Select date";
 
   const downloadSample = () => {
     const csv = generateSampleCSV("asset");
@@ -198,6 +217,46 @@ export default function Assets() {
       return data || [];
     }
   });
+
+  // Fetch customer locations when customerId changes
+  useEffect(() => {
+    const fetchCustomerLocations = async () => {
+      if (!customerId) {
+        setCustomerLocations([]);
+        setSelectedLocationId("");
+        return;
+      }
+
+      setIsLocationsLoading(true);
+      try {
+        const { data, error } = await supabase
+          .from('customer_locations')
+          .select('*')
+          .eq('customer_id', customerId)
+          .order('is_primary', { ascending: false })
+          .order('created_at', { ascending: false });
+
+        if (error) throw error;
+
+        const locations = data || [];
+        setCustomerLocations(locations);
+
+        // Auto-select primary location if available and no location currently selected
+        if (!selectedLocationId && locations.length > 0) {
+          const primary = locations.find((loc: any) => loc.is_primary) || locations[0];
+          setSelectedLocationId(primary.id);
+        }
+      } catch (err) {
+        console.error("Error fetching customer locations:", err);
+        setCustomerLocations([]);
+        setSelectedLocationId("");
+      } finally {
+        setIsLocationsLoading(false);
+      }
+    };
+
+    fetchCustomerLocations();
+  }, [customerId]);
 
   // React Query: Fetch Assets
   const { data: assets, isLoading, refetch } = useQuery({
@@ -285,6 +344,7 @@ export default function Assets() {
     setBranchSearch("");
     setIsCustomerPopoverOpen(false);
     setBranchDropdownOpen(false);
+    setSelectedLocationId("");
 
     if (mode === "add") {
       setSelectedAsset({});
@@ -292,13 +352,18 @@ export default function Assets() {
       setBranchId("");
       setCategory("Solar PV");
       setProductName("");
+      setBrand("");
       setModelNumber("");
       setSerialNumber("");
-      setPurchaseDate(new Date().toISOString().split('T')[0]);
-      setWarrantyMonths(12);
+      setPurchaseDate("");
+      setPurchaseDatePickerOpen(false);
+      setWarrantyMonths(0);
+      setCustomWarrantyMonths("");
       setInstallationDate("");
+      setInstallationDatePickerOpen(false);
       setStatus("Active");
       setNotes("");
+      setSelectedLocationId("");
       // Restore draft after resetting form
       setTimeout(() => assetDraft.restore(), 0);
     } else {
@@ -307,13 +372,18 @@ export default function Assets() {
       setBranchId(asset.branch_id || "");
       setCategory(asset.category || "Solar PV");
       setProductName(asset.product_name || "");
+      setBrand(asset.brand || "");
       setModelNumber(asset.model_number || "");
       setSerialNumber(asset.serial_number || "");
       setPurchaseDate(asset.purchase_date || "");
+      setPurchaseDatePickerOpen(false);
       setWarrantyMonths(asset.warranty_months || 12);
+      setCustomWarrantyMonths([0, 6, 12, 24, 36].includes(asset.warranty_months || 12) ? "" : String(asset.warranty_months || ""));
       setInstallationDate(asset.installation_date || "");
+      setInstallationDatePickerOpen(false);
       setStatus(asset.status || "Active");
       setNotes(asset.notes || "");
+      setSelectedLocationId(asset.location_id || "");
 
       // Setup display search text for edit
       const currentCust = customers?.find(c => c.id === asset.customer_id);
@@ -358,13 +428,15 @@ export default function Assets() {
         branch_id: branchId || null,
         category,
         product_name: trimmedProduct,
+        brand: brand.trim() || null,
         model_number: modelNumber.trim() || null,
         serial_number: serialNumber.trim() || null,
         purchase_date: purchaseDate,
         warranty_months: Number(warrantyMonths) || 0,
         installation_date: installationDate || null,
         status,
-        notes: notes.trim() || null
+        notes: notes.trim() || null,
+        location_id: selectedLocationId || null,
       };
 
       if (modalMode === "add") {
@@ -516,79 +588,168 @@ export default function Assets() {
     b.branch_name.toLowerCase().includes(branchSearch.toLowerCase())
   ) || [];
 
+  const assetStats = {
+    total: assets?.length || 0,
+    activeWarranty: assets?.filter((a: any) => {
+      const w = getWarrantyInfo(a.purchase_date, a.warranty_months);
+      return !w.isExpired;
+    }).length || 0,
+    expiredWarranty: assets?.filter((a: any) => {
+      const w = getWarrantyInfo(a.purchase_date, a.warranty_months);
+      return w.isExpired;
+    }).length || 0,
+    categoriesCount: new Set(assets?.map((a: any) => a.category).filter(Boolean)).size || 0,
+  };
+
   return (
-    <div className="space-y-8 relative overflow-x-hidden">
+    <div className="space-y-8 relative overflow-x-hidden pb-12">
+      {/* Background Ambient Glows */}
+      <div className="bg-ambient-blur top-0 right-10 bg-primary/10" />
+      <div className="bg-ambient-blur top-80 left-10 bg-indigo-500/10" />
+
       {/* Header Section with Title and Buttons */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 relative z-10">
-        {/* Page Title & Description */}
-        <div className="flex-1 min-w-0">
-          <h1 className="text-2xl sm:text-3xl font-bold">Customer Assets</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Monitor client equipment profiles, warranty lifespans, and product deployments.
-          </p>
+      <div className="glass-card rounded-3xl p-6 sm:p-8 border border-border/60 shadow-xl relative overflow-hidden z-10">
+        <div className="absolute top-0 right-0 w-96 h-96 bg-gradient-to-bl from-primary/10 via-indigo-500/5 to-transparent rounded-full filter blur-3xl pointer-events-none" />
+
+        <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-6 relative z-10">
+          {/* Page Title & Description */}
+          <div className="space-y-1.5 flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-extrabold bg-primary/10 text-primary border border-primary/20 shadow-sm">
+                <Package className="w-3.5 h-3.5" /> HARDWARE VAULT
+              </span>
+            </div>
+            <h1 className="text-2xl sm:text-3xl font-display font-black tracking-tight text-foreground">
+              Customer Assets & Hardware Inventory
+            </h1>
+            <p className="text-sm text-muted-foreground max-w-2xl leading-relaxed">
+              Track serial numbers, models, client deployments, warranty lifespans, and field service hardware histories.
+            </p>
+          </div>
+          
+          {/* Action Buttons - Responsive Layout */}
+          {canModify && (
+            <div className="flex flex-wrap items-center gap-2.5 w-full lg:w-auto shrink-0">
+              <ExportButton variant="asset" />
+
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={downloadSample}
+                className="rounded-xl border-border/70 hover:bg-muted/80 h-10 px-3.5 gap-2 shadow-sm font-semibold text-xs"
+                title="Download Sample CSV Template"
+              >
+                <Download className="w-4 h-4 text-primary shrink-0" />
+                <span>Sample CSV</span>
+              </Button>
+
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setIsAssetImportOpen(true)}
+                className="rounded-xl border-border/70 hover:bg-muted/80 h-10 px-3.5 gap-2 shadow-sm font-semibold text-xs"
+                title="Bulk Import Assets"
+              >
+                <Upload className="w-4 h-4 text-indigo-500 shrink-0" />
+                <span>Import CSV</span>
+              </Button>
+
+              <Button
+                size="sm"
+                onClick={() => handleOpenModal(null, 'add')}
+                className="gradient-primary text-white hover:opacity-95 rounded-xl h-10 px-4 gap-2 font-bold shadow-glow text-xs"
+              >
+                <Plus className="w-4 h-4 shrink-0" />
+                <span>Add Asset</span>
+              </Button>
+            </div>
+          )}
+          
+          {isViewOnly && (
+            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-muted border border-border/50 text-muted-foreground text-xs font-semibold uppercase tracking-wider">
+              <ShieldCheck className="w-4 h-4 text-primary" /> View Only
+            </div>
+          )}
         </div>
-        
-        {/* Action Buttons - Responsive Layout */}
-        {canModify && (
-          <div className="flex flex-wrap gap-2 w-full sm:w-auto">
-            <ExportButton variant="asset" />
-            <Button
-              variant="outline"
-              onClick={downloadSample}
-              className="flex items-center gap-1.5 whitespace-nowrap flex-1 sm:flex-none min-w-[80px] justify-center border-slate-300 text-slate-700 hover:bg-slate-50"
-            >
-              <Download className="w-4 h-4 shrink-0" />
-              <span className="text-xs sm:text-sm">Sample</span>
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => setIsAssetImportOpen(true)}
-              className="flex items-center gap-1.5 whitespace-nowrap flex-1 sm:flex-none min-w-[80px] justify-center border-slate-300 text-slate-700 hover:bg-slate-50"
-            >
-              <Upload className="w-4 h-4 shrink-0" />
-              <span className="text-xs sm:text-sm">Import</span>
-            </Button>
-            <Button
-              onClick={() => handleOpenModal(null, 'add')}
-              className="flex items-center gap-1.5 whitespace-nowrap flex-1 sm:flex-none min-w-[80px] justify-center bg-gradient-to-r from-blue-600 to-teal-500 hover:from-blue-700 hover:to-teal-600 text-white"
-            >
-              <Plus className="w-4 h-4 shrink-0" />
-              <span className="text-xs sm:text-sm">Add</span>
-            </Button>
+      </div>
+
+      {/* 📊 Stat Summary Grid */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 relative z-10">
+        <div className="glass-card rounded-2xl p-4 border border-border/60 shadow-sm flex items-center justify-between">
+          <div>
+            <span className="text-[11px] uppercase font-bold text-muted-foreground block">Total Assets</span>
+            <span className="text-2xl font-black text-foreground mt-0.5 block">{assetStats.total}</span>
           </div>
-        )}
-        
-        {isViewOnly && (
-          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-100 border border-slate-200 text-slate-600 text-xs font-semibold uppercase tracking-wider">
-            <ShieldCheck className="w-4 h-4 text-slate-500" /> View Only
+          <div className="w-10 h-10 rounded-xl bg-primary/10 text-primary flex items-center justify-center">
+            <Package className="w-5 h-5" />
           </div>
-        )}
+        </div>
+
+        <div className="glass-card rounded-2xl p-4 border border-border/60 shadow-sm flex items-center justify-between">
+          <div>
+            <span className="text-[11px] uppercase font-bold text-emerald-600 dark:text-emerald-400 block">Active Warranty</span>
+            <span className="text-2xl font-black text-emerald-600 dark:text-emerald-400 mt-0.5 block">{assetStats.activeWarranty}</span>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-emerald-500/10 text-emerald-600 flex items-center justify-center">
+            <CheckCircle2 className="w-5 h-5" />
+          </div>
+        </div>
+
+        <div className="glass-card rounded-2xl p-4 border border-border/60 shadow-sm flex items-center justify-between">
+          <div>
+            <span className="text-[11px] uppercase font-bold text-rose-600 dark:text-rose-400 block">Out of Warranty</span>
+            <span className="text-2xl font-black text-rose-600 dark:text-rose-400 mt-0.5 block">{assetStats.expiredWarranty}</span>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-rose-500/10 text-rose-600 flex items-center justify-center">
+            <AlertTriangle className="w-5 h-5" />
+          </div>
+        </div>
+
+        <div className="glass-card rounded-2xl p-4 border border-border/60 shadow-sm flex items-center justify-between">
+          <div>
+            <span className="text-[11px] uppercase font-bold text-indigo-600 dark:text-indigo-400 block">Categories</span>
+            <span className="text-2xl font-black text-indigo-600 dark:text-indigo-400 mt-0.5 block">{assetStats.categoriesCount}</span>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-indigo-500/10 text-indigo-600 flex items-center justify-center">
+            <Wrench className="w-5 h-5" />
+          </div>
+        </div>
       </div>
 
       {/* Filter / Search section */}
-      <div className="flex flex-col lg:flex-row gap-4 items-center justify-between bg-white p-4 rounded-xl border border-slate-200/80 shadow-sm">
+      <div className="glass-card rounded-2xl p-4 border border-border/60 shadow-sm flex flex-col lg:flex-row gap-4 items-center justify-between relative z-10">
         <div className="relative w-full lg:max-w-md">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <Input
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search assets, customers, serial numbers..."
-            className="pl-10 text-sm h-10 rounded-lg border-slate-200"
+            className="pl-10 text-xs h-10 rounded-xl border-border/60 bg-card"
           />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery("")}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-3 w-full lg:w-auto shrink-0 justify-start lg:justify-end">
           <div className="flex items-center gap-2">
-            <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Category:</span>
+            <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Category:</span>
             <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-              <SelectTrigger className="w-[140px] h-10 rounded-lg border-slate-200 bg-white">
+              <SelectTrigger className="w-[160px] h-10 rounded-xl border-border/60 bg-card text-xs font-semibold">
                 <SelectValue placeholder="Category" />
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent className="rounded-xl border-border/60 shadow-xl">
                 <SelectItem value="all">All Categories</SelectItem>
                 <SelectItem value="Solar PV">Solar PV</SelectItem>
-                <SelectItem value="CCTV & Security">CCTV & Security</SelectItem>
+                <SelectItem value="CCTV & Video Surveillance">CCTV & Video Surveillance</SelectItem>
+                <SelectItem value="Access Control & Biometrics">Access Control & Biometrics</SelectItem>
                 <SelectItem value="Networking">Networking</SelectItem>
+                <SelectItem value="Fire & Life Safety">Fire & Life Safety</SelectItem>
                 <SelectItem value="Power Systems">Power Systems</SelectItem>
                 <SelectItem value="UPS & Battery">UPS & Battery</SelectItem>
                 <SelectItem value="Others">Others</SelectItem>
@@ -597,12 +758,12 @@ export default function Assets() {
           </div>
 
           <div className="flex items-center gap-2">
-            <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Warranty:</span>
+            <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Warranty:</span>
             <Select value={warrantyFilter} onValueChange={setWarrantyFilter}>
-              <SelectTrigger className="w-[130px] h-10 rounded-lg border-slate-200 bg-white">
+              <SelectTrigger className="w-[140px] h-10 rounded-xl border-border/60 bg-card text-xs font-semibold">
                 <SelectValue placeholder="Warranty" />
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent className="rounded-xl border-border/60 shadow-xl">
                 <SelectItem value="all">All Status</SelectItem>
                 <SelectItem value="active">Active Only</SelectItem>
                 <SelectItem value="expired">Expired Only</SelectItem>
@@ -1136,9 +1297,48 @@ export default function Assets() {
                           </Command>
                         </PopoverContent>
                       </Popover>
-                    </div>
+                     </div>
 
-                    {/* Searchable Branch Dropdown */}
+                     {/* Installation Location Dropdown */}
+                     {customerId && (
+                       <div className="space-y-1.5">
+                         <label className="text-xs font-semibold text-slate-600">Installation Location</label>
+                         {isLocationsLoading ? (
+                           <div className="flex items-center gap-2 text-muted-foreground">
+                             <Loader2 className="w-4 h-4 animate-spin" /> Loading locations...
+                           </div>
+                         ) : customerLocations.length === 0 ? (
+                           <p className="text-xs text-muted-foreground">No locations found for this customer.</p>
+                         ) : (
+                           <Select
+                             value={selectedLocationId}
+                             onValueChange={(v) => {
+                               setSelectedLocationId(v);
+                             }}
+                             disabled={loading}
+                           >
+                             <SelectTrigger className="w-full h-10 rounded-lg border-slate-200 bg-white">
+                               <SelectValue placeholder="Select installation location" />
+                             </SelectTrigger>
+                             <SelectContent>
+                               {customerLocations.map((loc: any) => (
+                                 <SelectItem key={loc.id} value={loc.id}>
+                                   <div className="flex flex-col text-left py-0.5">
+                                     <span className="font-medium">{loc.location_name}</span>
+                                     <span className="text-[10px] text-muted-foreground">
+                                       {[loc.address, loc.city, loc.state, loc.pincode].filter(Boolean).join(", ")}
+                                       {loc.is_primary && " • Primary"}
+                                     </span>
+                                   </div>
+                                 </SelectItem>
+                               ))}
+                             </SelectContent>
+                           </Select>
+                         )}
+                       </div>
+                     )}
+
+                     {/* Searchable Branch Dropdown */}
                     <div className="space-y-1.5 relative">
                       <label className="text-xs font-semibold text-slate-600">Deployment Branch Location</label>
                       <div className="relative">
@@ -1197,28 +1397,44 @@ export default function Assets() {
                         <Input
                           value={productName}
                           onChange={(e) => setProductName(e.target.value)}
-                          placeholder="e.g. Solar Panel 400W"
+                          placeholder="e.g. 5kW Solar Inverter"
+                          maxLength={100}
+                          disabled={loading}
                           required
+                          className="w-full rounded-lg border-slate-200 h-10"
+                        />
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-semibold text-slate-600">Brand</label>
+                        <Input
+                          value={brand}
+                          onChange={(e) => setBrand(e.target.value)}
+                          placeholder="e.g. Luminous, Hikvision, Exide"
                           maxLength={50}
                           disabled={loading}
                           className="w-full rounded-lg border-slate-200 h-10"
                         />
                       </div>
+                    </div>
 
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div className="space-y-1.5">
                         <label className="text-xs font-semibold text-slate-600">Category</label>
                         <Select value={category} onValueChange={setCategory} disabled={loading}>
                           <SelectTrigger className="w-full h-10 rounded-lg border-slate-200 bg-white">
                             <SelectValue placeholder="Category" />
                           </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="Solar PV">Solar PV</SelectItem>
-                            <SelectItem value="CCTV & Security">CCTV & Security</SelectItem>
-                            <SelectItem value="Networking">Networking</SelectItem>
-                            <SelectItem value="Power Systems">Power Systems</SelectItem>
-                            <SelectItem value="UPS & Battery">UPS & Battery</SelectItem>
-                            <SelectItem value="Others">Others</SelectItem>
-                          </SelectContent>
+                           <SelectContent>
+                             <SelectItem value="Solar PV">Solar PV</SelectItem>
+                             <SelectItem value="CCTV & Video Surveillance">CCTV & Video Surveillance</SelectItem>
+                             <SelectItem value="Access Control & Biometrics">Access Control & Biometrics</SelectItem>
+                             <SelectItem value="Networking">Networking</SelectItem>
+                             <SelectItem value="Fire & Life Safety">Fire & Life Safety</SelectItem>
+                             <SelectItem value="Power Systems">Power Systems</SelectItem>
+                             <SelectItem value="UPS & Battery">UPS & Battery</SelectItem>
+                             <SelectItem value="Others">Others</SelectItem>
+                           </SelectContent>
                         </Select>
                       </div>
                     </div>
@@ -1249,63 +1465,78 @@ export default function Assets() {
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                      <div className="space-y-1.5">
-                        <label className="text-xs font-semibold text-slate-600">Purchase Date <span className="text-destructive">*</span></label>
-                        <Popover open={purchaseDatePickerOpen} onOpenChange={setPurchaseDatePickerOpen}>
-                          <PopoverTrigger asChild>
-                            <Button type="button" variant="outline" disabled={loading} className="w-full h-10 justify-start rounded-lg border-slate-200 font-normal">
-                              <Calendar className="mr-2 h-4 w-4 text-slate-400" />
-                              {formatFormDate(purchaseDate)}
-                            </Button>
-                          </PopoverTrigger>
-                          <PopoverContent className="w-[calc(100vw-2rem)] sm:w-auto p-0" align="start">
-                            <CalendarPicker
-                              mode="single"
-                              selected={dateFromInput(purchaseDate)}
-                              onSelect={(date) => { if (date) setPurchaseDate(dateToInput(date)); setPurchaseDatePickerOpen(false); }}
-                              disabled={(date) => date > today || date < new Date('1900-01-01')}
-                              initialFocus
-                            />
-                          </PopoverContent>
-                        </Popover>
-                        <input type="hidden" value={purchaseDate} required readOnly />
-                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                        <div className="space-y-1.5">
+                          <label className="text-xs font-semibold text-slate-600">Purchase Date <span className="text-destructive">*</span></label>
+                          <DatePicker
+                            selected={purchaseDate ? new Date(`${purchaseDate}T00:00:00`) : null}
+                            onChange={(date) => setPurchaseDate(date ? dateToInput(date) : "")}
+                            dateFormat="dd/MM/yyyy"
+                            placeholderText="dd/mm/yyyy"
+                            showMonthDropdown
+                            showYearDropdown
+                            disabled={loading}
+                            customInput={<CustomDateInput placeholder="dd/mm/yyyy" />}
+                            calendarClassName="shadow-lg border border-slate-200 rounded-xl overflow-hidden"
+                          />
+                          <input type="hidden" value={purchaseDate} required readOnly />
+                        </div>
 
-                      <div className="space-y-1.5">
-                        <label className="text-xs font-semibold text-slate-600">Warranty (Months)</label>
-                        <Input
-                          type="number"
-                          value={warrantyMonths}
-                          onChange={(e) => setWarrantyMonths(Number(e.target.value))}
-                          min={0}
-                          required
-                          disabled={loading}
-                          className="w-full rounded-lg border-slate-200 h-10"
-                        />
-                      </div>
-
-                      <div className="space-y-1.5">
-                        <label className="text-xs font-semibold text-slate-600">Installation Date</label>
-                        <Popover open={installationDatePickerOpen} onOpenChange={setInstallationDatePickerOpen}>
-                          <PopoverTrigger asChild>
-                            <Button type="button" variant="outline" disabled={loading} className="w-full h-10 justify-start rounded-lg border-slate-200 font-normal">
-                              <Calendar className="mr-2 h-4 w-4 text-slate-400" />
-                              {formatFormDate(installationDate)}
-                            </Button>
-                          </PopoverTrigger>
-                          <PopoverContent className="w-[calc(100vw-2rem)] sm:w-auto p-0" align="start">
-                            <CalendarPicker
-                              mode="single"
-                              selected={dateFromInput(installationDate)}
-                              onSelect={(date) => { setInstallationDate(date ? dateToInput(date) : ""); setInstallationDatePickerOpen(false); }}
-                              disabled={(date) => date > today || date < new Date('1900-01-01')}
-                              initialFocus
+                        <div className="space-y-1.5">
+                          <label className="text-xs font-semibold text-slate-600">Warranty</label>
+                          <Select value={[0, 6, 12, 24, 36].includes(warrantyMonths) ? String(warrantyMonths) : "custom"} onValueChange={(val) => {
+                            if (val === "custom") {
+                              setCustomWarrantyMonths("");
+                              setWarrantyMonths(0);
+                            } else {
+                              setWarrantyMonths(Number(val));
+                              setCustomWarrantyMonths("");
+                            }
+                          }} disabled={loading}>
+                            <SelectTrigger className="w-full h-10 rounded-lg border-slate-200 bg-white">
+                              <SelectValue placeholder="Select warranty" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="0">No Warranty</SelectItem>
+                              <SelectItem value="6">6 Months Warranty</SelectItem>
+                              <SelectItem value="12">1 Year Warranty</SelectItem>
+                              <SelectItem value="24">2 Years Warranty</SelectItem>
+                              <SelectItem value="36">3 Years Warranty</SelectItem>
+                              <SelectItem value="custom">Custom (Enter Months)</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          {![0, 6, 12, 24, 36].includes(warrantyMonths) || (warrantyMonths === 0 && customWarrantyMonths === "") ? (
+                            <Input
+                              type="number"
+                              value={customWarrantyMonths}
+                              onChange={(e) => {
+                                const val = Number(e.target.value);
+                                setCustomWarrantyMonths(e.target.value);
+                                if (val > 0) setWarrantyMonths(val);
+                              }}
+                              placeholder="Enter custom months"
+                              min={1}
+                              disabled={loading}
+                              className="w-full rounded-lg border-slate-200 h-10"
                             />
-                          </PopoverContent>
-                        </Popover>
+                          ) : null}
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <label className="text-xs font-semibold text-slate-600">Installation Date</label>
+                          <DatePicker
+                            selected={installationDate ? new Date(`${installationDate}T00:00:00`) : null}
+                            onChange={(date) => setInstallationDate(date ? dateToInput(date) : "")}
+                            dateFormat="dd/MM/yyyy"
+                            placeholderText="dd/mm/yyyy"
+                            showMonthDropdown
+                            showYearDropdown
+                            disabled={loading}
+                            customInput={<CustomDateInput placeholder="dd/mm/yyyy" />}
+                            calendarClassName="shadow-lg border border-slate-200 rounded-xl overflow-hidden"
+                          />
+                        </div>
                       </div>
-                    </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div className="space-y-1.5">
@@ -1352,7 +1583,7 @@ export default function Assets() {
                           setModelNumber("");
                           setSerialNumber("");
                           setPurchaseDate(new Date().toISOString().split('T')[0]);
-                          setWarrantyMonths(12);
+                          setWarrantyMonths(6);
                           setInstallationDate("");
                           setStatus("Active");
                           setNotes("");

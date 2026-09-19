@@ -16,6 +16,7 @@ import {
   PaginationPrevious,
 } from "@/components/ui/pagination";
 import CustomerImportModal from "@/components/CustomerImportModal";
+import CustomerLocationManager from "@/components/CustomerLocationManager";
 import { 
   Loader2, 
   Search, 
@@ -34,8 +35,10 @@ import {
   UserCheck,
   Lock,
   Download,
+  Upload,
   CheckSquare,
-  Square
+  Square,
+  UserPlus
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { downloadCSV, generateSampleCSV } from "@/utils/csvHelpers";
@@ -70,6 +73,28 @@ export default function Customers() {
   const [selectedCustomerIds, setSelectedCustomerIds] = useState<Set<string>>(new Set());
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
 
+  // Primary location fields
+  const [locationName, setLocationName] = useState("");
+  const [locationCity, setLocationCity] = useState("");
+  const [locationState, setLocationState] = useState("");
+  const [locationPincode, setLocationPincode] = useState("");
+  const [locationAddress, setLocationAddress] = useState("");
+  const [locationContactPerson, setLocationContactPerson] = useState("");
+  const [locationContactPhone, setLocationContactPhone] = useState("");
+  const [isLocationManagerOpen, setIsLocationManagerOpen] = useState(false);
+  const [locationManagerOpen, setLocationManagerOpen] = useState(false);
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string>("");
+  const [selectedCustomerName, setSelectedCustomerName] = useState<string>("");
+
+  const openLocationManager = (customerId: string, customerName?: string) => {
+    setSelectedCustomerId(customerId);
+    setSelectedCustomerName(customerName || "");
+    const found = customers?.find((c: any) => c.id === customerId);
+    if (found) setSelectedCustomer(found);
+    setLocationManagerOpen(true);
+    setIsLocationManagerOpen(true);
+  };
+
   // Login account creation states
   const [createLoginAccount, setCreateLoginAccount] = useState(false);
   const [loginPassword, setLoginPassword] = useState("");
@@ -88,6 +113,13 @@ export default function Customers() {
       customerType: { value: customerType, setter: setCustomerType },
       branchId: { value: branchId, setter: setBranchId },
       createLoginAccount: { value: createLoginAccount, setter: setCreateLoginAccount },
+      locationName: { value: locationName, setter: setLocationName },
+      locationCity: { value: locationCity, setter: setLocationCity },
+      locationState: { value: locationState, setter: setLocationState },
+      locationPincode: { value: locationPincode, setter: setLocationPincode },
+      locationAddress: { value: locationAddress, setter: setLocationAddress },
+      locationContactPerson: { value: locationContactPerson, setter: setLocationContactPerson },
+      locationContactPhone: { value: locationContactPhone, setter: setLocationContactPhone },
     },
   });
 
@@ -99,7 +131,7 @@ export default function Customers() {
 
   useEffect(() => {
     return customerDraft.save();
-  }, [fullName, phone, email, address, customerType, branchId, createLoginAccount]);
+  }, [fullName, phone, email, address, customerType, branchId, createLoginAccount, locationName, locationCity, locationState, locationPincode, locationAddress, locationContactPerson, locationContactPhone]);
 
   useEffect(() => {
     const handleBeforeUnload = () => {
@@ -192,175 +224,455 @@ export default function Customers() {
     enabled: canModify
   });
 
-  const handleOpenModal = (customer: any, mode: "view" | "add" | "edit") => {
-    setModalMode(mode);
-    setCreateLoginAccount(mode === "add");
-    setLoginPassword("");
-    setShowPassword(false);
-    setCreatingAccount(false);
-    if (mode === "add") {
-      setSelectedCustomer({});
-      setFullName("");
-      setPhone("");
-      setEmail("");
-      setAddress("");
-      setCustomerType("Retail");
-      setBranchId("");
-      setProfileUserId("");
+   const handleOpenModal = async (customer: any, mode: "view" | "add" | "edit") => {
+     setModalMode(mode);
+     setCreateLoginAccount(mode === "add");
+     setLoginPassword("");
+     setShowPassword(false);
+     setCreatingAccount(false);
+     if (mode === "add") {
+       setSelectedCustomer({});
+       setFullName("");
+       setPhone("");
+       setEmail("");
+       setAddress("");
+       setCustomerType("Retail");
+       setBranchId("");
+       setProfileUserId("");
+       setLocationName("");
+       setLocationCity("");
+       setLocationState("");
+       setLocationPincode("");
+       setLocationAddress("");
+       setLocationContactPerson("");
+       setLocationContactPhone("");
     } else {
-      setSelectedCustomer(customer);
-      setFullName(customer.full_name || "");
-      setPhone(customer.phone || "");
-      setEmail(customer.email || "");
-      setAddress(customer.address || "");
-      setCustomerType(customer.customer_type || "Retail");
-      setBranchId(customer.branch_id || "");
-      setProfileUserId(customer.user_id || "");
+      if (!customer) return;
+      const initialCust = { ...customer };
+      setSelectedCustomer(initialCust);
+      setFullName(initialCust.full_name || initialCust.name || "");
+      setPhone(initialCust.phone || initialCust.mobile || "");
+      setEmail(initialCust.email || "");
+      setAddress(initialCust.address || "");
+      setCustomerType(initialCust.customer_type || initialCust.type || "Retail");
+      setBranchId(initialCust.branch_id || "");
+      setProfileUserId(initialCust.user_id || "");
+
+      // Ensure full fresh customer record is fetched if ID is available
+      if (initialCust.id) {
+        try {
+          const { data: freshData, error: freshErr } = await supabase
+            .from("customers")
+            .select("*, branches(branch_name)")
+            .eq("id", initialCust.id)
+            .maybeSingle();
+
+          if (!freshErr && freshData) {
+            setSelectedCustomer(freshData);
+            setFullName(freshData.full_name || freshData.name || "");
+            setPhone(freshData.phone || freshData.mobile || "");
+            setEmail(freshData.email || "");
+            setAddress(freshData.address || "");
+            setCustomerType(freshData.customer_type || freshData.type || "Retail");
+            setBranchId(freshData.branch_id || "");
+            setProfileUserId(freshData.user_id || "");
+          }
+        } catch (e) {
+          console.warn("Could not reload customer fresh details:", e);
+        }
+      }
     }
   };
 
-  // No longer needed — replaced by integrated creation in handleSaveCustomer
-
-  const handleSaveCustomer = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!canModify) {
-      toast.error("You do not have permission to perform this action.");
-      return;
-    }
-
-    const trimmedName = fullName.trim();
-    if (!isValidFullName(trimmedName)) {
-      toast.error("Name must be 3-100 characters and contain only letters and spaces.");
-      return;
-    }
-
-    const cleanPhone = normalizePhone(phone);
-    if (!isValidPhone(phone)) {
-      toast.error("Please enter a valid 10-digit Indian mobile number (e.g., +91 9876543210)");
-      return;
-    }
-
-    const trimmedEmail = email.trim().toLowerCase();
-    if (trimmedEmail && !isValidEmail(trimmedEmail)) {
-      toast.error("Please enter a valid email address");
-      return;
-    }
-
-    // Validate login account fields when checkbox is checked
-    if (createLoginAccount && !profileUserId) {
-      if (!trimmedEmail) {
-        toast.error("Email is required to create a login account.");
+  // Fetch primary location when editing an existing customer
+  useEffect(() => {
+    const fetchPrimaryLocation = async () => {
+      if (modalMode !== "edit" || !selectedCustomer?.id) {
         return;
       }
-      if (!loginPassword || loginPassword.length < 8) {
-        toast.error("Password must be at least 8 characters.");
-        return;
+
+      try {
+        const { data, error } = await supabase
+          .from("customer_locations")
+          .select("*")
+          .eq("customer_id", selectedCustomer.id)
+          .eq("is_primary", true)
+          .maybeSingle();
+
+        if (error) {
+          console.error("Failed to fetch primary location:", error);
+          return;
+        }
+
+        if (data) {
+          setLocationName(data.location_name || "");
+          setLocationCity(data.city || "");
+          setLocationState(data.state || "");
+          setLocationPincode(data.pincode || "");
+          setLocationAddress(data.address || "");
+          setLocationContactPerson(data.contact_person || "");
+          setLocationContactPhone(data.contact_phone || "");
+          console.log("Primary location loaded for edit:", data);
+        } else {
+          // No primary location found, clear fields
+          setLocationName("");
+          setLocationCity("");
+          setLocationState("");
+          setLocationPincode("");
+          setLocationAddress("");
+          setLocationContactPerson("");
+          setLocationContactPhone("");
+        }
+      } catch (err) {
+        console.error("Error fetching primary location:", err);
       }
-    }
+    };
 
-    setLoading(true);
-    try {
-      // --- Path A: Create Login Account + Customer in one Edge Function call ---
-      if (createLoginAccount && !profileUserId) {
-        setCreatingAccount(true);
-        const { data, error: fnError } = await supabase.functions.invoke("create-customer-user", {
-          body: {
-            email: trimmedEmail,
-            password: loginPassword,
-            full_name: trimmedName,
-            phone: cleanPhone,
-            role: "customer",
-            createCustomerRecord: modalMode === "add",
-            customerData: modalMode === "add" ? {
-              address: address.trim() || null,
-              customer_type: customerType,
-              branch_id: branchId || null,
-            } : {},
-          },
-        });
+    fetchPrimaryLocation();
+  }, [selectedCustomer?.id, modalMode]);
 
-        if (fnError) {
-          let errorMessage = fnError.message || "";
-          const errorResponse = fnError.context;
-          if (errorResponse instanceof Response) {
-            try {
-              const errorBody = await errorResponse.clone().json();
-              errorMessage = errorBody?.error || errorMessage;
-            } catch {
-              // Keep the client error message when the Edge Function body is unavailable.
+  const savePrimaryLocation = async (customerId: string) => {
+     console.log("=== ATTEMPTING TO SAVE LOCATION ===");
+     console.log("Customer ID for location:", customerId);
+     console.log("Location Form Data:", {
+       locationName,
+       locationCity,
+       locationState,
+       locationPincode,
+       locationAddress,
+       locationContactPerson,
+       locationContactPhone,
+     });
+
+     if (!customerId || !locationName.trim()) {
+       console.log("⚠️ No location name provided or no customer ID");
+       console.log("locationName:", locationName);
+       console.log("customerId:", customerId);
+       return false;
+     }
+
+     const locationData = {
+       customer_id: customerId,
+       location_name: locationName.trim(),
+       address: locationAddress.trim() || null,
+       city: locationCity.trim() || null,
+       state: locationState.trim() || null,
+       pincode: locationPincode.trim() || null,
+       contact_person: locationContactPerson.trim() || null,
+       contact_phone: locationContactPhone.trim() || null,
+       is_primary: true,
+     };
+
+     console.log("Location data to save:", locationData);
+
+     try {
+       // First, try to delete any existing primary location for this customer
+       const { error: deleteError } = await supabase
+         .from("customer_locations")
+         .delete()
+         .eq("customer_id", customerId)
+         .eq("is_primary", true);
+
+       if (deleteError) {
+         console.error("Failed to delete existing primary location:", deleteError);
+       }
+
+       // Then insert the new primary location
+       const { data, error: insertError } = await supabase
+         .from("customer_locations")
+         .insert(locationData)
+         .select()
+         .single();
+
+       if (insertError) {
+         console.error("❌ LOCATION SAVE FAILED:", insertError);
+         toast.warning("Customer saved, but primary location failed to save.");
+         return false;
+       }
+
+       console.log("✅ LOCATION SAVED SUCCESSFULLY:", data);
+       return true;
+     } catch (err) {
+       console.error("Unexpected error saving primary location:", err);
+       toast.warning("Customer saved, but primary location failed to save.");
+       return false;
+     }
+   };
+
+    // No longer needed — replaced by integrated creation in handleSaveCustomer
+
+   const handleSaveCustomer = async (e: React.FormEvent) => {
+     e.preventDefault();
+     if (!canModify) {
+       toast.error("You do not have permission to perform this action.");
+       return;
+     }
+
+     console.log("=== STARTING CUSTOMER SAVE ===");
+     console.log("Form data:", {
+       fullName,
+       phone,
+       email,
+       address,
+       customerType,
+       branchId,
+       profileUserId,
+       locationName,
+       locationCity,
+       locationState,
+       locationPincode,
+       locationAddress,
+       locationContactPerson,
+       locationContactPhone,
+     });
+     console.log("Is editing:", modalMode === "edit");
+
+     let customerId: string | null = null;
+
+     const trimmedName = fullName.trim();
+     if (!isValidFullName(trimmedName)) {
+       toast.error("Name must be 3-100 characters and contain only letters and spaces.");
+       return;
+     }
+
+     const cleanPhone = normalizePhone(phone);
+     if (!isValidPhone(phone)) {
+       toast.error("Please enter a valid 10-digit Indian mobile number (e.g., +91 9876543210)");
+       return;
+     }
+
+     // 🔴 Duplicate Customer Check (BUG 1 Fix)
+     const last10Digits = cleanPhone.replace(/\D/g, '').slice(-10);
+     if (last10Digits.length === 10) {
+       try {
+         let dupQuery = supabase
+           .from('customers')
+           .select('id, full_name, phone')
+           .ilike('phone', `%${last10Digits}%`);
+
+         if (modalMode === 'edit' && selectedCustomer?.id) {
+           dupQuery = dupQuery.neq('id', selectedCustomer.id);
+         }
+
+         const { data: dupCust, error: dupErr } = await dupQuery.limit(1).maybeSingle();
+         if (!dupErr && dupCust) {
+           toast.error(`⚠️ Customer with this phone number already exists: ${dupCust.full_name}. Please use existing customer.`, {
+             duration: 6000
+           });
+           return;
+         }
+       } catch (dupCheckErr) {
+         console.warn("Duplicate phone verification error:", dupCheckErr);
+       }
+     }
+
+     const trimmedEmail = email.trim().toLowerCase();
+     if (trimmedEmail && !isValidEmail(trimmedEmail)) {
+       toast.error("Please enter a valid email address");
+       return;
+     }
+
+     // Validate login account fields when checkbox is checked
+     if (createLoginAccount && !profileUserId) {
+       if (!trimmedEmail) {
+         toast.error("Email is required to create a login account.");
+         return;
+       }
+       if (!loginPassword || loginPassword.length < 8) {
+         toast.error("Password must be at least 8 characters.");
+         return;
+       }
+     }
+
+     setLoading(true);
+     try {
+       // --- Path A: Create Login Account + Customer in one Edge Function call ---
+       if (createLoginAccount && !profileUserId) {
+         setCreatingAccount(true);
+         const { data, error: fnError } = await supabase.functions.invoke("create-customer-user", {
+           body: {
+             email: trimmedEmail,
+             password: loginPassword,
+             full_name: trimmedName,
+             phone: cleanPhone,
+             role: "customer",
+             createCustomerRecord: modalMode === "add",
+             customerData: modalMode === "add" ? {
+               address: address.trim() || null,
+               customer_type: customerType,
+               branch_id: branchId || null,
+             } : {},
+           },
+         });
+
+         if (fnError) {
+           let errorMessage = fnError.message || "";
+           const errorResponse = fnError.context;
+           if (errorResponse instanceof Response) {
+             try {
+               const errorBody = await errorResponse.clone().json();
+               errorMessage = errorBody?.error || errorMessage;
+             } catch {
+               // Keep the client error message when the Edge Function body is unavailable.
+             }
+           }
+           if (/already exists|email.*(duplicate|exists)|user.*already/i.test(errorMessage)) {
+             throw new Error("An account with this email already exists.");
+           }
+           throw new Error(errorMessage || "Failed to create login account.");
+         }
+          if (data?.error) throw new Error(data.error);
+
+          // The edge function returns { user, customer } — capture both IDs safely
+          const authUserId = data?.user?.id || data?.userId;
+          if (!authUserId) throw new Error("Did not receive user ID from server.");
+
+          // If editing, update the existing customer record to link user_id
+          if (modalMode === "edit" && selectedCustomer?.id) {
+            const { error: updateError } = await supabase
+              .from("customers")
+              .update({
+                full_name: trimmedName,
+                phone: cleanPhone,
+                email: trimmedEmail || null,
+                address: address.trim() || null,
+                customer_type: customerType,
+                branch_id: branchId || null,
+                user_id: authUserId,
+              })
+              .eq("id", selectedCustomer.id);
+            if (updateError) throw updateError;
+
+            customerId = selectedCustomer.id;
+            console.log("Customer updated, ID:", customerId);
+
+            // Synchronize linked profile in profiles table so phone updates take effect everywhere
+            const linkedProfileId = authUserId;
+            if (linkedProfileId) {
+              try {
+                await supabase
+                  .from('profiles')
+                  .update({
+                    full_name: trimmedName,
+                    phone: cleanPhone || null,
+                    email: trimmedEmail || null,
+                    customer_type: customerType || null,
+                    branch_id: branchId || null,
+                  })
+                  .eq('id', linkedProfileId);
+                console.log("✅ Customer profile synchronized with updated phone:", cleanPhone);
+              } catch (profSyncErr) {
+                console.warn("Could not sync profile table on customer update:", profSyncErr);
+              }
+            }
+          } else if (modalMode === "add") {
+            console.log("Edge function response:", data);
+            // The edge function may return the created customer record directly
+            customerId = data?.customer?.id || null;
+            console.log("Customer created via edge function, ID from response:", customerId);
+
+            // Fallback: If customer ID not in response, query by user_id
+            if (!customerId && authUserId) {
+              console.log("Customer ID not in edge response, querying by user_id:", authUserId);
+              const { data: customerData, error: fetchError } = await supabase
+                .from("customers")
+                .select("id")
+                .eq("user_id", authUserId)
+                .single();
+
+              if (fetchError) {
+                console.error("Failed to fetch customer ID after edge function:", fetchError);
+              } else if (customerData?.id) {
+                customerId = customerData.id;
+                console.log("✅ Successfully retrieved Customer ID from DB:", customerId);
+              }
             }
           }
-          if (/already exists|email.*(duplicate|exists)|user.*already/i.test(errorMessage)) {
-            throw new Error("An account with this email already exists.");
-          }
-          throw new Error(errorMessage || "Failed to create login account.");
-        }
-        if (data?.error) throw new Error(data.error);
-        if (!data?.userId) throw new Error("Did not receive user ID from server.");
 
-        const newUserId = data.userId;
+         toast.success(
+           `Customer ${trimmedName} saved with login account!\nEmail: ${trimmedEmail}`,
+           { duration: 6000 }
+         );
+         setCreatingAccount(false);
+       } else {
+         // --- Path B: Just save customer data (no login account creation) ---
+         const payload = {
+           full_name: trimmedName,
+           phone: cleanPhone,
+           email: trimmedEmail || null,
+           address: address.trim() || null,
+           customer_type: customerType,
+           branch_id: branchId || null,
+           user_id: (profileUserId && profileUserId !== "none_clear") ? profileUserId : null
+         };
 
-        // If editing, update the existing customer record to link user_id
-        if (modalMode === "edit" && selectedCustomer?.id) {
-          const { error: updateError } = await supabase
-            .from("customers")
-            .update({
-              full_name: trimmedName,
-              phone: cleanPhone,
-              email: trimmedEmail || null,
-              address: address.trim() || null,
-              customer_type: customerType,
-              branch_id: branchId || null,
-              user_id: newUserId,
-            })
-            .eq("id", selectedCustomer.id);
-          if (updateError) throw updateError;
-        }
+         if (modalMode === "add") {
+           console.log("Inserting new customer...");
+           const { data: insertedCustomer, error } = await supabase.from('customers').insert([payload]).select('id').single();
+           if (error) throw error;
+           customerId = insertedCustomer?.id || null;
+           console.log("Customer created with ID:", customerId);
+         } else {
+           console.log("Updating existing customer:", selectedCustomer.id);
+           const { error } = await supabase
+             .from('customers')
+             .update(payload)
+             .eq('id', selectedCustomer.id);
+           if (error) throw error;
+           customerId = selectedCustomer.id;
+           console.log("Customer updated, ID:", customerId);
 
-        toast.success(
-          `Customer ${trimmedName} saved with login account!\nEmail: ${trimmedEmail}`,
-          { duration: 6000 }
-        );
-        setCreatingAccount(false);
-      } else {
-        // --- Path B: Just save customer data (no login account creation) ---
-        const payload = {
-          full_name: trimmedName,
-          phone: cleanPhone,
-          email: trimmedEmail || null,
-          address: address.trim() || null,
-          customer_type: customerType,
-          branch_id: branchId || null,
-          user_id: (profileUserId && profileUserId !== "none_clear") ? profileUserId : null
-        };
+           // Synchronize linked profile in profiles table so phone updates take effect everywhere
+           const linkedProfileId = (profileUserId && profileUserId !== "none_clear") ? profileUserId : selectedCustomer.user_id;
+           if (linkedProfileId) {
+             try {
+               await supabase
+                 .from('profiles')
+                 .update({
+                   full_name: trimmedName,
+                   phone: cleanPhone || null,
+                   email: trimmedEmail || null,
+                   customer_type: customerType || null,
+                   branch_id: branchId || null,
+                 })
+                 .eq('id', linkedProfileId);
+               console.log("✅ Customer profile synchronized with updated phone:", cleanPhone);
+             } catch (profSyncErr) {
+               console.warn("Could not sync profile table on customer update:", profSyncErr);
+             }
+           }
+         }
+       }
 
-        if (modalMode === "add") {
-          const { error } = await supabase.from('customers').insert([payload]);
-          if (error) throw error;
-          toast.success(`Customer ${trimmedName} added successfully!`);
-        } else {
-          const { error } = await supabase
-            .from('customers')
-            .update(payload)
-            .eq('id', selectedCustomer.id);
-          if (error) throw error;
-          toast.success(`Customer ${trimmedName} updated successfully!`);
-        }
-      }
+       // 5. CRITICAL: Save location with the customerId
+       console.log("=== ATTEMPTING TO SAVE LOCATION ===");
+       console.log("Customer ID:", customerId);
+       console.log("Location name:", locationName);
 
-      setSelectedCustomer(null);
-      customerDraft.clear();
-      await refetch();
-      await queryClient.invalidateQueries({ queryKey: ["admin-profiles-list"] });
-      await queryClient.invalidateQueries({ queryKey: ["customer-profiles-to-link"] });
-    } catch (error: any) {
-      console.error("Save customer error:", error);
-      toast.error(error.message || "An error occurred while saving.");
-      setCreatingAccount(false);
-    } finally {
-      setLoading(false);
-    }
-  };
+       if (!customerId) {
+         console.error("ERROR: customerId is null/undefined!");
+         toast.warning("Customer saved, but could not determine customer ID for location.");
+       } else if (locationName.trim()) {
+         const locationSaved = await savePrimaryLocation(customerId);
+         console.log("Location save result:", locationSaved);
+       } else {
+         console.log("No location name provided, skipping location save.");
+       }
+
+       setSelectedCustomer(null);
+       customerDraft.clear();
+       await refetch();
+       await queryClient.invalidateQueries({ queryKey: ["admin-profiles-list"] });
+       await queryClient.invalidateQueries({ queryKey: ["customer-profiles-to-link"] });
+     } catch (error: any) {
+       console.error("=== SAVE FAILED ===");
+       console.error("Error:", error);
+       toast.error(error.message || "An error occurred while saving.");
+       setCreatingAccount(false);
+     } finally {
+       setLoading(false);
+     }
+   };
 
   const handleDelete = async (customerId: string, userId: string | null, name: string) => {
     if (!isAdmin) {
@@ -475,7 +787,12 @@ export default function Customers() {
       (c.email || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
       (c.branches?.branch_name || "").toLowerCase().includes(searchQuery.toLowerCase());
     
-    const matchesType = typeFilter === "all" || c.customer_type === typeFilter;
+    const matchesType = 
+      typeFilter === "all" || 
+      (typeFilter === "Retail" && (!c.customer_type || c.customer_type === "Retail")) ||
+      (typeFilter === "Government" && (c.customer_type === "Government" || c.customer_type === "Partner")) ||
+      (typeFilter === "Walk-in" && (c.customer_type === "Walk-in" || (c.customer_type || "").toLowerCase().includes("walk-in"))) ||
+      c.customer_type === typeFilter;
 
     return matchesSearch && matchesType;
   }) || [];
@@ -494,61 +811,190 @@ export default function Customers() {
         ? [1, "ellipsis", totalPages - 4, totalPages - 3, totalPages - 2, totalPages - 1, totalPages]
         : [1, "ellipsis", currentPage - 1, currentPage, currentPage + 1, "ellipsis", totalPages];
 
+  const stats = {
+    total: customers?.length || 0,
+    retail: customers?.filter((c: any) => !c.customer_type || c.customer_type === 'Retail').length || 0,
+    corporate: customers?.filter((c: any) => c.customer_type === 'Corporate').length || 0,
+    government: customers?.filter((c: any) => c.customer_type === 'Government').length || 0,
+    partner: customers?.filter((c: any) => c.customer_type === 'Partner').length || 0,
+    walkin: customers?.filter((c: any) => {
+      const t = (c.customer_type || "").toLowerCase();
+      return t === "walk-in" || t.includes("walk-in");
+    }).length || 0,
+  };
+
   return (
-    <div className="space-y-8 relative overflow-x-hidden">
+    <div className="space-y-8 relative overflow-x-hidden pb-12">
+      {/* Background Ambient Glows */}
+      <div className="bg-ambient-blur top-0 right-10 bg-primary/10" />
+      <div className="bg-ambient-blur top-80 left-10 bg-emerald-500/10" />
+
       {/* Header Section with Title and Buttons */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 relative z-10">
-        {/* Page Title & Description */}
-        <div className="flex-1 min-w-0">
-          <h1 className="text-2xl sm:text-3xl font-bold">Customer Profiles</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Manage customer directory, branching details, and client configurations.
-          </p>
+      <div className="glass-card rounded-3xl p-6 sm:p-8 border border-border/60 shadow-xl relative overflow-hidden z-10">
+        <div className="absolute top-0 right-0 w-96 h-96 bg-gradient-to-bl from-primary/10 via-teal-500/5 to-transparent rounded-full filter blur-3xl pointer-events-none" />
+
+        <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-6 relative z-10">
+          {/* Page Title & Description */}
+          <div className="space-y-1.5 flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-extrabold bg-primary/10 text-primary border border-primary/20 shadow-sm">
+                <Users className="w-3.5 h-3.5" /> CLIENT REGISTRY
+              </span>
+            </div>
+            <h1 className="text-2xl sm:text-3xl font-display font-black tracking-tight text-foreground">
+              Customer Profiles & Accounts
+            </h1>
+            <p className="text-sm text-muted-foreground max-w-2xl leading-relaxed">
+              Manage enterprise clients, retail accounts, multi-branch service addresses, and customer portal login credentials.
+            </p>
+          </div>
+          
+          {/* Action Buttons - Responsive Layout */}
+          {canModify && (
+            <div className="flex flex-wrap items-center gap-2.5 w-full lg:w-auto shrink-0">
+              <ExportButton variant="customer" />
+              
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={downloadSample}
+                className="rounded-xl border-border/70 hover:bg-muted/80 h-10 px-3.5 gap-2 shadow-sm font-semibold text-xs"
+                title="Download CSV Template"
+              >
+                <Download className="w-4 h-4 text-primary shrink-0" />
+                <span>Sample CSV</span>
+              </Button>
+
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setIsCustomerImportOpen(true)}
+                className="rounded-xl border-border/70 hover:bg-muted/80 h-10 px-3.5 gap-2 shadow-sm font-semibold text-xs"
+                title="Bulk Import Customers"
+              >
+                <Upload className="w-4 h-4 text-emerald-500 shrink-0" />
+                <span>Import CSV</span>
+              </Button>
+
+              <Button 
+                size="sm"
+                onClick={() => handleOpenModal(null, "add")}
+                className="gradient-primary text-white hover:opacity-95 rounded-xl h-10 px-4 gap-2 font-bold shadow-glow text-xs"
+              >
+                <Plus className="w-4 h-4 shrink-0" />
+                <span>Add Customer</span>
+              </Button>
+            </div>
+          )}
+          
+          {isViewOnly && (
+            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-muted border border-border/50 text-muted-foreground text-xs font-semibold uppercase tracking-wider">
+              <ShieldCheck className="w-4 h-4 text-primary" /> View Only
+            </div>
+          )}
         </div>
-        
-        {/* Action Buttons - Responsive Layout */}
-        {canModify && (
-          <div className="flex flex-wrap gap-2 w-full sm:w-auto">
-            <ExportButton variant="customer" />
-            <button
-              onClick={downloadSample}
-              className="px-3 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 flex items-center gap-1.5 whitespace-nowrap flex-1 sm:flex-none min-w-[80px] justify-center"
-            >
-              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-              </svg>
-              <span className="text-xs sm:text-sm">Sample</span>
-            </button>
-            <button
-              onClick={() => setIsCustomerImportOpen(true)}
-              className="px-3 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 flex items-center gap-1.5 whitespace-nowrap flex-1 sm:flex-none min-w-[80px] justify-center"
-            >
-              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-              </svg>
-              <span className="text-xs sm:text-sm">Import</span>
-            </button>
-            <Button 
-              onClick={() => handleOpenModal(null, "add")}
-              className="flex items-center gap-1.5 whitespace-nowrap flex-1 sm:flex-none min-w-[80px] justify-center bg-gradient-to-r from-blue-600 to-teal-600 text-white"
-            >
-              <Plus className="w-4 h-4 shrink-0" />
-              <span className="text-xs sm:text-sm">Add</span>
-            </Button>
+      </div>
+
+      {/* 📊 Stat Summary Grid */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 relative z-10">
+        {/* Total Accounts */}
+        <div 
+          onClick={() => setTypeFilter("all")}
+          className={`glass-card rounded-2xl p-4 border shadow-sm flex items-center justify-between cursor-pointer transition-all hover:scale-[1.02] ${
+            typeFilter === "all"
+              ? "border-primary ring-2 ring-primary/20 bg-primary/5"
+              : "border-border/60 hover:border-primary/40"
+          }`}
+          title="Click to view all customers"
+        >
+          <div>
+            <span className="text-[11px] uppercase font-bold text-muted-foreground block">Total Accounts</span>
+            <span className="text-2xl font-black text-foreground mt-0.5 block">{stats.total}</span>
           </div>
-        )}
-        
-        {isViewOnly && (
-          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-100 border border-slate-200 text-slate-600 text-xs font-semibold uppercase tracking-wider">
-            <ShieldCheck className="w-4 h-4 text-slate-500" /> View Only
+          <div className="w-10 h-10 rounded-xl bg-primary/10 text-primary flex items-center justify-center">
+            <Users className="w-5 h-5" />
           </div>
-        )}
+        </div>
+
+        {/* Retail Clients */}
+        <div 
+          onClick={() => setTypeFilter(typeFilter === "Retail" ? "all" : "Retail")}
+          className={`glass-card rounded-2xl p-4 border shadow-sm flex items-center justify-between cursor-pointer transition-all hover:scale-[1.02] ${
+            typeFilter === "Retail"
+              ? "border-teal-500 ring-2 ring-teal-500/20 bg-teal-50/20 dark:bg-teal-950/20"
+              : "border-border/60 hover:border-teal-400/50"
+          }`}
+          title="Click to filter by Retail clients"
+        >
+          <div>
+            <span className="text-[11px] uppercase font-bold text-teal-600 dark:text-teal-400 block">Retail Clients</span>
+            <span className="text-2xl font-black text-teal-600 dark:text-teal-400 mt-0.5 block">{stats.retail}</span>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-teal-500/10 text-teal-600 flex items-center justify-center">
+            <UserCheck className="w-5 h-5" />
+          </div>
+        </div>
+
+        {/* Corporate */}
+        <div 
+          onClick={() => setTypeFilter(typeFilter === "Corporate" ? "all" : "Corporate")}
+          className={`glass-card rounded-2xl p-4 border shadow-sm flex items-center justify-between cursor-pointer transition-all hover:scale-[1.02] ${
+            typeFilter === "Corporate"
+              ? "border-indigo-500 ring-2 ring-indigo-500/20 bg-indigo-50/20 dark:bg-indigo-950/20"
+              : "border-border/60 hover:border-indigo-400/50"
+          }`}
+          title="Click to filter by Corporate accounts"
+        >
+          <div>
+            <span className="text-[11px] uppercase font-bold text-indigo-600 dark:text-indigo-400 block">Corporate</span>
+            <span className="text-2xl font-black text-indigo-600 dark:text-indigo-400 mt-0.5 block">{stats.corporate}</span>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-indigo-500/10 text-indigo-600 flex items-center justify-center">
+            <Building className="w-5 h-5" />
+          </div>
+        </div>
+
+        {/* Gov / Partners */}
+        <div 
+          onClick={() => setTypeFilter(typeFilter === "Government" ? "all" : "Government")}
+          className={`glass-card rounded-2xl p-4 border shadow-sm flex items-center justify-between cursor-pointer transition-all hover:scale-[1.02] ${
+            typeFilter === "Government" || typeFilter === "Partner"
+              ? "border-purple-500 ring-2 ring-purple-500/20 bg-purple-50/20 dark:bg-purple-950/20"
+              : "border-border/60 hover:border-purple-400/50"
+          }`}
+          title="Click to filter by Government & Partners"
+        >
+          <div>
+            <span className="text-[11px] uppercase font-bold text-purple-600 dark:text-purple-400 block">Gov / Partners</span>
+            <span className="text-2xl font-black text-purple-600 dark:text-purple-400 mt-0.5 block">{stats.government + stats.partner}</span>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-purple-500/10 text-purple-600 flex items-center justify-center">
+            <ShieldCheck className="w-5 h-5" />
+          </div>
+        </div>
+
+        {/* Walk-in Clients */}
+        <div 
+          onClick={() => setTypeFilter(typeFilter === "Walk-in" ? "all" : "Walk-in")}
+          className={`glass-card rounded-2xl p-4 border shadow-sm flex items-center justify-between cursor-pointer transition-all hover:scale-[1.02] ${
+            typeFilter === "Walk-in"
+              ? "border-amber-500 ring-2 ring-amber-500/20 bg-amber-50/20 dark:bg-amber-950/20"
+              : "border-border/60 hover:border-amber-400/50"
+          }`}
+          title="Click to filter by Walk-in clients"
+        >
+          <div>
+            <span className="text-[11px] uppercase font-bold text-amber-600 dark:text-amber-400 block">Walk-in Clients</span>
+            <span className="text-2xl font-black text-amber-600 dark:text-amber-400 mt-0.5 block">{stats.walkin}</span>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-600 flex items-center justify-center">
+            <UserPlus className="w-5 h-5" />
+          </div>
+        </div>
       </div>
 
       {/* Filter / Search section */}
-      <div className="flex flex-col md:flex-row gap-4 items-center justify-between bg-white p-4 rounded-xl border border-slate-200/80 shadow-sm">
+      <div className="glass-card rounded-2xl p-4 border border-border/60 shadow-sm flex flex-col md:flex-row gap-4 items-center justify-between relative z-10">
         <div className="relative w-full md:max-w-md">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <Input
@@ -571,6 +1017,7 @@ export default function Customers() {
               <SelectItem value="Corporate">Corporate</SelectItem>
               <SelectItem value="Government">Government</SelectItem>
               <SelectItem value="Partner">Partner</SelectItem>
+              <SelectItem value="Walk-in">Walk-in / Direct</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -668,6 +1115,7 @@ export default function Customers() {
                     </td>
                     <td className="py-3 px-4">
                       <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
+                        c.customer_type === 'Walk-in' ? 'bg-amber-100/90 border border-amber-300 text-amber-800' :
                         c.customer_type === 'Corporate' ? 'bg-indigo-50 border border-indigo-200 text-indigo-600' :
                         c.customer_type === 'Government' ? 'bg-rose-50 border border-rose-200 text-rose-600' :
                         c.customer_type === 'Partner' ? 'bg-amber-50 border border-amber-200 text-amber-600' :
@@ -686,6 +1134,15 @@ export default function Customers() {
                           title="View customer details"
                         >
                           <Eye className="w-4 h-4" />
+                        </Button>
+                        <Button 
+                          variant="ghost" 
+                          size="icon" 
+                          onClick={() => openLocationManager(c.id, c.full_name)}
+                          className="text-muted-foreground hover:text-emerald-600 hover:bg-emerald-50 rounded-lg h-8 w-8 p-0"
+                          title="Manage Multi-Locations"
+                        >
+                          <MapPin className="w-4 h-4 text-emerald-600" />
                         </Button>
                         {canModify && (
                           <Button 
@@ -774,6 +1231,7 @@ export default function Customers() {
                       {c.email && <p className="text-xs text-slate-400 font-light mt-0.5 truncate" title={c.email}>{c.email}</p>}
                     </div>
                     <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider shrink-0 ${
+                      c.customer_type === 'Walk-in' ? 'bg-amber-100/90 border border-amber-300 text-amber-800' :
                       c.customer_type === 'Corporate' ? 'bg-indigo-50 border border-indigo-200 text-indigo-600' :
                       c.customer_type === 'Government' ? 'bg-rose-50 border border-rose-200 text-rose-600' :
                       c.customer_type === 'Partner' ? 'bg-amber-50 border border-amber-200 text-amber-600' :
@@ -805,6 +1263,15 @@ export default function Customers() {
                       className="text-xs rounded-lg h-8 font-semibold flex-1"
                     >
                       <Eye className="w-3.5 h-3.5 mr-1.5" /> Details
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => openLocationManager(c.id, c.full_name)}
+                      className="text-xs rounded-lg h-8 font-semibold flex-1 border-emerald-100 text-emerald-600 hover:bg-emerald-50/50"
+                      title="Manage Multi-Locations"
+                    >
+                      <MapPin className="w-3.5 h-3.5 mr-1.5" /> Locations
                     </Button>
                     {canModify && (
                       <Button
@@ -979,6 +1446,16 @@ export default function Customers() {
                     >
                       Close Details
                     </Button>
+                    {(canModify || user?.role === 'customer') && (
+                      <Button 
+                        type="button" 
+                        variant="outline"
+                        className="flex-1 rounded-xl h-11 font-bold text-sm border-emerald-200 text-emerald-700 hover:bg-emerald-50"
+                        onClick={() => setIsLocationManagerOpen(true)}
+                      >
+                        <MapPin className="w-4 h-4 mr-2 text-emerald-600" /> Manage Locations
+                      </Button>
+                    )}
                     {canModify && (
                       <Button 
                         type="button" 
@@ -994,6 +1471,23 @@ export default function Customers() {
                 /* Add / Edit Form Mode */
                 <form onSubmit={handleSaveCustomer} className="space-y-4 flex flex-col flex-1 justify-between">
                   <div className="space-y-4">
+                    {modalMode === "edit" && selectedCustomer?.id && (
+                      <div className="p-3 bg-emerald-50/70 border border-emerald-200/80 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div className="flex items-center gap-2 text-xs text-emerald-800">
+                          <MapPin className="w-4 h-4 text-emerald-600 shrink-0" />
+                          <span>Need to manage multiple installation / service addresses?</span>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setIsLocationManagerOpen(true)}
+                          className="h-8 text-xs font-semibold text-emerald-700 bg-white border-emerald-200 hover:bg-emerald-50 shrink-0"
+                        >
+                          Manage Multi-Locations
+                        </Button>
+                      </div>
+                    )}
                     <div className="space-y-1.5">
                       <label className="text-xs font-semibold text-slate-600">Full Name <span className="text-destructive">*</span></label>
                       <Input
@@ -1045,6 +1539,7 @@ export default function Customers() {
                             <SelectItem value="Corporate">Corporate</SelectItem>
                             <SelectItem value="Government">Government</SelectItem>
                             <SelectItem value="Partner">Partner</SelectItem>
+                            <SelectItem value="Walk-in">Walk-in / Direct</SelectItem>
                           </SelectContent>
                         </Select>
                       </div>
@@ -1134,7 +1629,91 @@ export default function Customers() {
                       )}
                     </div>
 
-                    {/* Manual login-account linking is disabled. New accounts are linked automatically. */}
+                                         {/* Primary Location Fields */}
+                     <div className="bg-slate-50 p-4 rounded-xl border border-slate-200/60 space-y-3">
+                       <div className="flex items-center gap-2">
+                         <MapPin className="w-4 h-4 text-primary" />
+                         <span className="text-xs font-bold text-slate-700 uppercase tracking-wider">Primary Location</span>
+                       </div>
+                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                         <div className="space-y-1.5">
+                           <label className="text-xs font-semibold text-slate-600">Location Name <span className="text-destructive">*</span></label>
+                           <Input
+                             value={locationName}
+                             onChange={(e) => setLocationName(e.target.value)}
+                             placeholder="Head Office, Warehouse, etc."
+                             required={!!locationName}
+                             disabled={loading}
+                             className="w-full rounded-lg border-slate-200 h-9"
+                           />
+                         </div>
+                         <div className="space-y-1.5">
+                           <label className="text-xs font-semibold text-slate-600">City</label>
+                           <Input
+                             value={locationCity}
+                             onChange={(e) => setLocationCity(e.target.value)}
+                             placeholder="Hyderabad"
+                             disabled={loading}
+                             className="w-full rounded-lg border-slate-200 h-9"
+                           />
+                         </div>
+                         <div className="space-y-1.5">
+                           <label className="text-xs font-semibold text-slate-600">State</label>
+                           <Input
+                             value={locationState}
+                             onChange={(e) => setLocationState(e.target.value)}
+                             placeholder="Telangana"
+                             disabled={loading}
+                             className="w-full rounded-lg border-slate-200 h-9"
+                           />
+                         </div>
+                         <div className="space-y-1.5">
+                           <label className="text-xs font-semibold text-slate-600">Pincode</label>
+                           <Input
+                             value={locationPincode}
+                             onChange={(e) => setLocationPincode(e.target.value)}
+                             placeholder="500081"
+                             disabled={loading}
+                             className="w-full rounded-lg border-slate-200 h-9"
+                           />
+                         </div>
+                       </div>
+                       <div className="space-y-1.5">
+                         <label className="text-xs font-semibold text-slate-600">Address</label>
+                         <textarea
+                           value={locationAddress}
+                           onChange={(e) => setLocationAddress(e.target.value)}
+                           placeholder="Street, Area, Landmark..."
+                           disabled={loading}
+                           rows={2}
+                           className="w-full p-2 border border-slate-200 rounded-lg text-sm bg-transparent focus:ring-2 focus:ring-primary focus:border-transparent outline-none resize-none transition-all"
+                         />
+                       </div>
+                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                         <div className="space-y-1.5">
+                           <label className="text-xs font-semibold text-slate-600">Contact Person</label>
+                           <Input
+                             value={locationContactPerson}
+                             onChange={(e) => setLocationContactPerson(e.target.value)}
+                             placeholder="Ravi Kumar"
+                             disabled={loading}
+                             className="w-full rounded-lg border-slate-200 h-9"
+                           />
+                         </div>
+                         <div className="space-y-1.5">
+                           <label className="text-xs font-semibold text-slate-600">Contact Phone</label>
+                           <Input
+                             value={locationContactPhone}
+                             onChange={(e) => setLocationContactPhone(e.target.value)}
+                             placeholder="9876543210"
+                             disabled={loading}
+                             className="w-full rounded-lg border-slate-200 h-9"
+                           />
+                         </div>
+                       </div>
+                     </div>
+
+                     {/* Manual login-account linking is disabled. New accounts are linked automatically. */}
 
                     <div className="space-y-1.5">
                       <label className="text-xs font-semibold text-slate-600">Physical Address</label>
@@ -1150,34 +1729,60 @@ export default function Customers() {
                   </div>
 
                   <div className="flex items-center gap-3 pt-6 border-t border-slate-100 mt-6">
-                    {modalMode === "add" && customerDraft.hasDraft() && (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => {
-                          customerDraft.clear();
-                          setFullName("");
-                          setPhone("");
-                          setEmail("");
-                          setAddress("");
-                          setCustomerType("Retail");
-                          setBranchId("");
-                          setProfileUserId("");
-                          setCreateLoginAccount(false);
-                          setLoginPassword("");
-                          toast.success("Draft cleared");
-                        }}
-                        className="text-xs text-slate-500 hover:text-destructive"
-                      >
-                        Clear Draft
-                      </Button>
-                    )}
+                      {modalMode === "add" && customerDraft.hasDraft() && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            customerDraft.clear();
+                            setFullName("");
+                            setPhone("");
+                            setEmail("");
+                            setAddress("");
+                            setCustomerType("Retail");
+                            setBranchId("");
+                            setProfileUserId("");
+                            setCreateLoginAccount(false);
+                            setLoginPassword("");
+                            setLocationName("");
+                            setLocationCity("");
+                            setLocationState("");
+                            setLocationPincode("");
+                            setLocationAddress("");
+                            setLocationContactPerson("");
+                            setLocationContactPhone("");
+                            toast.success("Draft cleared");
+                          }}
+                          className="text-xs text-slate-500 hover:text-destructive"
+                        >
+                          Clear Draft
+                        </Button>
+                      )}
                     <Button 
                       type="button" 
                       variant="outline" 
                       className="flex-1 rounded-xl h-11 font-bold text-sm"
-                      onClick={() => setSelectedCustomer(null)}
+                      onClick={() => {
+                        setSelectedCustomer(null);
+                        customerDraft.clear();
+                        setFullName("");
+                        setPhone("");
+                        setEmail("");
+                        setAddress("");
+                        setCustomerType("Retail");
+                        setBranchId("");
+                        setProfileUserId("");
+                        setCreateLoginAccount(false);
+                        setLoginPassword("");
+                        setLocationName("");
+                        setLocationCity("");
+                        setLocationState("");
+                        setLocationPincode("");
+                        setLocationAddress("");
+                        setLocationContactPerson("");
+                        setLocationContactPhone("");
+                      }}
                       disabled={loading}
                     >
                       Cancel
@@ -1210,6 +1815,18 @@ export default function Customers() {
           refetch();
           queryClient.invalidateQueries({ queryKey: ["admin-profiles-list"] });
           queryClient.invalidateQueries({ queryKey: ["customer-profiles-to-link"] });
+        }}
+      />
+      <CustomerLocationManager
+        customerId={selectedCustomerId || selectedCustomer?.id || ""}
+        customerName={selectedCustomerName || selectedCustomer?.full_name}
+        open={locationManagerOpen || isLocationManagerOpen}
+        onOpenChange={(open) => {
+          setLocationManagerOpen(open);
+          setIsLocationManagerOpen(open);
+        }}
+        onSaved={() => {
+          refetch();
         }}
       />
     </div>

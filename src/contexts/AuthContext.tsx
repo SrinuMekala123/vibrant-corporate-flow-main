@@ -195,15 +195,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   async function signIn(email: string, password: string) {
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-    
-    if (!error && data?.user) {
-      if (data.user.email && data.user.email !== email) {
-        await supabase.auth.signOut();
-        return { error: new Error("Invalid email or password (emails are case-sensitive).") };
-      }
-    }
-    
+    const cleanEmail = email.trim().toLowerCase();
+    const { data, error } = await supabase.auth.signInWithPassword({ email: cleanEmail, password });
     return { error };
   }
 

@@ -195,6 +195,30 @@ serve(async (req: Request): Promise<Response> => {
         continue;
       }
 
+      // Create primary location if location data is provided
+      const locationName = String(row.location_name || "").trim();
+      if (locationName) {
+        const locationPayload = {
+          customer_id: authUserId,
+          location_name: locationName,
+          address: String(row.location_address || "").trim() || null,
+          city: String(row.location_city || "").trim() || null,
+          state: String(row.location_state || "").trim() || null,
+          pincode: String(row.location_pincode || "").trim() || null,
+          contact_person: String(row.location_contact_person || "").trim() || null,
+          contact_phone: String(row.location_contact_phone || "").trim() || null,
+          is_primary: true,
+        };
+
+        const { error: locationError } = await admin
+          .from("customer_locations")
+          .insert(locationPayload);
+
+        if (locationError) {
+          console.warn(`Row ${rowNum}: Failed to create location:`, locationError.message);
+        }
+      }
+
       results.success++;
     } catch (err: any) {
       results.failed++;

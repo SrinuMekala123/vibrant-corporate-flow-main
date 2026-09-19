@@ -295,6 +295,7 @@ export default function AssetImportModal({
           branch_id: resolvedBranchId,
           category,
           product_name: productName,
+          brand: manufacturer || null,
           model_number: modelNumber || null,
           serial_number: serialNumber || null,
           purchase_date: purchaseDate,

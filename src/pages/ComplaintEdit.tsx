@@ -1,7 +1,7 @@
 import { useParams, useNavigate } from "react-router-dom";
 import { useState, useMemo, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
-import { ArrowLeft, Save, Filter, Loader2, Upload, X, Info, User, MapPin, ShieldCheck, AlertTriangle, Search } from "lucide-react";
+import { ArrowLeft, Save, Filter, Loader2, Upload, X, Info, User, MapPin, ShieldCheck, AlertTriangle, Search, CheckCircle2, Crown, Package } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -15,16 +15,25 @@ import { complaintService } from "@/services/complaintService";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import browserImageCompression from "browser-image-compression";
+import { compressVideoForUpload } from "@/lib/videoCompression";
 import { notificationService } from "@/services/notificationService";
-import { useFormDraft } from "@/hooks/useFormDraft";
+import DatePicker from "react-datepicker";
+import "react-datepicker/dist/react-datepicker.css";
+
+const formatDateToYYYYMMDD = (d: Date | null) => {
+  if (!d) return null;
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  const year = d.getFullYear();
+  const month = pad(d.getMonth() + 1);
+  const day = pad(d.getDate());
+  return `${year}-${month}-${day}`;
+};
 
 const formatDateTimeLocal = (dateStr?: string) => {
   if (!dateStr) return "";
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) return "";
-  
   const pad = (n: number) => n.toString().padStart(2, '0');
-  
   const year = d.getFullYear();
   const month = pad(d.getMonth() + 1);
   const day = pad(d.getDate());
@@ -34,13 +43,56 @@ const formatDateTimeLocal = (dateStr?: string) => {
   return `${year}-${month}-${day}T${hours}:${minutes}`;
 };
 
-const isAssetWarrantyActive = (purchaseDate: string, warrantyMonths: number) => {
-  if (!purchaseDate) return false;
-  const expiryDate = new Date(purchaseDate);
-  expiryDate.setMonth(expiryDate.getMonth() + Number(warrantyMonths || 0));
+// Helper: Calculate Asset Warranty Expiry Details
+const getAssetWarrantyDetails = (purchaseDateStr?: string, months?: number) => {
+  if (!purchaseDateStr) {
+    return {
+      status: "Unknown",
+      isExpired: true,
+      expiryDateStr: "Not Specified",
+      purchaseDateStr: "Not Specified",
+      months: Number(months || 0),
+      expiryDate: null,
+      daysRemaining: 0
+    };
+  }
+
+  const pDate = new Date(purchaseDateStr);
+  if (isNaN(pDate.getTime())) {
+    return {
+      status: "Unknown",
+      isExpired: true,
+      expiryDateStr: "Invalid Date",
+      purchaseDateStr: "Invalid Date",
+      months: Number(months || 0),
+      expiryDate: null,
+      daysRemaining: 0
+    };
+  }
+
+  const expDate = new Date(pDate);
+  expDate.setMonth(expDate.getMonth() + Number(months || 0));
+
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  return expiryDate >= today;
+
+  const diffTime = expDate.getTime() - today.getTime();
+  const daysRemaining = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+  const isExpired = expDate < today;
+
+  return {
+    status: isExpired ? "Expired" : "Active",
+    isExpired,
+    expiryDateStr: expDate.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
+    purchaseDateStr: pDate.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
+    months: Number(months || 0),
+    daysRemaining,
+    expiryDate: expDate
+  };
+};
+
+const isAssetWarrantyActive = (purchaseDate: string, warrantyMonths: number) => {
+  return !getAssetWarrantyDetails(purchaseDate, warrantyMonths).isExpired;
 };
 
 const ComplaintEdit = () => {
@@ -94,9 +146,46 @@ const ComplaintEdit = () => {
   const { data: customers, isLoading: isCustomersLoading } = useQuery({
     queryKey: ['customers-list'],
     queryFn: async () => {
-      const { data, error } = await supabase.from('profiles').select('id, full_name, email, phone').eq('role', 'customer');
-      if (error) throw error;
-      return data;
+      // 1. Fetch from customers table (where all BTL and direct customers are created)
+      const { data: custList } = await supabase
+        .from('customers')
+        .select('id, user_id, full_name, email, phone, customer_type')
+        .order('full_name', { ascending: true });
+
+      // 2. Fetch from profiles table (auth users with customer role)
+      const { data: profList } = await supabase
+        .from('profiles')
+        .select('id, full_name, email, phone')
+        .eq('role', 'customer');
+
+      const map = new Map<string, any>();
+
+      (custList || []).forEach((c: any) => {
+        map.set(c.id, {
+          id: c.id,
+          user_id: c.user_id,
+          full_name: c.full_name,
+          email: c.email || '',
+          phone: c.phone || '',
+          customer_type: c.customer_type
+        });
+      });
+
+      (profList || []).forEach((p: any) => {
+        const existing = Array.from(map.values()).find((c: any) => c.user_id === p.id);
+        if (!existing) {
+          map.set(p.id, {
+            id: p.id,
+            user_id: p.id,
+            full_name: p.full_name,
+            email: p.email || '',
+            phone: p.phone || '',
+            customer_type: 'Registered'
+          });
+        }
+      });
+
+      return Array.from(map.values());
     },
     enabled: isAdminOrSupervisor,
   });
@@ -156,13 +245,20 @@ const ComplaintEdit = () => {
     enabled: !!user?.id && isCustomer,
   });
 
+  const [customerType, setCustomerType] = useState<"Existing BTL Customer" | "New / Non-BTL Customer">("Existing BTL Customer");
   const [form, setForm] = useState({
     title: "",
     customerId: "",
     customerName: "",
     customerPhone: "",
+    customerEmail: "",
     location: "",
+    locationId: "",
     fieldOfWork: "",
+    coverage: "Under Warranty",
+    chargeableService: "No",
+    serviceCharge: 0,
+    brand: "",
     status: "unassigned",
     severity: "minor" as SeverityTier,
     assignedSupervisor: "",
@@ -170,6 +266,8 @@ const ComplaintEdit = () => {
     description: "",
     supervisor_notes: "",
     targetEndTime: "",
+    scheduledDate: null as Date | null,
+    scheduledTime: "",
     customerLat: null as number | null,
     customerLng: null as number | null,
   });
@@ -177,8 +275,11 @@ const ComplaintEdit = () => {
   const [evidenceUrls, setEvidenceUrls] = useState<string[]>([]);
   const [selectedSupervisorId, setSelectedSupervisorId] = useState("");
   const [selectedTechnicianId, setSelectedTechnicianId] = useState("");
+  const [selectedTechnicianIds, setSelectedTechnicianIds] = useState<string[]>([]);
+  const [leadTechnicianId, setLeadTechnicianId] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgressText, setUploadProgressText] = useState("");
   const [isLocating, setIsLocating] = useState(false);
   const [currentUserFullName, setCurrentUserFullName] = useState("");
   const [showLocationSuggestions, setShowLocationSuggestions] = useState(false);
@@ -187,48 +288,160 @@ const ComplaintEdit = () => {
   const [availableCategories, setAvailableCategories] = useState<string[]>(['Solar', 'Networking', 'Electrical', 'CCTV', 'Other']);
   const [isAssetsLoading, setIsAssetsLoading] = useState(false);
   const [customerAssets, setCustomerAssets] = useState<any[]>([]);
+  const [selectedAssetId, setSelectedAssetId] = useState("");
   const [availableFieldOfWork, setAvailableFieldOfWork] = useState<string[]>([]);
+
+  // 🛡️ Derived Asset & Warranty Expiry Information
+  const selectedAsset = useMemo(() => {
+    return customerAssets.find((a: any) => a.id === selectedAssetId) || null;
+  }, [customerAssets, selectedAssetId]);
+
+  const selectedAssetWarranty = useMemo(() => {
+    if (!selectedAsset) return null;
+    return getAssetWarrantyDetails(selectedAsset.purchase_date, selectedAsset.warranty_months);
+  }, [selectedAsset]);
+
+  const handleAssetSelection = (assetId: string) => {
+    setSelectedAssetId(assetId);
+    const chosen = customerAssets.find((a: any) => a.id === assetId);
+    if (chosen) {
+      const wInfo = getAssetWarrantyDetails(chosen.purchase_date, chosen.warranty_months);
+      const isUnderWarranty = !wInfo.isExpired;
+      setForm(prev => ({
+        ...prev,
+        fieldOfWork: chosen.category || prev.fieldOfWork,
+        brand: chosen.brand || prev.brand,
+        coverage: isUnderWarranty ? "Under Warranty" : "Out of Warranty",
+        chargeableService: isUnderWarranty ? "No" : "Yes",
+        serviceCharge: isUnderWarranty ? 0 : (prev.serviceCharge || 500)
+      }));
+      toast.info(
+        isUnderWarranty
+          ? `Asset is under warranty until ${wInfo.expiryDateStr}. Coverage set to "Under Warranty" (Non-chargeable).`
+          : `Asset warranty expired on ${wInfo.expiryDateStr}. Coverage set to "Out of Warranty" (Chargeable Service).`
+      );
+    }
+  };
   const [isCustomerPopoverOpen, setIsCustomerPopoverOpen] = useState(false);
+  const [customerLocations, setCustomerLocations] = useState<any[]>([]);
+  const [selectedLocationId, setSelectedLocationId] = useState("");
+  const [isLocationsLoading, setIsLocationsLoading] = useState(false);
   const [supervisorError, setSupervisorError] = useState("");
 
-  const complaintDraft = useFormDraft({
-    key: 'draft_create_complaint',
-    enabled: isNew,
-    excludeFields: [],
-    fields: {
-      title: { value: form.title, setter: (v) => setForm((prev) => ({ ...prev, title: v as string })) },
-      customerId: { value: form.customerId, setter: (v) => setForm((prev) => ({ ...prev, customerId: v as string })) },
-      customerName: { value: form.customerName, setter: (v) => setForm((prev) => ({ ...prev, customerName: v as string })) },
-      customerPhone: { value: form.customerPhone, setter: (v) => setForm((prev) => ({ ...prev, customerPhone: v as string })) },
-      location: { value: form.location, setter: (v) => setForm((prev) => ({ ...prev, location: v as string })) },
-      fieldOfWork: { value: form.fieldOfWork, setter: (v) => setForm((prev) => ({ ...prev, fieldOfWork: v as string })) },
-      status: { value: form.status, setter: (v) => setForm((prev) => ({ ...prev, status: v as string })) },
-      severity: { value: form.severity, setter: (v) => setForm((prev) => ({ ...prev, severity: v as SeverityTier })) },
-      assignedSupervisor: { value: form.assignedSupervisor, setter: (v) => setForm((prev) => ({ ...prev, assignedSupervisor: v as string })) },
-      assignedTechnician: { value: form.assignedTechnician, setter: (v) => setForm((prev) => ({ ...prev, assignedTechnician: v as string })) },
-      description: { value: form.description, setter: (v) => setForm((prev) => ({ ...prev, description: v as string })) },
-      supervisor_notes: { value: form.supervisor_notes, setter: (v) => setForm((prev) => ({ ...prev, supervisor_notes: v as string })) },
-      targetEndTime: { value: form.targetEndTime, setter: (v) => setForm((prev) => ({ ...prev, targetEndTime: v as string })) },
-    },
-  });
+  // 🔍 Smart Walk-in Auto-Detector State
+  const [matchedCustomer, setMatchedCustomer] = useState<{ id: string; full_name: string; phone?: string; email?: string } | null>(null);
+  const [showMatchAlert, setShowMatchAlert] = useState(false);
+  const [overrideDuplicateCustomer, setOverrideDuplicateCustomer] = useState(false);
+  const [isCheckingPhone, setIsCheckingPhone] = useState(false);
 
-  useEffect(() => {
-    if (isNew) {
-      complaintDraft.restore();
+  const checkExistingCustomerPhone = async (phoneStr: string) => {
+    if (!phoneStr) {
+      setShowMatchAlert(false);
+      setMatchedCustomer(null);
+      return;
     }
-  }, [isNew]);
+    const cleanPhone = phoneStr.replace(/\D/g, '');
+    if (cleanPhone.length < 10) {
+      setShowMatchAlert(false);
+      return;
+    }
 
-  useEffect(() => {
-    return complaintDraft.save();
-  }, [form.title, form.customerId, form.customerName, form.customerPhone, form.location, form.fieldOfWork, form.status, form.severity, form.assignedSupervisor, form.assignedTechnician, form.description, form.supervisor_notes, form.targetEndTime]);
+    setIsCheckingPhone(true);
+    try {
+      const last10 = cleanPhone.slice(-10);
+      // 1. Check in customers table
+      const { data: custData } = await supabase
+        .from('customers')
+        .select('id, user_id, full_name, phone, email')
+        .ilike('phone', `%${last10}%`)
+        .limit(1)
+        .maybeSingle();
 
-  useEffect(() => {
-    const handleBeforeUnload = () => {
-      complaintDraft.clear();
-    };
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [complaintDraft]);
+      if (custData) {
+        setMatchedCustomer({
+          id: custData.user_id || custData.id,
+          full_name: custData.full_name,
+          phone: custData.phone,
+          email: custData.email
+        });
+        setShowMatchAlert(true);
+        setOverrideDuplicateCustomer(false);
+        toast.warning(`⚠️ Customer with this phone number already exists: ${custData.full_name}. Please use existing customer.`, {
+          duration: 6000
+        });
+        return;
+      }
+
+      // 2. Check in profiles table
+      const { data: profData } = await supabase
+        .from('profiles')
+        .select('id, full_name, phone, email')
+        .eq('role', 'customer')
+        .ilike('phone', `%${last10}%`)
+        .limit(1)
+        .maybeSingle();
+
+      if (profData) {
+        // Verify if this customer's active record in customers table has changed or removed their phone
+        let { data: linkedCust } = await supabase
+          .from('customers')
+          .select('id, user_id, phone, full_name')
+          .eq('user_id', profData.id)
+          .limit(1)
+          .maybeSingle();
+
+        if (!linkedCust && profData.email) {
+          const { data: custByEmail } = await supabase
+            .from('customers')
+            .select('id, user_id, phone, full_name')
+            .ilike('email', profData.email)
+            .limit(1)
+            .maybeSingle();
+          linkedCust = custByEmail;
+        }
+
+        if (linkedCust) {
+          const linkedDigits = (linkedCust.phone || '').replace(/\D/g, '').slice(-10);
+          if (!linkedDigits || linkedDigits !== last10) {
+            console.log(`Freed phone detected! Profile ${profData.full_name} changed phone to '${linkedCust.phone}'. Freeing ${last10}...`);
+            // Synchronize stale profile in background so phone is freed everywhere
+            void supabase.from('profiles').update({ phone: linkedCust.phone || null }).eq('id', profData.id);
+            setShowMatchAlert(false);
+            setMatchedCustomer(null);
+            return;
+          }
+        }
+
+        setMatchedCustomer(profData);
+        setShowMatchAlert(true);
+        setOverrideDuplicateCustomer(false);
+        toast.warning(`⚠️ Customer with this phone number already exists: ${profData.full_name}. Please use existing customer.`, {
+          duration: 6000
+        });
+      } else {
+        setShowMatchAlert(false);
+        setMatchedCustomer(null);
+      }
+    } catch (err) {
+      console.warn("Smart Walk-in check error:", err);
+      setShowMatchAlert(false);
+    } finally {
+      setIsCheckingPhone(false);
+    }
+  };
+
+  const handleConvertToRegistered = (matched: any) => {
+    setCustomerType("Existing BTL Customer");
+    setForm(prev => ({
+      ...prev,
+      customerId: matched.id,
+      customerName: matched.full_name,
+      customerPhone: matched.phone || prev.customerPhone,
+      customerEmail: matched.email || prev.customerEmail,
+    }));
+    setShowMatchAlert(false);
+    toast.success(`Switched to registered customer: ${matched.full_name}`);
+  };
 
   const clearSupervisorError = () => {
     if (supervisorError) setSupervisorError("");
@@ -236,14 +449,13 @@ const ComplaintEdit = () => {
 
   const calculateAutoStatus = () => {
     if (isNew) {
-      if (form.assignedTechnician) return "dispatched";
-      if (form.assignedSupervisor) return "assigned";
+      if (form.assignedSupervisor || selectedSupervisorId) return "assigned";
       return "unassigned";
     }
 
     const phase = existingComplaint?.current_phase || 1;
     if (form.assignedTechnician) return "dispatched";
-    if (form.assignedSupervisor) return "assigned";
+    if (form.assignedSupervisor || selectedSupervisorId) return "assigned";
     if (phase >= 6) return "closed";
     if (phase >= 5) return "completed";
     if (phase >= 4) return "in-progress";
@@ -277,9 +489,9 @@ const ComplaintEdit = () => {
           if (customerRecord) {
             const { data: assets, error: assetsError } = await supabase
               .from('customer_assets')
-              .select('category, purchase_date, warranty_months')
+              .select('id, product_name, brand, category, serial_number, model_number, purchase_date, warranty_months, status')
               .eq('customer_id', customerRecord.id)
-              .order('category', { ascending: true });
+              .order('created_at', { ascending: false });
 
             if (assetsError) {
               console.error("Error fetching customer assets:", assetsError);
@@ -287,13 +499,26 @@ const ComplaintEdit = () => {
               return;
             }
 
-            if (assets) {
-              const activeAssets = assets.filter((asset: any) =>
-                isAssetWarrantyActive(asset.purchase_date, asset.warranty_months)
-              );
-              const uniqueCategories = [...new Set(activeAssets.map((a: any) => a.category).filter(Boolean))] as string[];
-              setCustomerAssets(activeAssets);
+            if (assets && assets.length > 0) {
+              const uniqueCategories = [...new Set(assets.map((a: any) => a.category).filter(Boolean))] as string[];
+              setCustomerAssets(assets);
               setAvailableCategories(uniqueCategories);
+
+              // If creating a new complaint and there is only 1 asset, auto-select and apply warranty defaults
+              if (isNew && assets.length === 1 && !selectedAssetId) {
+                const soleAsset = assets[0];
+                setSelectedAssetId(soleAsset.id);
+                const wInfo = getAssetWarrantyDetails(soleAsset.purchase_date, soleAsset.warranty_months);
+                const isUnderWarranty = !wInfo.isExpired;
+                setForm(prev => ({
+                  ...prev,
+                  fieldOfWork: soleAsset.category || prev.fieldOfWork,
+                  brand: soleAsset.brand || prev.brand,
+                  coverage: isUnderWarranty ? "Under Warranty" : "Out of Warranty",
+                  chargeableService: isUnderWarranty ? "No" : "Yes",
+                  serviceCharge: isUnderWarranty ? 0 : prev.serviceCharge
+                }));
+              }
             } else {
               setAvailableCategories([]);
             }
@@ -313,7 +538,7 @@ const ComplaintEdit = () => {
     };
 
     fetchCategories();
-  }, [user?.id, isCustomer]);
+  }, [user?.id, isCustomer, isNew]);
 
   useEffect(() => {
     const fetchCustomerAssets = async () => {
@@ -325,22 +550,37 @@ const ComplaintEdit = () => {
 
       setIsAssetsLoading(true);
       try {
-        const { data: customerRecord } = await supabase
+        const targetIds: string[] = [form.customerId];
+
+        // 1. Check if form.customerId matches id in customers table
+        const { data: directCust } = await supabase
           .from('customers')
-          .select('id')
-          .eq('user_id', form.customerId)
+          .select('id, user_id')
+          .eq('id', form.customerId)
           .maybeSingle();
 
-        if (!customerRecord) {
-          setCustomerAssets([]);
-          setAvailableFieldOfWork([]);
-          return;
+        if (directCust) {
+          if (directCust.id && !targetIds.includes(directCust.id)) targetIds.push(directCust.id);
+          if (directCust.user_id && !targetIds.includes(directCust.user_id)) targetIds.push(directCust.user_id);
+        } else {
+          // 2. Check if form.customerId matches user_id in customers table
+          const { data: byUserCust } = await supabase
+            .from('customers')
+            .select('id, user_id')
+            .eq('user_id', form.customerId)
+            .maybeSingle();
+
+          if (byUserCust?.id && !targetIds.includes(byUserCust.id)) {
+            targetIds.push(byUserCust.id);
+          }
         }
 
+        // 3. Query customer_assets with all rich details
         const { data, error } = await supabase
           .from('customer_assets')
-          .select('category')
-          .eq('customer_id', customerRecord.id);
+          .select('id, product_name, brand, category, serial_number, model_number, purchase_date, warranty_months, status')
+          .in('customer_id', targetIds)
+          .order('created_at', { ascending: false });
 
         if (error) throw error;
 
@@ -349,6 +589,22 @@ const ComplaintEdit = () => {
 
         const uniqueFields = [...new Set(assets.map((a: any) => a.category).filter(Boolean))] as string[];
         setAvailableFieldOfWork(uniqueFields);
+
+        // If creating a new complaint and there is only 1 asset, auto-select and apply warranty defaults
+        if (isNew && assets.length === 1 && !selectedAssetId) {
+          const soleAsset = assets[0];
+          setSelectedAssetId(soleAsset.id);
+          const wInfo = getAssetWarrantyDetails(soleAsset.purchase_date, soleAsset.warranty_months);
+          const isUnderWarranty = !wInfo.isExpired;
+          setForm(prev => ({
+            ...prev,
+            fieldOfWork: soleAsset.category || prev.fieldOfWork,
+            brand: soleAsset.brand || prev.brand,
+            coverage: isUnderWarranty ? "Under Warranty" : "Out of Warranty",
+            chargeableService: isUnderWarranty ? "No" : "Yes",
+            serviceCharge: isUnderWarranty ? 0 : prev.serviceCharge
+          }));
+        }
       } catch (err) {
         console.error("Error fetching customer assets:", err);
         setCustomerAssets([]);
@@ -359,9 +615,72 @@ const ComplaintEdit = () => {
     };
 
     fetchCustomerAssets();
-  }, [form.customerId]);
+  }, [form.customerId, isNew]);
 
-  // Ensure current fieldOfWork value is always part of availableCategories so the Select component can render it correctly
+  useEffect(() => {
+    const fetchCustomerLocations = async () => {
+      if (!form.customerId) {
+        setCustomerLocations([]);
+        setSelectedLocationId("");
+        return;
+      }
+
+      setIsLocationsLoading(true);
+      try {
+        const targetIds: string[] = [form.customerId];
+
+        const { data: directCust } = await supabase
+          .from('customers')
+          .select('id, user_id')
+          .eq('id', form.customerId)
+          .maybeSingle();
+
+        if (directCust) {
+          if (directCust.id && !targetIds.includes(directCust.id)) targetIds.push(directCust.id);
+          if (directCust.user_id && !targetIds.includes(directCust.user_id)) targetIds.push(directCust.user_id);
+        } else {
+          const { data: byUserCust } = await supabase
+            .from('customers')
+            .select('id, user_id')
+            .eq('user_id', form.customerId)
+            .maybeSingle();
+
+          if (byUserCust?.id && !targetIds.includes(byUserCust.id)) {
+            targetIds.push(byUserCust.id);
+          }
+        }
+
+        const { data, error } = await supabase
+          .from('customer_locations')
+          .select('*')
+          .in('customer_id', targetIds)
+          .order('is_primary', { ascending: false })
+          .order('created_at', { ascending: false });
+
+        if (error) throw error;
+
+        const locations = data || [];
+        setCustomerLocations(locations);
+
+        // Auto-select primary location if available
+        const primary = locations.find((loc: any) => loc.is_primary);
+        if (primary) {
+          setSelectedLocationId(primary.id);
+          setForm(prev => ({ ...prev, locationId: primary.id, location: [primary.address, primary.city, primary.state, primary.pincode].filter(Boolean).join(", ") }));
+        }
+      } catch (err) {
+        console.error("Error fetching customer locations:", err);
+        setCustomerLocations([]);
+        setSelectedLocationId("");
+      } finally {
+        setIsLocationsLoading(false);
+      }
+    };
+
+     fetchCustomerLocations();
+   }, [form.customerId]);
+
+   // Ensure current fieldOfWork value is always part of availableCategories so the Select component can render it correctly
   const displayCategories = useMemo(() => {
     if (form.fieldOfWork && !availableCategories.includes(form.fieldOfWork)) {
       return [...availableCategories, form.fieldOfWork];
@@ -454,17 +773,37 @@ const ComplaintEdit = () => {
 
   useEffect(() => {
     if (existingComplaint) {
+      let parsedScheduledDate: Date | null = null;
+      if (existingComplaint.scheduled_date) {
+        const parts = existingComplaint.scheduled_date.split('-');
+        if (parts.length === 3) {
+          parsedScheduledDate = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+        } else {
+          const dt = new Date(existingComplaint.scheduled_date);
+          if (!isNaN(dt.getTime())) parsedScheduledDate = dt;
+        }
+      }
+
+      const isNonBtl = !existingComplaint.customer_id || existingComplaint.customer_type === 'New / Non-BTL Customer' || existingComplaint.customer_type === 'Non-BTL';
+      setCustomerType(isNonBtl ? 'New / Non-BTL Customer' : 'Existing BTL Customer');
+
       setForm({
         title: existingComplaint.title || "",
         customerId: existingComplaint.customer_id || "",
         customerName: existingComplaint.customer_name || "",
         customerPhone: existingComplaint.customer_phone || "",
+        customerEmail: existingComplaint.customer_email || "",
         location: existingComplaint.location || "",
+        locationId: existingComplaint.location_id || "",
         fieldOfWork: existingComplaint.field_of_work ? (
           ['Solar', 'Networking', 'Electrical', 'CCTV', 'Other'].find(
             c => c.toLowerCase() === existingComplaint.field_of_work.toLowerCase()
           ) || existingComplaint.field_of_work
         ) : "",
+        coverage: existingComplaint.coverage || "Under Warranty",
+        chargeableService: existingComplaint.chargeable_service ? (String(existingComplaint.chargeable_service).toLowerCase() === 'true' || existingComplaint.chargeable_service === 'Yes' ? 'Yes' : 'No') : "No",
+        serviceCharge: existingComplaint.service_charge != null ? Number(existingComplaint.service_charge) : 0,
+        brand: existingComplaint.brand || "",
         status: existingComplaint.status || "unassigned",
         severity: existingComplaint.severity as SeverityTier || "minor",
         assignedSupervisor: existingComplaint.assigned_supervisor || "",
@@ -472,39 +811,57 @@ const ComplaintEdit = () => {
         description: existingComplaint.description || "",
         supervisor_notes: existingComplaint.supervisor_notes || "",
         targetEndTime: formatDateTimeLocal(existingComplaint.target_end_time),
+        scheduledDate: parsedScheduledDate,
+        scheduledTime: existingComplaint.scheduled_time || "",
         customerLat: existingComplaint.customer_lat || null,
         customerLng: existingComplaint.customer_lng || null,
       });
-      // ✅ FIXED: Load complaint_images instead of evidence_urls
+      if (existingComplaint.location_id) {
+        setSelectedLocationId(existingComplaint.location_id);
+      }
+      // Load complaint_images
       setEvidenceUrls(existingComplaint.complaint_images || []);
+
+      // Load assigned technician IDs & Lead
+      if (existingComplaint.complaint_technicians && existingComplaint.complaint_technicians.length > 0) {
+        setSelectedTechnicianIds(existingComplaint.complaint_technicians.map((ct: any) => ct.technician_id));
+        const lead = existingComplaint.complaint_technicians.find((ct: any) => ct.is_lead)?.technician_id || existingComplaint.complaint_technicians[0]?.technician_id;
+        setLeadTechnicianId(lead);
+      } else if (existingComplaint.assigned_to) {
+        setSelectedTechnicianIds([existingComplaint.assigned_to]);
+        setLeadTechnicianId(existingComplaint.assigned_to);
+      } else {
+        setSelectedTechnicianIds([]);
+        setLeadTechnicianId(null);
+      }
     }
   }, [existingComplaint]);
 
   useEffect(() => {
     if (supervisors && form.assignedSupervisor) {
-      const match = supervisors.find((s: any) => s.full_name === form.assignedSupervisor);
+      const supTarget = String(form.assignedSupervisor).trim().toLowerCase();
+      const match = supervisors.find((s: any) => 
+        s.id === form.assignedSupervisor || 
+        (s.full_name && s.full_name.trim().toLowerCase() === supTarget)
+      );
       if (match) {
         setSelectedSupervisorId(match.id);
-      } else {
-        setSelectedSupervisorId("");
+        if (form.assignedSupervisor !== match.full_name) {
+          setForm(prev => ({ ...prev, assignedSupervisor: match.full_name }));
+        }
       }
-    } else {
-      setSelectedSupervisorId("");
     }
   }, [supervisors, form.assignedSupervisor]);
 
   useEffect(() => {
-    if (technicians && form.assignedTechnician) {
+    if (technicians && form.assignedTechnician && selectedTechnicianIds.length === 0) {
       const match = technicians.find((t: any) => t.full_name === form.assignedTechnician);
       if (match) {
         setSelectedTechnicianId(match.id);
-      } else {
-        setSelectedTechnicianId("");
+        setSelectedTechnicianIds([match.id]);
       }
-    } else {
-      setSelectedTechnicianId("");
     }
-  }, [technicians, form.assignedTechnician]);
+  }, [technicians, form.assignedTechnician, selectedTechnicianIds.length]);
 
   useEffect(() => {
     if (isNew && isCustomer && userProfile && user) {
@@ -687,15 +1044,30 @@ const ComplaintEdit = () => {
     try {
       let fileToUpload = file;
       if (file.type.startsWith('image/')) {
+        setUploadProgressText(`Optimizing image (${(file.size / 1024).toFixed(0)}KB)...`);
         try {
           fileToUpload = await browserImageCompression(file, { maxSizeMB: 1, maxWidthOrHeight: 1280, useWebWorker: true });
         } catch (err) {
           console.warn('Image compression failed, using original:', err);
         }
+      } else if (file.type.startsWith('video/') || /\.(mp4|mov|avi|webm|mkv|3gp)$/i.test(file.name)) {
+        try {
+          fileToUpload = await compressVideoForUpload(file, (prog) => {
+            setUploadProgressText(prog.message);
+          });
+        } catch (err) {
+          console.warn('Video compression failed, using original:', err);
+        }
       }
+
+      setUploadProgressText(`Uploading ${(fileToUpload.size / (1024 * 1024)).toFixed(1)}MB to cloud...`);
       const fileExt = fileToUpload.name.split('.').pop();
       const fileName = `${folder}/${Date.now()}-${Math.random().toString(36).substring(2)}.${fileExt}`;
-      const { data, error } = await supabase.storage.from('complaint-media').upload(fileName, fileToUpload, { cacheControl: '3600', upsert: false });
+      const { data, error } = await supabase.storage.from('complaint-media').upload(fileName, fileToUpload, {
+        cacheControl: '3600',
+        upsert: false,
+        contentType: fileToUpload.type || (fileExt === 'mp4' ? 'video/mp4' : fileExt === 'webm' ? 'video/webm' : undefined)
+      });
       if (error) throw error;
       const { data: { publicUrl } } = supabase.storage.from('complaint-media').getPublicUrl(fileName);
       return publicUrl;
@@ -706,6 +1078,7 @@ const ComplaintEdit = () => {
       throw error;
     } finally {
       setIsUploading(false);
+      setUploadProgressText("");
     }
   };
 
@@ -722,13 +1095,45 @@ const ComplaintEdit = () => {
       return;
     }
     
-    if (!form.customerId) {
-      toast.error("Please select a customer");
-      return;
+    if (isCustomer || customerType === "Existing BTL Customer") {
+      if (!form.customerId) {
+        toast.error("Please select a registered customer");
+        return;
+      }
+    } else {
+      if (!form.customerName || form.customerName.trim() === "") {
+        toast.error("Please enter the client / customer name");
+        return;
+      }
+      if (!form.customerPhone || form.customerPhone.trim() === "") {
+        toast.error("Please enter the customer contact phone number");
+        return;
+      }
+      if (!form.location || form.location.trim() === "") {
+        toast.error("Please provide the service site address / location");
+        return;
+      }
+      if (matchedCustomer && !overrideDuplicateCustomer) {
+        toast.error(`⚠️ Customer with this phone number already exists: ${matchedCustomer.full_name}. Please use existing customer.`, {
+          duration: 6000
+        });
+        setShowMatchAlert(true);
+        return;
+      }
     }
     
     if (!form.fieldOfWork || form.fieldOfWork.trim() === "") {
       toast.error("Please select a Field of Work");
+      return;
+    }
+
+    if (!form.coverage || form.coverage.trim() === "") {
+      toast.error("Please select Coverage (e.g. Under Warranty, Out of Warranty, AMC, etc.)");
+      return;
+    }
+
+    if (!form.chargeableService || form.chargeableService.trim() === "") {
+      toast.error("Please specify if this is a Chargeable Service (Yes or No)");
       return;
     }
     
@@ -746,6 +1151,7 @@ const ComplaintEdit = () => {
     try {
       if (isNew) {
         if (isCustomer) {
+          // Verify customer record exists
           const { data: customerRecord, error: customerError } = await supabase
             .from('customers')
             .select('id')
@@ -753,30 +1159,19 @@ const ComplaintEdit = () => {
             .maybeSingle();
 
           if (customerError) throw customerError;
-
-          const { data: assets, error: assetsError } = customerRecord
-            ? await supabase
-              .from('customer_assets')
-              .select('category, purchase_date, warranty_months')
-              .eq('customer_id', customerRecord.id)
-              .eq('category', form.fieldOfWork)
-            : { data: [], error: null };
-
-          if (assetsError) throw assetsError;
-
-          const hasActiveWarranty = (assets || []).some((asset: any) =>
-            isAssetWarrantyActive(asset.purchase_date, asset.warranty_months)
-          );
-
-          if (!hasActiveWarranty) {
-            toast.error("You cannot raise a complaint because the warranty for this asset has expired.");
-            return;
-          }
         }
 
+        // Robust supervisor resolution
+        const matchedSup = selectedSupervisorId 
+          ? supervisors?.find((s: any) => s.id === selectedSupervisorId)
+          : (form.assignedSupervisor ? supervisors?.find((s: any) => s.full_name === form.assignedSupervisor || s.id === form.assignedSupervisor) : null);
+        const resolvedSupervisorName = isCustomer 
+          ? null 
+          : (matchedSup?.full_name || form.assignedSupervisor || (selectedSupervisorId ? selectedSupervisorId : null));
+
         const autoStatus = calculateAutoStatus();
-        let status = autoStatus;
-        let phase = 1;
+        let status = resolvedSupervisorName ? "assigned" : (autoStatus || "unassigned");
+        let phase = resolvedSupervisorName ? 2 : 1;
         if (status === "unassigned") {
           phase = 1;
         } else if (status === "assigned") {
@@ -789,107 +1184,236 @@ const ComplaintEdit = () => {
           phase = 6;
         }
 
+        const assignedTechNames = isNew ? null : (selectedTechnicianIds
+          .map((tid) => technicians?.find((t: any) => t.id === tid)?.full_name)
+          .filter(Boolean)
+          .join(", ") || null);
+
+        const techObjs = isNew ? [] : selectedTechnicianIds.map((tid) => ({
+          technician_id: tid,
+          is_lead: tid === (leadTechnicianId || selectedTechnicianIds[0]),
+        }));
+        const leadTechId = isNew ? null : (techObjs.find((t) => t.is_lead)?.technician_id || selectedTechnicianIds[0] || null);
+
+        const isExistingBtl = isCustomer || customerType === "Existing BTL Customer";
+        let linkedCustomerId: string | null = null;
+
+        // 1. Existing Customer linking
+        if (isExistingBtl && form.customerId) {
+          linkedCustomerId = form.customerId;
+          try {
+            const { data: prof } = await supabase
+              .from("profiles")
+              .select("id")
+              .eq("id", form.customerId)
+              .maybeSingle();
+            if (prof?.id) {
+              linkedCustomerId = prof.id;
+            } else {
+              const { data: custRec } = await supabase
+                .from("customers")
+                .select("id, user_id")
+                .eq("id", form.customerId)
+                .maybeSingle();
+              if (custRec?.user_id) {
+                linkedCustomerId = custRec.user_id;
+              } else if (custRec?.id) {
+                linkedCustomerId = custRec.id;
+              }
+            }
+          } catch (e) {
+            console.warn("Could not verify profile/customer ID:", e);
+          }
+        }
+
+        // 2. Auto-create Walk-in / New Customer in customers table and link
+        if (!isExistingBtl && (form.customerPhone || form.customerName)) {
+          try {
+            const cleanPhone = (form.customerPhone || "").replace(/\D/g, "");
+            const last10 = cleanPhone.slice(-10);
+
+            let matchedCustomer: any = null;
+            if (last10) {
+              const { data: matchedCust } = await supabase
+                .from("customers")
+                .select("id, user_id, full_name, email")
+                .ilike("phone", `%${last10}%`)
+                .maybeSingle();
+              matchedCustomer = matchedCust;
+            }
+
+            if (matchedCustomer) {
+              linkedCustomerId = matchedCustomer.user_id || matchedCustomer.id;
+              if (matchedCustomer.full_name && !form.customerName) {
+                form.customerName = matchedCustomer.full_name;
+              }
+            } else {
+              // Create in customers table so they become an Existing Customer for next time
+              const { data: newCust, error: newCustErr } = await supabase
+                .from("customers")
+                .insert([{
+                  full_name: form.customerName || "Walk-in Customer",
+                  phone: form.customerPhone || null,
+                  email: form.customerEmail || null,
+                  address: form.location || null,
+                  customer_type: "Walk-in",
+                  branch: "Default Branch"
+                }])
+                .select("id")
+                .maybeSingle();
+
+              if (!newCustErr && newCust?.id) {
+                linkedCustomerId = newCust.id;
+              }
+
+              // Non-blocking background account creation if valid email is provided
+              if (form.customerEmail && /^\S+@\S+\.\S+$/.test(form.customerEmail)) {
+                void (async () => {
+                  try {
+                    await supabase.functions.invoke("create-customer-user", {
+                      body: {
+                        email: form.customerEmail.trim().toLowerCase(),
+                        full_name: form.customerName || "Walk-in Customer",
+                        phone: form.customerPhone,
+                        role: "customer"
+                      }
+                    });
+                  } catch (authErr) {
+                    console.warn("Background customer user creation:", authErr);
+                  }
+                })();
+              }
+            }
+          } catch (custErr) {
+            console.warn("Walk-in customer auto-link skipped:", custErr);
+          }
+        }
+
         const newComplaint = await complaintService.create({
-          customer_id: form.customerId,
+          customer_type: isExistingBtl ? "Existing BTL Customer" : "New / Non-BTL Customer",
+          customer_id: linkedCustomerId,
           customer_name: form.customerName || null,
           customer_phone: form.customerPhone || null,
+          customer_email: form.customerEmail || null,
           created_by_name: currentUserFullName || "User",
           title: form.title,
           description: form.description,
           status: status,
-          assigned_supervisor: isCustomer ? null : (form.assignedSupervisor || null),
-          assigned_technician: isCustomer ? null : (form.assignedTechnician || null),
+          assigned_supervisor: resolvedSupervisorName,
+          supervisor_assigned: resolvedSupervisorName,
+          assigned_technician: isCustomer ? null : assignedTechNames,
+          assigned_to: leadTechId,
+          location_id: (isExistingBtl && selectedLocationId) ? selectedLocationId : null,
           location: form.location || null,
           field_of_work: form.fieldOfWork || null,
+          coverage: form.coverage || "Out of Warranty",
+          chargeable_service: form.chargeableService || "No",
+          service_charge: form.chargeableService === "Yes" ? (Number(form.serviceCharge) || 0) : 0,
+          brand: form.brand || null,
           severity: form.severity || null,
           current_phase: phase,
           resolution: null,
-          complaint_images: evidenceUrls.length > 0 ? evidenceUrls : null, // ✅ CORRECT
+          complaint_images: evidenceUrls.length > 0 ? evidenceUrls : null,
           customer_lat: form.customerLat,
           customer_lng: form.customerLng,
           target_end_time: form.targetEndTime ? new Date(form.targetEndTime).toISOString() : null,
-        } as any);
+          scheduled_date: null,
+          scheduled_time: null,
+        } as any, techObjs);
+
         if (import.meta.env.DEV) {
-        console.log("✅ Complaint created ID:", newComplaint.id);
-      }
-        // Invalidate queries so lists/dashboards update immediately
+          console.log("✅ Complaint created ID:", newComplaint.id);
+        }
+
+        // Invalidate queries so lists/dashboards/customers update immediately
         queryClient.invalidateQueries({ queryKey: ['complaints'] });
         queryClient.invalidateQueries({ queryKey: ['dashboard-complaints'] });
         queryClient.invalidateQueries({ queryKey: ['customer-complaints'] });
+        queryClient.invalidateQueries({ queryKey: ['customers'] });
+        queryClient.invalidateQueries({ queryKey: ['users'] });
         
-        // Notify based on who created the complaint
-        if (isCustomer) {
-          // 1. Customer creates a complaint: Notify: All Admins.
-          const adminIds = await notificationService.getAdminUserIds();
-          await notificationService.insertNotification(
-            adminIds,
-            newComplaint.id,
-            'info',
-            '🔔 New Complaint Registered',
-            `New complaint registered by ${form.customerName || "Customer"}. Ticket #${newComplaint.id.slice(0, 8)} requires assignment.`,
-            1,
-            undefined,
-            user?.id
-          );
-        } else {
-          // If Admin/Supervisor created it
-          // 2. Admin/Supervisor assigns a Supervisor:
-          if (form.assignedSupervisor) {
-            const supervisorProfile = await fetchProfileByName(form.assignedSupervisor);
-            if (supervisorProfile) {
+        const displayTicketId = newComplaint.ticket_id || newComplaint.id.slice(0, 8);
+
+        // Notify in background asynchronously without blocking UI navigation
+        void (async () => {
+          try {
+            if (isCustomer) {
+              const adminIds = await notificationService.getAdminUserIds();
               await notificationService.insertNotification(
-                supervisorProfile.id,
+                adminIds,
                 newComplaint.id,
-                'assignment',
-                '📋 Ticket Assigned',
-                `You have been assigned to Ticket #${newComplaint.id.slice(0, 8)} for telephonic triage.`,
+                'info',
+                '🔔 New Complaint Registered',
+                `New complaint registered by ${form.customerName || "Customer"}. Ticket #${displayTicketId} requires assignment.`,
                 1,
                 undefined,
                 user?.id
               );
-            }
-          }
+            } else {
+              if (form.assignedSupervisor) {
+                const supervisorProfile = await fetchProfileByName(form.assignedSupervisor);
+                if (supervisorProfile) {
+                  await notificationService.insertNotification(
+                    supervisorProfile.id,
+                    newComplaint.id,
+                    'assignment',
+                    '📋 Ticket Assigned',
+                    `You have been assigned to Ticket #${displayTicketId} for telephonic triage.`,
+                    1,
+                    undefined,
+                    user?.id
+                  );
+                }
+              }
 
-          // 3. Admin creates complaint & assigns Technician directly (Direct Dispatch):
-          if (form.assignedTechnician) {
-            const technicianProfile = await fetchProfileByName(form.assignedTechnician);
-            if (technicianProfile) {
-              await notificationService.insertNotification(
-                technicianProfile.id,
-                newComplaint.id,
-                'assignment',
-                '🔧 Direct Dispatch',
-                `Directly assigned to Ticket #${newComplaint.id.slice(0, 8)}. Proceed to site.`,
-                3,
-                undefined,
-                user?.id
-              );
+              if (form.assignedTechnician) {
+                const technicianProfile = await fetchProfileByName(form.assignedTechnician);
+                if (technicianProfile) {
+                  await notificationService.insertNotification(
+                    technicianProfile.id,
+                    newComplaint.id,
+                    'assignment',
+                    '🔧 Direct Dispatch',
+                    `Directly assigned to Ticket #${displayTicketId}. Proceed to site.`,
+                    3,
+                    undefined,
+                    user?.id
+                  );
+                }
+                if (form.customerId) {
+                  await notificationService.insertNotification(
+                    form.customerId,
+                    newComplaint.id,
+                    'info',
+                    '🚐 Technician Dispatched',
+                    `A technician has been dispatched to your location for Ticket #${displayTicketId}.`,
+                    3,
+                    undefined,
+                    user?.id
+                  );
+                }
+              }
             }
-            if (form.customerId) {
-              await notificationService.insertNotification(
-                form.customerId,
-                newComplaint.id,
-                'info',
-                '🚐 Technician Dispatched',
-                `A technician has been dispatched to your location for Ticket #${newComplaint.id.slice(0, 8)}.`,
-                3,
-                undefined,
-                user?.id
-              );
-            }
+          } catch (notifErr) {
+            console.warn("Background notification dispatch:", notifErr);
           }
-        }
+        })();
 
         if (isCustomer) {
-          toast.success("Complaint submitted! Our team will contact you soon.");
-          complaintDraft.clear();
+          toast.success(`Complaint #${displayTicketId} submitted! Our team will contact you soon.`);
           navigate("/dashboard");
         } else {
-          toast.success("Complaint created successfully!");
-          complaintDraft.clear();
+          toast.success(`Complaint #${displayTicketId} created successfully!`);
           navigate("/complaints");
         }
       } else {
+        const matchedSup = selectedSupervisorId 
+          ? supervisors?.find((s: any) => s.id === selectedSupervisorId)
+          : (form.assignedSupervisor ? supervisors?.find((s: any) => s.full_name === form.assignedSupervisor || s.id === form.assignedSupervisor) : null);
+        const resolvedSupervisorName = isCustomer 
+          ? null 
+          : (matchedSup?.full_name || form.assignedSupervisor || (selectedSupervisorId ? selectedSupervisorId : null));
+
         const autoStatus = calculateAutoStatus();
         let nextPhase = existingComplaint?.current_phase || 1;
         let nextStatus = autoStatus;
@@ -906,25 +1430,51 @@ const ComplaintEdit = () => {
           nextPhase = 6;
         }
 
-        const supervisorChanged = form.assignedSupervisor && form.assignedSupervisor !== existingComplaint?.assigned_supervisor;
-        const technicianChanged = form.assignedTechnician && form.assignedTechnician !== existingComplaint?.assigned_technician;
+        if (resolvedSupervisorName && nextPhase === 1) {
+          nextPhase = 2;
+          nextStatus = "assigned";
+        }
+
+        const supervisorChanged = resolvedSupervisorName && resolvedSupervisorName !== existingComplaint?.assigned_supervisor;
+        const assignedTechNames = selectedTechnicianIds
+          .map((tid) => technicians?.find((t: any) => t.id === tid)?.full_name)
+          .filter(Boolean)
+          .join(", ") || null;
+
+        const techObjs = selectedTechnicianIds.map((tid) => ({
+          technician_id: tid,
+          is_lead: tid === (leadTechnicianId || selectedTechnicianIds[0]),
+        }));
+        const leadTechId = techObjs.find((t) => t.is_lead)?.technician_id || selectedTechnicianIds[0] || null;
+
+        const technicianChanged = assignedTechNames && assignedTechNames !== existingComplaint?.assigned_technician;
+        const existingTicketDisplay = existingComplaint?.ticket_id || id?.slice(0, 8);
 
         await complaintService.update(id!, {
           title: form.title,
           description: form.description,
           location: form.location || null,
+          location_id: selectedLocationId || null,
           field_of_work: form.fieldOfWork || null,
+          coverage: form.coverage || "Out of Warranty",
+          chargeable_service: form.chargeableService || "No",
+          service_charge: form.chargeableService === "Yes" ? (Number(form.serviceCharge) || 0) : 0,
+          brand: form.brand || null,
           severity: form.severity || null,
           status: nextStatus,
-          assigned_supervisor: form.assignedSupervisor || null,
-          assigned_technician: form.assignedTechnician || null,
+          assigned_supervisor: resolvedSupervisorName,
+          supervisor_assigned: resolvedSupervisorName,
+          assigned_technician: assignedTechNames || form.assignedTechnician || null,
+          assigned_to: leadTechId,
           supervisor_notes: form.supervisor_notes || null,
-          complaint_images: evidenceUrls.length > 0 ? evidenceUrls : null, // ✅ FIXED: Changed from evidence_urls
+          complaint_images: evidenceUrls.length > 0 ? evidenceUrls : null,
           current_phase: nextPhase,
           customer_lat: form.customerLat,
           customer_lng: form.customerLng,
           target_end_time: form.targetEndTime ? new Date(form.targetEndTime).toISOString() : null,
-        } as any);
+          scheduled_date: formatDateToYYYYMMDD(form.scheduledDate),
+          scheduled_time: form.scheduledTime || null,
+        } as any, techObjs);
 
         if (supervisorChanged) {
           const supervisorProfile = await fetchProfileByName(form.assignedSupervisor);
@@ -934,7 +1484,7 @@ const ComplaintEdit = () => {
               id!,
               'assignment',
               '📋 Ticket Assigned',
-              `You have been assigned to Ticket #${id?.slice(0, 8)} for telephonic triage.`,
+              `You have been assigned to Ticket #${existingTicketDisplay} for telephonic triage.`,
               1,
               undefined,
               user?.id
@@ -950,7 +1500,7 @@ const ComplaintEdit = () => {
               id!,
               'assignment',
               '🔧 Job Assigned',
-              `You have been assigned to Ticket #${id?.slice(0, 8)} at ${form.location || 'site'}.`,
+              `You have been assigned to Ticket #${existingTicketDisplay} at ${form.location || 'site'}.`,
               3,
               undefined,
               user?.id
@@ -962,7 +1512,7 @@ const ComplaintEdit = () => {
               id!,
               'info',
               '🔧 Technician Assigned',
-              `Technician ${form.assignedTechnician} has been assigned to your Ticket #${id?.slice(0, 8)}.`,
+              `Technician ${form.assignedTechnician} has been assigned to your Ticket #${existingTicketDisplay}.`,
               3,
               undefined,
               user?.id
@@ -1025,7 +1575,19 @@ const ComplaintEdit = () => {
 
       <motion.form initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} onSubmit={handleSave} className="glass-card rounded-xl p-6 space-y-6">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="md:col-span-2 space-y-2">
+          {!isNew && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Ticket ID (Auto-Generated)</label>
+              <Input 
+                value={existingComplaint?.ticket_id || `Ticket #${id?.slice(0, 8)}`} 
+                disabled 
+                readOnly
+                className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100 font-mono text-xs"
+              />
+            </div>
+          )}
+
+          <div className="space-y-2">
             <div className="flex justify-between items-center">
               <label className="text-sm font-medium">Issue Title <span className="text-destructive">*</span></label>
               <span className="text-xs text-muted-foreground">
@@ -1034,7 +1596,7 @@ const ComplaintEdit = () => {
             </div>
             <Input 
               value={form.title} 
-              onChange={(e) => setForm({ ...form, title: e.target.value })} 
+              onChange={(e) => setForm(prev => ({ ...prev, title: e.target.value }))} 
               placeholder="Brief description of the problem..." 
               required 
               disabled={isSaving || !isNew} 
@@ -1053,7 +1615,7 @@ const ComplaintEdit = () => {
                 <label className="text-sm font-medium">Contact Phone <span className="text-destructive">*</span></label>
                 <Input 
                   value={form.customerPhone} 
-                  onChange={(e) => setForm({ ...form, customerPhone: e.target.value })} 
+                  onChange={(e) => setForm(prev => ({ ...prev, customerPhone: e.target.value }))} 
                   placeholder="+91 9876543210" 
                   required 
                   disabled={isSaving || !isNew} 
@@ -1063,64 +1625,289 @@ const ComplaintEdit = () => {
             </>
           ) : (
             <>
-              {isCustomersLoading && !isNew ? (
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Customer</label>
-                  <div className="flex items-center gap-2 text-muted-foreground">
-                    <Loader2 className="w-4 h-4 animate-spin" /> Loading customers...
-                  </div>
+              {/* Customer Type Toggle */}
+              <div className="space-y-2 sm:col-span-2">
+                <label className="text-sm font-bold text-slate-700">
+                  Customer Type <span className="text-destructive">*</span>
+                </label>
+                <div className="flex flex-wrap gap-4 pt-1">
+                  <label className="flex items-center gap-2 cursor-pointer font-medium text-xs bg-slate-50 hover:bg-slate-100 p-2.5 rounded-xl border border-slate-200 transition-colors">
+                    <input
+                      type="radio"
+                      name="customer_type"
+                      value="Existing BTL Customer"
+                      checked={customerType === "Existing BTL Customer"}
+                      onChange={() => {
+                        setCustomerType("Existing BTL Customer");
+                        setForm(prev => ({ ...prev, customerId: "", customerName: "", customerPhone: "", customerEmail: "", coverage: "Under Warranty", chargeableService: "No" }));
+                      }}
+                      disabled={isSaving || !isNew}
+                      className="text-primary focus:ring-primary h-4 w-4"
+                    />
+                    <span className="text-slate-800 font-bold">🔘 Registered BTL Customer</span>
+                  </label>
+
+                  <label className="flex items-center gap-2 cursor-pointer font-medium text-xs bg-amber-50/70 hover:bg-amber-100/70 p-2.5 rounded-xl border border-amber-200 transition-colors">
+                    <input
+                      type="radio"
+                      name="customer_type"
+                      value="New / Non-BTL Customer"
+                      checked={customerType === "New / Non-BTL Customer"}
+                      onChange={() => {
+                        setCustomerType("New / Non-BTL Customer");
+                        setSelectedLocationId("");
+                        setForm(prev => ({
+                          ...prev,
+                          customerId: "",
+                          customerName: "",
+                          customerPhone: "",
+                          customerEmail: "",
+                          locationId: "",
+                          coverage: "Out of Warranty",
+                          chargeableService: "Yes"
+                        }));
+                      }}
+                      disabled={isSaving || !isNew}
+                      className="text-amber-600 focus:ring-amber-500 h-4 w-4"
+                    />
+                    <span className="text-amber-900 font-bold">🔘 Direct Call / Walk-in / Non-BTL</span>
+                  </label>
                 </div>
-              ) : (
+              </div>
+
+              {customerType === "Existing BTL Customer" ? (
                 <>
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">Customer <span className="text-destructive">*</span></label>
-                    <Popover open={isCustomerPopoverOpen && !isCustomersLoading} onOpenChange={setIsCustomerPopoverOpen}>
-                      <PopoverTrigger asChild>
-                        <Button
-                          variant="outline"
-                          role="combobox"
-                          className="h-10 w-full justify-between font-normal disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
-                          disabled={isSaving || !customers || !isNew}
+                  {isCustomersLoading && !isNew ? (
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium">Customer</label>
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        <Loader2 className="w-4 h-4 animate-spin" /> Loading customers...
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">Customer <span className="text-destructive">*</span></label>
+                        <Popover open={isCustomerPopoverOpen && !isCustomersLoading} onOpenChange={setIsCustomerPopoverOpen}>
+                          <PopoverTrigger asChild>
+                            <Button
+                              variant="outline"
+                              role="combobox"
+                              className="h-10 w-full justify-between font-normal disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
+                              disabled={isSaving || !customers || !isNew}
+                            >
+                              {form.customerName ? (
+                                <span className="truncate font-medium">{form.customerName}</span>
+                              ) : (
+                                <span className="text-muted-foreground">Search by name, phone, or email...</span>
+                              )}
+                              <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-full p-0" align="start">
+                            <Command>
+                              <CommandInput placeholder="Search customer by name, phone, or email..." />
+                              <CommandList>
+                                <CommandEmpty className="py-4 text-center text-xs space-y-2">
+                                  <p className="text-muted-foreground">No existing customer found.</p>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setCustomerType("New / Non-BTL Customer");
+                                      setSelectedLocationId("");
+                                      setForm(prev => ({
+                                        ...prev,
+                                        customerId: "",
+                                        customerName: "",
+                                        customerPhone: "",
+                                        customerEmail: "",
+                                        locationId: "",
+                                        coverage: "Out of Warranty",
+                                        chargeableService: "Yes"
+                                      }));
+                                      setIsCustomerPopoverOpen(false);
+                                    }}
+                                    className="inline-flex items-center gap-1 text-xs font-semibold text-amber-800 bg-amber-100 hover:bg-amber-200 px-3 py-1.5 rounded-lg transition-colors cursor-pointer"
+                                  >
+                                    + Create as Walk-in / New Customer
+                                  </button>
+                                </CommandEmpty>
+                                {customers?.map((c: any) => (
+                                  <CommandItem
+                                    key={c.id}
+                                    value={`${c.full_name} ${c.phone || ''} ${c.email || ''}`}
+                                    onSelect={() => {
+                                      setForm(prev => ({
+                                        ...prev,
+                                        customerId: c.id,
+                                        customerName: c.full_name || "",
+                                        customerPhone: c.phone || "",
+                                        customerEmail: c.email || "",
+                                        location: c.address || prev.location,
+                                        fieldOfWork: ""
+                                      }));
+                                      setIsCustomerPopoverOpen(false);
+                                    }}
+                                  >
+                                    <div className="flex flex-col">
+                                      <span className="font-medium">{c.full_name}</span>
+                                      <span className="text-xs text-muted-foreground">{c.phone} {c.email ? `• ${c.email}` : ''}</span>
+                                    </div>
+                                  </CommandItem>
+                                ))}
+                              </CommandList>
+                            </Command>
+                          </PopoverContent>
+                        </Popover>
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">Phone</label>
+                        <Input 
+                          value={form.customerPhone} 
+                          onChange={(e) => setForm(prev => ({ ...prev, customerPhone: e.target.value }))} 
+                          placeholder="+91 ..." 
+                          disabled={isSaving || !isNew} 
+                          className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
+                        />
+                      </div>
+                    </>
+                  )}
+
+                  {/* Customer Location Dropdown */}
+                  {form.customerId && (
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium">Installation / Service Location</label>
+                      {isLocationsLoading ? (
+                        <div className="flex items-center gap-2 text-muted-foreground">
+                          <Loader2 className="w-4 h-4 animate-spin" /> Loading locations...
+                        </div>
+                      ) : customerLocations.length === 0 ? (
+                        <p className="text-xs text-muted-foreground">{isCustomer ? "No saved locations found. Please enter address below." : "No locations found for this customer."}</p>
+                      ) : (
+                        <Select
+                          value={selectedLocationId}
+                          onValueChange={(v) => {
+                            const loc = customerLocations.find((l: any) => l.id === v);
+                            setSelectedLocationId(v);
+                            setForm(prev => ({
+                              ...prev,
+                              locationId: v,
+                              location: loc ? [loc.address, loc.city, loc.state, loc.pincode].filter(Boolean).join(", ") : prev.location,
+                            }));
+                          }}
+                          disabled={isSaving || !isNew}
                         >
-                          {form.customerName ? (
-                            <span className="truncate font-medium">{form.customerName}</span>
-                          ) : (
-                            <span className="text-muted-foreground">Search by name, phone, or email...</span>
-                          )}
-                          <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent className="w-full p-0" align="start">
-                        <Command>
-                          <CommandInput placeholder="Search customer by name, phone, or email..." />
-                          <CommandList>
-                            <CommandEmpty>No customer found.</CommandEmpty>
-                            {customers?.map((c: any) => (
-                              <CommandItem
-                                key={c.id}
-                                value={`${c.full_name} ${c.phone || ''} ${c.email || ''}`}
-                                onSelect={() => {
-                                  setForm({ ...form, customerId: c.id, customerName: c.full_name || "", customerPhone: c.phone || "", fieldOfWork: "" });
-                                  setIsCustomerPopoverOpen(false);
-                                }}
-                              >
-                                <div className="flex flex-col">
-                                  <span className="font-medium">{c.full_name}</span>
-                                  <span className="text-xs text-muted-foreground">{c.phone} {c.email ? `• ${c.email}` : ''}</span>
+                          <SelectTrigger className="h-10">
+                            <SelectValue placeholder="Select location" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {customerLocations.map((loc: any) => (
+                              <SelectItem key={loc.id} value={loc.id}>
+                                <div className="flex flex-col text-left py-0.5">
+                                  <span className="font-medium">{loc.location_name}</span>
+                                  <span className="text-[10px] text-muted-foreground">
+                                    {[loc.address, loc.city, loc.state, loc.pincode].filter(Boolean).join(", ")}
+                                    {loc.is_primary && " • Primary"}
+                                  </span>
                                 </div>
-                              </CommandItem>
+                              </SelectItem>
                             ))}
-                          </CommandList>
-                        </Command>
-                      </PopoverContent>
-                    </Popover>
+                          </SelectContent>
+                        </Select>
+                      )}
+                    </div>
+                  )}
+                </>
+              ) : (
+                /* Walk-in / Direct Customer Fields */
+                <>
+                  {/* Smart Walk-in Alert Banner */}
+                  {showMatchAlert && matchedCustomer && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="sm:col-span-2 p-4 rounded-xl bg-amber-500/10 border-2 border-amber-500/40 text-amber-950 dark:text-amber-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-md"
+                    >
+                      <div className="flex items-start gap-2.5">
+                        <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                        <div>
+                          <p className="font-bold text-sm">
+                            ⚠️ Existing Customer Profile Detected!
+                          </p>
+                          <p className="text-xs text-amber-900/80 dark:text-amber-300/80 mt-0.5">
+                            This phone number matches registered customer: <strong>{matchedCustomer.full_name}</strong> ({matchedCustomer.phone}). Do you want to link this ticket to their registered account instead?
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto">
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={() => handleConvertToRegistered(matchedCustomer)}
+                          className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs h-8 px-3 shadow-sm rounded-lg flex-1 sm:flex-none"
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> Yes, Switch to Registered
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            setOverrideDuplicateCustomer(true);
+                            setShowMatchAlert(false);
+                            toast.info("Proceeding with direct entry without linking registered account.");
+                          }}
+                          className="text-xs h-8 px-2.5 text-slate-600 hover:text-slate-900 rounded-lg"
+                        >
+                          No, Keep as Walk-in
+                        </Button>
+                      </div>
+                    </motion.div>
+                  )}
+
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Client / Customer Name <span className="text-destructive">*</span></label>
+                    <Input 
+                      value={form.customerName} 
+                      onChange={(e) => setForm(prev => ({ ...prev, customerName: e.target.value }))} 
+                      placeholder="e.g. Ramesh Kumar / Direct Client" 
+                      required 
+                      disabled={isSaving || !isNew} 
+                      className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
+                    />
                   </div>
                   <div className="space-y-2">
-                    <label className="text-sm font-medium">Phone</label>
+                    <label className="text-sm font-medium flex items-center justify-between">
+                      <span>Contact Phone / WhatsApp <span className="text-destructive">*</span></span>
+                      {isCheckingPhone && (
+                        <span className="text-[10px] text-primary flex items-center gap-1 font-semibold">
+                          <Loader2 className="w-3 h-3 animate-spin" /> Checking customer database...
+                        </span>
+                      )}
+                    </label>
                     <Input 
                       value={form.customerPhone} 
-                      onChange={(e) => setForm({ ...form, customerPhone: e.target.value })} 
-                      placeholder="+91 ..." 
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setForm(prev => ({ ...prev, customerPhone: val }));
+                        if (val.replace(/\D/g, '').length >= 10) {
+                          checkExistingCustomerPhone(val);
+                        }
+                      }} 
+                      onBlur={(e) => checkExistingCustomerPhone(e.target.value)}
+                      placeholder="+91 9876543210" 
+                      required 
+                      disabled={isSaving || !isNew} 
+                      className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Contact Email (Optional)</label>
+                    <Input 
+                      type="email"
+                      value={form.customerEmail} 
+                      onChange={(e) => setForm(prev => ({ ...prev, customerEmail: e.target.value }))} 
+                      placeholder="client@example.com" 
                       disabled={isSaving || !isNew} 
                       className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
                     />
@@ -1170,7 +1957,8 @@ const ComplaintEdit = () => {
                 <Input 
                   value={form.location} 
                   onChange={(e) => {
-                    setForm({ ...form, location: e.target.value });
+                    const val = e.target.value;
+                    setForm(prev => ({ ...prev, location: val }));
                     setShowLocationSuggestions(true);
                   }}
                   onFocus={() => setShowLocationSuggestions(true)}
@@ -1191,7 +1979,7 @@ const ComplaintEdit = () => {
                         key={suggestion}
                         type="button"
                         onClick={() => {
-                          setForm({ ...form, location: suggestion });
+                          setForm(prev => ({ ...prev, location: suggestion }));
                           setShowLocationSuggestions(false);
                         }}
                         className="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-accent hover:text-accent-foreground transition-colors truncate"
@@ -1216,6 +2004,128 @@ const ComplaintEdit = () => {
             )}
           </div>
 
+          {/* Linked Customer Assets Dropdown & Warranty Expiry View */}
+          {customerAssets.length > 0 && (
+            <div className="space-y-3 p-4 bg-blue-50/60 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-900/60 rounded-2xl shadow-xs">
+              <label className="text-sm font-semibold flex items-center justify-between text-blue-900 dark:text-blue-200">
+                <span className="flex items-center gap-2">
+                  <Package className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                  Select Registered Customer Asset
+                </span>
+                <span className="text-xs text-muted-foreground font-normal">
+                  ({customerAssets.length} asset{customerAssets.length > 1 ? 's' : ''} available)
+                </span>
+              </label>
+
+              <Select
+                value={selectedAssetId}
+                onValueChange={handleAssetSelection}
+                disabled={isSaving || !isNew}
+              >
+                <SelectTrigger className="bg-white dark:bg-slate-900 border-blue-200 text-xs h-10">
+                  <SelectValue placeholder="Click to select customer's asset (Brand, Category, Serial No)..." />
+                </SelectTrigger>
+                <SelectContent className="max-h-60">
+                  {customerAssets.map((asset: any) => {
+                    const brandPart = asset.brand ? `[${asset.brand}] ` : '';
+                    const namePart = asset.product_name || asset.category || 'Asset';
+                    const serialPart = asset.serial_number ? ` • S/N: ${asset.serial_number}` : '';
+                    const aWInfo = getAssetWarrantyDetails(asset.purchase_date, asset.warranty_months);
+                    return (
+                      <SelectItem key={asset.id} value={asset.id} className="text-xs py-2">
+                        <div className="flex flex-col">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-semibold text-slate-800 dark:text-slate-200">
+                              {brandPart}{namePart}
+                            </span>
+                            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+                              !aWInfo.isExpired ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' : 'bg-rose-100 text-rose-800 border border-rose-300'
+                            }`}>
+                              {!aWInfo.isExpired ? 'Warranty Active' : 'Expired'}
+                            </span>
+                          </div>
+                          <span className="text-[11px] text-muted-foreground">
+                            Category: <strong className="text-primary">{asset.category}</strong>{serialPart} • Expiry: {aWInfo.expiryDateStr}
+                          </span>
+                        </div>
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
+
+              {/* Selected Asset Warranty & Expiry Info Card */}
+              {selectedAsset && selectedAssetWarranty && (
+                <div className={`p-4 rounded-xl border transition-all ${
+                  !selectedAssetWarranty.isExpired 
+                    ? 'bg-emerald-50/90 dark:bg-emerald-950/30 border-emerald-300 dark:border-emerald-800' 
+                    : 'bg-amber-50/90 dark:bg-amber-950/30 border-amber-300 dark:border-amber-800'
+                }`}>
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b pb-2.5 mb-3 border-current/10">
+                    <div className="flex items-center gap-2">
+                      <ShieldCheck className={`w-4 h-4 ${!selectedAssetWarranty.isExpired ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`} />
+                      <span className="font-bold text-xs uppercase tracking-wider text-slate-800 dark:text-slate-200">
+                        Asset Warranty & Hardware Specs
+                      </span>
+                    </div>
+                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold ${
+                      !selectedAssetWarranty.isExpired
+                        ? 'bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-200 border border-emerald-300 dark:border-emerald-700'
+                        : 'bg-rose-100 dark:bg-rose-900/60 text-rose-800 dark:text-rose-200 border border-rose-300 dark:border-rose-700'
+                    }`}>
+                      {!selectedAssetWarranty.isExpired ? (
+                        <>
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                          Active Warranty ({selectedAssetWarranty.daysRemaining > 0 ? `${selectedAssetWarranty.daysRemaining} days left` : 'Active'})
+                        </>
+                      ) : (
+                        <>
+                          <AlertTriangle className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400" />
+                          Warranty Expired ({selectedAssetWarranty.expiryDateStr})
+                        </>
+                      )}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 text-xs">
+                    <div>
+                      <span className="text-muted-foreground block text-[11px] font-medium">Warranty Expiry Date:</span>
+                      <strong className="text-sm font-bold text-slate-900 dark:text-slate-100">
+                        {selectedAssetWarranty.expiryDateStr}
+                      </strong>
+                    </div>
+
+                    <div>
+                      <span className="text-muted-foreground block text-[11px] font-medium">Purchase Date & Span:</span>
+                      <span className="font-semibold text-slate-800 dark:text-slate-200">
+                        {selectedAssetWarranty.purchaseDateStr} ({selectedAssetWarranty.months} Months)
+                      </span>
+                    </div>
+
+                    <div>
+                      <span className="text-muted-foreground block text-[11px] font-medium">Hardware Identity:</span>
+                      <span className="font-mono text-slate-700 dark:text-slate-300">
+                        {selectedAsset.serial_number ? `S/N: ${selectedAsset.serial_number}` : selectedAsset.model_number ? `Model: ${selectedAsset.model_number}` : selectedAsset.brand || 'N/A'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 pt-2.5 border-t border-current/10 flex items-center gap-2 text-[11px]">
+                    {!selectedAssetWarranty.isExpired ? (
+                      <p className="text-emerald-800 dark:text-emerald-300 font-medium">
+                        ✓ <strong>Warranty Active:</strong> Coverage is automatically preset to <strong>Under Warranty</strong> and Chargeable Service to <strong>No</strong> (Included in Scope).
+                      </p>
+                    ) : (
+                      <p className="text-amber-800 dark:text-amber-300 font-medium">
+                        ⚠️ <strong>Warranty Expired:</strong> Coverage is preset to <strong>Out of Warranty</strong> and Chargeable Service to <strong>Yes</strong>.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="space-y-2">
             <label className="text-sm font-medium">Field of Work <span className="text-destructive">*</span></label>
             {isCustomer && (
@@ -1237,7 +2147,7 @@ const ComplaintEdit = () => {
               <Select
                 key={form.fieldOfWork || 'empty'}
                 value={form.fieldOfWork}
-                onValueChange={(v) => setForm({ ...form, fieldOfWork: v })}
+                onValueChange={(v) => setForm(prev => ({ ...prev, fieldOfWork: v }))}
                 disabled={isSaving || isAssetsLoading || (isCustomer && availableCategories.length === 0) || !isNew}
               >
                 <SelectTrigger className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100">
@@ -1257,7 +2167,7 @@ const ComplaintEdit = () => {
 
           <div className="space-y-2">
             <label className="text-sm font-medium">Severity Level <span className="text-destructive">*</span></label>
-            <Select value={form.severity} onValueChange={(v) => setForm({ ...form, severity: v as SeverityTier })} disabled={isSaving || !isNew}>
+            <Select value={form.severity} onValueChange={(v) => setForm(prev => ({ ...prev, severity: v as SeverityTier }))} disabled={isSaving || !isNew}>
               <SelectTrigger className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100">
                 <SelectValue />
               </SelectTrigger>
@@ -1269,13 +2179,122 @@ const ComplaintEdit = () => {
             </Select>
           </div>
 
-          {isAdminOrSupervisor && (
+          {/* Coverage Dropdown (Required) */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium">
+              Coverage <span className="text-destructive">*</span>
+            </label>
+            <Select 
+              value={form.coverage} 
+              onValueChange={(v) => {
+                setForm(prev => ({
+                  ...prev,
+                  coverage: v,
+                  chargeableService: (v === 'Under Warranty' || v === 'AMC' || v === 'CAMC') ? 'No' : 'Yes'
+                }));
+              }} 
+              disabled={isSaving}
+            >
+              <SelectTrigger className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100">
+                <SelectValue placeholder="Select coverage" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="Under Warranty">Under Warranty</SelectItem>
+                <SelectItem value="Out of Warranty">Out of Warranty</SelectItem>
+                <SelectItem value="AMC">AMC (Annual Maintenance Contract)</SelectItem>
+                <SelectItem value="CAMC">CAMC (Comprehensive AMC)</SelectItem>
+                <SelectItem value="Chargeable Service">Chargeable Service</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Chargeable Service Dropdown (Required) */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium">
+              Chargeable Service <span className="text-destructive">*</span>
+            </label>
+            <Select 
+              value={form.chargeableService} 
+              onValueChange={(v) => setForm(prev => ({ ...prev, chargeableService: v }))} 
+              disabled={isSaving}
+            >
+              <SelectTrigger className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100">
+                <SelectValue placeholder="Select Chargeable Service" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="Yes">Yes (Chargeable)</SelectItem>
+                <SelectItem value="No">No (Included in Scope)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Conditional Service Charge Amount Field */}
+          {form.chargeableService === "Yes" && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium">
+                Service Charge Amount (₹) <span className="text-destructive">*</span>
+              </label>
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                placeholder="Enter amount (e.g. 500)"
+                value={form.serviceCharge || ""}
+                onChange={(e) => setForm(prev => ({ ...prev, serviceCharge: parseFloat(e.target.value) || 0 }))}
+                disabled={isSaving}
+                className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100 font-medium"
+                required
+              />
+            </div>
+          )}
+
+          {/* Combined Scheduled Date & Time - Only shown after technician is assigned to the complaint */}
+          {!isNew && (Boolean(form.assignedTechnician) || Boolean(selectedTechnicianId) || (selectedTechnicianIds && selectedTechnicianIds.length > 0) || Boolean(existingComplaint?.assigned_technician) || Boolean(existingComplaint?.assigned_to) || (existingComplaint?.complaint_technicians && existingComplaint.complaint_technicians.length > 0)) && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium block">Scheduled Date & Time (Assigned Visit)</label>
+              <Input 
+                type="datetime-local" 
+                value={(() => {
+                  if (!form.scheduledDate) return "";
+                  const d = new Date(form.scheduledDate);
+                  if (isNaN(d.getTime())) return "";
+                  const pad = (n: number) => String(n).padStart(2, '0');
+                  const yyyy = d.getFullYear();
+                  const mm = pad(d.getMonth() + 1);
+                  const dd = pad(d.getDate());
+                  const time = form.scheduledTime ? form.scheduledTime.slice(0, 5) : "09:00";
+                  return `${yyyy}-${mm}-${dd}T${time}`;
+                })()}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (!val) {
+                    setForm(prev => ({ ...prev, scheduledDate: null, scheduledTime: "" }));
+                    return;
+                  }
+                  const [datePart, timePart] = val.split("T");
+                  if (datePart) {
+                    const [y, m, d] = datePart.split("-").map(Number);
+                    const parsedDate = new Date(y, m - 1, d);
+                    setForm(prev => ({
+                      ...prev,
+                      scheduledDate: parsedDate,
+                      scheduledTime: timePart ? `${timePart}:00` : "09:00:00"
+                    }));
+                  }
+                }}
+                disabled={isSaving}
+                className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
+              />
+            </div>
+          )}
+
+          {!isNew && isAdminOrSupervisor && (
             <div className="space-y-2">
               <label className="text-sm font-medium">Target Time / SLA</label>
               <Input 
                 type="datetime-local" 
                 value={form.targetEndTime} 
-                onChange={(e) => setForm({ ...form, targetEndTime: e.target.value })} 
+                onChange={(e) => setForm(prev => ({ ...prev, targetEndTime: e.target.value }))} 
                 disabled={isSaving}
                 className="h-10"
               />
@@ -1303,13 +2322,13 @@ const ComplaintEdit = () => {
                       if (!confirmed) return;
                     }
                     setSelectedSupervisorId("");
-                    setForm({ ...form, assignedSupervisor: "", status: "unassigned" });
+                    setForm(prev => ({ ...prev, assignedSupervisor: "", status: "unassigned" }));
                     setSupervisorError("");
                   } else {
                     const match = supervisors?.find((s: any) => s.id === actualVal);
                     if (match) {
                       setSelectedSupervisorId(match.id);
-                      setForm({ ...form, assignedSupervisor: match.full_name, status: "assigned" });
+                      setForm(prev => ({ ...prev, assignedSupervisor: match.full_name, status: "assigned" }));
                       setSupervisorError("");
                       toast.success("Status automatically updated to 'Assigned'");
                     }
@@ -1380,78 +2399,95 @@ const ComplaintEdit = () => {
             </div>
           )}
 
-          {isRole("supervisor") && (
+          {!isNew && (existingComplaint?.current_phase || 1) >= 3 && isRole("supervisor", "admin") && (
             <div className="md:col-span-2 space-y-2">
-              <label className="text-sm font-medium flex items-center gap-2">
-                <Filter className="w-3.5 h-3.5 text-primary" />
-                Assigned Technician
-                {form.fieldOfWork && (<span className="text-xs font-normal text-muted-foreground">— Filtered by "{form.fieldOfWork}" expertise</span>)}
-              </label>
-              <Select 
-                value={selectedTechnicianId || "clear_unassigned"} 
-                onValueChange={(v) => {
-                  const actualVal = v === "clear_unassigned" ? "" : v;
-                  if (!actualVal) {
-                    setSelectedTechnicianId("");
-                    const nextStatus = form.assignedSupervisor ? "assigned" : "unassigned";
-                    setForm({ ...form, assignedTechnician: "", status: nextStatus });
-                  } else {
-                    const match = technicians?.find((t: any) => t.id === actualVal);
-                    if (match) {
-                      setSelectedTechnicianId(match.id);
-                      setForm({ ...form, assignedTechnician: match.full_name, status: "dispatched" });
-                      toast.success("Status automatically updated to 'Dispatched'");
-                    }
-                  }
-                }} 
-                disabled={isSaving || !technicians || !isRole("supervisor")}
-              >
-                <SelectTrigger className="h-10">
-                  <SelectValue placeholder="Assign technician">
-                    {form.assignedTechnician ? <span className="truncate font-medium">{form.assignedTechnician}</span> : undefined}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="clear_unassigned">None (Unassign)</SelectItem>
-                  {matchingTechnicians.length > 0 && (
-                    <>
-                      <div className="px-2 py-1.5 text-xs font-semibold text-primary uppercase tracking-wider">Matching Expertise {form.fieldOfWork && `(${form.fieldOfWork})`}</div>
-                      {matchingTechnicians.map((t: any) => (
-                        <SelectItem key={t.id} value={t.id}>
-                          <div className="flex flex-col text-left py-0.5">
-                            <div className="flex items-center gap-2">
-                              <span className="font-medium">{t.full_name}</span>
-                              <span className={`w-1.5 h-1.5 rounded-full ${t.available ? "bg-success" : "bg-muted-foreground"}`} />
-                              <span className="text-[9px] text-muted-foreground">{t.available ? "Available" : "Busy"}</span>
-                            </div>
-                            <span className="text-[10px] text-muted-foreground leading-normal">
-                              {t.email}{t.phone ? ` • ${t.phone}` : ''}{t.employeeId ? ` • ID: ${t.employeeId}` : ''}{t.expertise ? ` • ${t.expertise}` : ''}
-                            </span>
-                          </div>
-                        </SelectItem>
-                      ))}
-                    </>
-                  )}
-                  {nonMatchingTechnicians.length > 0 && (
-                    <>
-                      <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider border-t mt-1 pt-2">Other Technicians</div>
-                      {nonMatchingTechnicians.map((t: any) => (
-                        <SelectItem key={t.id} value={t.id}>
-                          <div className="flex flex-col text-left py-0.5">
-                            <div className="flex items-center gap-2">
-                              <span className="font-medium text-muted-foreground">{t.full_name}</span>
-                              <span className={`w-1.5 h-1.5 rounded-full ${t.available ? "bg-success" : "bg-muted-foreground"}`} />
-                            </div>
-                            <span className="text-[10px] text-muted-foreground leading-normal">
-                              {t.email}{t.phone ? ` • ${t.phone}` : ''}{t.employeeId ? ` • ID: ${t.employeeId}` : ''}{t.expertise ? ` • ${t.expertise}` : ''}
-                            </span>
-                          </div>
-                        </SelectItem>
-                      ))}
-                    </>
-                  )}
-                </SelectContent>
-              </Select>
+              <div className="flex justify-between items-center">
+                <label className="text-sm font-medium flex items-center gap-2">
+                  <Filter className="w-3.5 h-3.5 text-primary" />
+                  Assigned Technicians
+                  {form.fieldOfWork && (<span className="text-xs font-normal text-muted-foreground">— Filtered by "{form.fieldOfWork}"</span>)}
+                </label>
+                <span className="text-xs font-semibold text-primary">
+                  {selectedTechnicianIds.length} selected
+                  {leadTechnicianId && " • 👑 Lead designated"}
+                </span>
+              </div>
+
+              <div className="border border-slate-200 rounded-lg p-3 max-h-56 overflow-y-auto space-y-1.5 bg-slate-50/50">
+                {technicians && technicians.length === 0 && (
+                  <p className="text-xs text-muted-foreground p-2">No technician profiles found.</p>
+                )}
+                {technicians && technicians.map((t: any) => {
+                  const isChecked = selectedTechnicianIds.includes(t.id);
+                  const isLead = leadTechnicianId === t.id;
+                  const techIdDisplay = t.technician_id || t.employeeId || t.employee_id || (t.id ? `TECH-${String(t.id).replace(/-/g, '').slice(0, 4).toUpperCase()}` : "");
+                  const desigDisplay = t.designation || t.expertise || t.department || "Field Technician";
+
+                  return (
+                    <div
+                      key={t.id}
+                      className={`flex items-center justify-between gap-2 p-2 rounded-md text-xs transition-colors ${
+                        isChecked
+                          ? (isLead ? "bg-amber-500/10 border border-amber-300 font-semibold" : "bg-primary/10 border border-primary/30 text-primary font-semibold")
+                          : "hover:bg-slate-100 border border-transparent text-slate-700 bg-white"
+                      }`}
+                    >
+                      <label className="flex items-center space-x-2.5 cursor-pointer flex-1 min-w-0">
+                        <input
+                          type="checkbox"
+                          value={t.id}
+                          checked={isChecked}
+                          disabled={isSaving}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            let nextIds = checked
+                              ? [...selectedTechnicianIds, t.id]
+                              : selectedTechnicianIds.filter((id) => id !== t.id);
+                            setSelectedTechnicianIds(nextIds);
+                            if (checked && (nextIds.length === 1 || !leadTechnicianId)) {
+                              setLeadTechnicianId(t.id);
+                            } else if (!checked && leadTechnicianId === t.id) {
+                              setLeadTechnicianId(nextIds.length > 0 ? nextIds[0] : null);
+                            }
+                            const names = nextIds
+                              .map((id) => technicians.find((tech: any) => tech.id === id)?.full_name)
+                              .filter(Boolean)
+                              .join(", ");
+                            setForm((prev) => ({
+                              ...prev,
+                              assignedTechnician: names,
+                              status: nextIds.length > 0 ? "dispatched" : prev.assignedSupervisor ? "assigned" : "unassigned",
+                            }));
+                          }}
+                          className="w-4 h-4 rounded text-primary focus:ring-primary cursor-pointer"
+                        />
+                        <span className="flex-1 truncate">
+                          {t.full_name} {techIdDisplay ? `(${techIdDisplay})` : ""} — {desigDisplay}
+                        </span>
+                      </label>
+
+                      {isChecked && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            setLeadTechnicianId(t.id);
+                          }}
+                          className={`px-2 py-0.5 rounded text-[11px] flex items-center gap-1 font-semibold transition-colors shrink-0 ${
+                            isLead
+                              ? "bg-amber-500 text-white shadow-xs"
+                              : "bg-slate-200 text-slate-600 hover:bg-amber-100 hover:text-amber-800"
+                          }`}
+                          title={isLead ? "Designated Lead Technician" : "Click to set as Lead"}
+                        >
+                          <Crown className={`w-3 h-3 ${isLead ? "fill-white text-white" : "text-amber-600"}`} />
+                          {isLead ? "Lead" : "Make Lead"}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
 
@@ -1459,7 +2495,7 @@ const ComplaintEdit = () => {
             <label className="text-sm font-medium">Problem Description <span className="text-destructive">*</span></label>
             <Textarea 
               value={form.description} 
-              onChange={(e) => setForm({ ...form, description: e.target.value })} 
+              onChange={(e) => setForm(prev => ({ ...prev, description: e.target.value }))} 
               rows={4} 
               placeholder={isCustomer ? "Describe the issue in detail. What happened? When did it start?" : "Describe the issue..."} 
               required 
@@ -1473,7 +2509,7 @@ const ComplaintEdit = () => {
               <label className="text-sm font-medium">Supervisor Notes / Key Points for Technician</label>
               <Textarea
                 value={form.supervisor_notes}
-                onChange={(e) => setForm({ ...form, supervisor_notes: e.target.value })}
+                onChange={(e) => setForm(prev => ({ ...prev, supervisor_notes: e.target.value }))}
                 rows={4}
                 placeholder="Optional: Add key symptoms or instructions for the technician."
                 disabled={isSaving}
@@ -1489,19 +2525,35 @@ const ComplaintEdit = () => {
             </label>
             <input type="file" multiple accept="image/*,video/*,.png,.jpg,.jpeg,.gif,.webp,.mp4,.mov,.avi,.mkv" onChange={async (e) => {
               const files = Array.from(e.target.files || []);
-              const urls: string[] = [];
-              for (const file of files) {
-                try {
-                  const url = await uploadToSupabase(file, 'evidence');
-                  urls.push(url);
-                } catch (err) {
-                  toast.error(`Failed to upload ${file.name}`);
+              if (files.length === 0) return;
+              setIsUploading(true);
+              try {
+                const uploadPromises = files.map(async (file) => {
+                  try {
+                    return await uploadToSupabase(file, 'evidence');
+                  } catch (err) {
+                    toast.error(`Failed to upload ${file.name}`);
+                    return null;
+                  }
+                });
+                const results = await Promise.all(uploadPromises);
+                const successfulUrls = results.filter((url): url is string => !!url);
+                if (successfulUrls.length > 0) {
+                  setEvidenceUrls(prev => [...prev, ...successfulUrls]);
+                  toast.success(`${successfulUrls.length} evidence file(s) optimized & uploaded!`);
                 }
+              } finally {
+                setIsUploading(false);
+                setUploadProgressText("");
+                e.target.value = '';
               }
-              setEvidenceUrls(prev => [...prev, ...urls]);
-              if (urls.length > 0) toast.success(`${urls.length} file(s) uploaded`);
             }} className="text-sm file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary/10 file:text-primary hover:file:bg-primary/20" disabled={isSaving || isUploading || (!isNew && isRole("supervisor"))} />
-            {isUploading && <p className="text-xs text-muted-foreground">Uploading...</p>}
+            {isUploading && (
+              <div className="flex items-center gap-2 text-xs font-semibold text-primary bg-primary/10 px-3 py-2 rounded-xl border border-primary/20 animate-pulse mt-1">
+                <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                <span>{uploadProgressText || "Compressing & uploading evidence... Please wait."}</span>
+              </div>
+            )}
             {evidenceUrls.length > 0 && (
               <div className="flex flex-wrap gap-2 mt-2">
                 {evidenceUrls.map((url, i) => (
@@ -1519,44 +2571,11 @@ const ComplaintEdit = () => {
           </div>
         </div>
 
-        <div className="space-y-3 pt-4 border-t">
-          {isNew && complaintDraft.hasDraft() && (
-            <div className="w-full bg-amber-50 border border-amber-200 rounded-lg p-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-              <span className="text-xs font-medium text-amber-800">Draft saved</span>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  complaintDraft.clear();
-                  setForm({
-                    title: "",
-                    customerId: "",
-                    customerName: "",
-                    customerPhone: "",
-                    location: "",
-                    fieldOfWork: "",
-                    status: "unassigned",
-                    severity: "minor",
-                    assignedSupervisor: "",
-                    assignedTechnician: "",
-                    description: "",
-                    supervisor_notes: "",
-                    targetEndTime: "",
-                    customerLat: null,
-                    customerLng: null,
-                  });
-                  setSelectedSupervisorId("");
-                  setSelectedTechnicianId("");
-                  toast.success("Draft cleared");
-                }}
-                className="text-xs text-amber-700 hover:text-amber-900 self-end sm:self-auto"
-              >
-                Clear Draft
-              </Button>
-            </div>
-          )}
-          <div className="flex flex-col sm:flex-row gap-3 justify-end">
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 border-t">
+          <div className="flex items-center gap-3 w-full sm:w-auto">
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-3 justify-end w-full sm:w-auto">
             <Button type="button" variant="outline" onClick={() => navigate(-1)} disabled={isSaving} className="w-full sm:w-auto">Cancel</Button>
             <Button type="submit" className="gradient-primary text-primary-foreground shadow-glow hover:opacity-90 w-full sm:w-auto" disabled={isSaving}>
               {isSaving ? (<span className="flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" />Saving...</span>) : (

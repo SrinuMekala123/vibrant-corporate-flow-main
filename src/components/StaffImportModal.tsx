@@ -6,8 +6,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useDropzone } from 'react-dropzone';
 import { toast } from 'sonner';
 import { parseFile } from '@/lib/importHelpers';
+import { downloadCSV, generateSampleCSV } from '@/utils/csvHelpers';
 import { supabase } from '@/lib/supabase';
-import { Upload, Loader2 } from 'lucide-react';
+import { Upload, Loader2, Download } from 'lucide-react';
 
 interface StaffImportModalProps {
   open: boolean;
@@ -19,9 +20,9 @@ interface StaffImportModalProps {
 
 type StaffRole = 'technician' | 'supervisor';
 
-const COMMON_FIELDS = ['full_name', 'email', 'phone', 'branch', 'expertise', 'password'];
+const COMMON_FIELDS = ['full_name', 'email', 'phone', 'branch', 'password'];
 const TECHNICIAN_FIELDS = ['full_name', 'email', 'phone', 'branch', 'expertise', 'password'];
-const SUPERVISOR_FIELDS = [...COMMON_FIELDS];
+const SUPERVISOR_FIELDS = ['full_name', 'email', 'phone', 'branch', 'password'];
 
 export default function StaffImportModal({ open, onOpenChange, onSuccess, role = '', onRoleChange }: StaffImportModalProps) {
   const [internalRole, setInternalRole] = useState<StaffRole | ''>('');
@@ -152,12 +153,25 @@ export default function StaffImportModal({ open, onOpenChange, onSuccess, role =
 
           <div className="flex items-center justify-between">
             <p className="text-xs text-muted-foreground">
-              {role === 'technician'
+              {currentRole === 'technician'
                 ? 'Technician CSV requires: full_name, email, phone, branch, expertise, password'
-                : role === 'supervisor'
-                  ? 'Supervisor CSV: full_name, email, phone, branch, expertise, password'
+                : currentRole === 'supervisor'
+                  ? 'Supervisor CSV: full_name, email, phone, branch, password'
                   : 'Select a staff type to see required columns.'}
             </p>
+            {currentRole && (
+              <button
+                type="button"
+                onClick={() => {
+                  const csv = generateSampleCSV(currentRole);
+                  downloadCSV(csv, `${currentRole}_sample.csv`);
+                }}
+                className="text-xs font-semibold text-primary hover:text-primary/80 flex items-center gap-1"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Download Sample CSV
+              </button>
+            )}
           </div>
 
           <div

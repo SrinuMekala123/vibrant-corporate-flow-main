@@ -15,7 +15,8 @@ serve(async (req: Request): Promise<Response> => {
 
   try {
     const body = await req.json();
-    const { email, password, fullName, role, phone, expertise, userId, branchId, customerType = "Retail" } = body;
+    const { email, password, fullName, role, phone, expertise, userId, branchId, customerType = "Retail", technicianId, technician_id, employee_id, designation } = body;
+    const resolvedTechnicianId = technician_id || technicianId || employee_id || null;
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -77,6 +78,9 @@ serve(async (req: Request): Promise<Response> => {
         role,
         phone,
         expertise,
+        technician_id: role === "technician" ? resolvedTechnicianId : null,
+        employee_id: role === "technician" ? resolvedTechnicianId : null,
+        designation: role === "technician" ? (designation || null) : null,
       },
     });
 
@@ -91,6 +95,9 @@ serve(async (req: Request): Promise<Response> => {
         role,
         phone: phone || null,
         expertise: expertise || null,
+        technician_id: role === "technician" ? resolvedTechnicianId : null,
+        employee_id: role === "technician" ? resolvedTechnicianId : null,
+        designation: role === "technician" ? (designation || null) : null,
         branch_id: resolvedBranchId,
         customer_type: role === "customer" ? customerType : null,
         avatar_url: fullName.charAt(0).toUpperCase(),

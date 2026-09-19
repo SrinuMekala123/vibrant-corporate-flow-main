@@ -6,7 +6,7 @@ import { StatusBadge, SeverityBadge } from "@/components/Badges";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { useQuery } from "@tanstack/react-query";
-import { complaintService } from "@/services/complaintService";
+import { complaintService, formatComplaintTicketId } from "@/services/complaintService";
 import { supabase } from "@/lib/supabase";
 import { useState, useEffect } from "react";
 
@@ -111,32 +111,58 @@ const SupervisorDashboard = () => {
   };
 
   return (
-    <div className="space-y-8 relative">
+    <div className="space-y-8 relative pb-12">
       {/* Ambient background glows */}
-      <div className="bg-ambient-blur top-10 right-10 bg-primary/10" />
-      <div className="bg-ambient-blur bottom-20 left-20 bg-amber-500/10" />
+      <div className="bg-ambient-blur top-0 right-10 bg-primary/10" />
+      <div className="bg-ambient-blur top-80 left-10 bg-amber-500/10" />
 
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 border-b border-border/40 pb-6 relative z-10">
-        <div className="flex flex-col">
-          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-extrabold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 mb-3.5 w-fit uppercase tracking-wider shadow-sm">
-            <span className="relative flex h-1.5 w-1.5">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
-            </span>
-            System Active
+      <div className="glass-card rounded-3xl p-6 sm:p-8 border border-border/60 shadow-xl relative overflow-hidden z-10">
+        <div className="absolute top-0 right-0 w-96 h-96 bg-gradient-to-bl from-primary/10 via-amber-500/5 to-transparent rounded-full filter blur-3xl pointer-events-none" />
+
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 relative z-10">
+          <div className="space-y-2 max-w-2xl">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-extrabold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shadow-sm">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+                </span>
+                SUPERVISORY DISPATCH ACTIVE
+              </span>
+              {supervisorExpertise && (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-primary/10 text-primary border border-primary/20">
+                  <Wrench className="w-3 h-3" /> {supervisorExpertise}
+                </span>
+              )}
+            </div>
+            <h1 className="text-2xl sm:text-4xl font-display font-black tracking-tight text-foreground">
+              {getGreetingText()}
+            </h1>
+            <p className="text-muted-foreground text-sm font-medium leading-relaxed">
+              Supervisory Control Board. Triage field work orders, coordinate specialized technicians, verify service proofs, and authorize ticket closures.
+            </p>
           </div>
-          <h1 className="text-2xl sm:text-3xl font-display font-black tracking-tight text-slate-900 break-words leading-tight">{getGreetingText()}</h1>
-          <p className="text-slate-500 text-[13px] font-medium mt-2 max-w-3xl leading-relaxed">
-            Welcome to your smart tracking dashboard. Monitor live field complaints, manage scheduled service tasks, download system metrics, and track updates dynamically.
-          </p>
+
+          <div className="flex items-center gap-2.5 shrink-0">
+            <Link to="/assignments">
+              <Button className="gradient-primary text-white hover:opacity-95 rounded-xl h-10 px-4 gap-2 font-bold shadow-glow text-xs">
+                <Users className="w-4 h-4" /> Dispatch Technicians
+              </Button>
+            </Link>
+            <Link to="/daily-schedule">
+              <Button variant="outline" className="rounded-xl border-border/70 hover:bg-muted/80 h-10 px-3.5 gap-2 shadow-sm font-semibold text-xs">
+                <Clock className="w-4 h-4 text-primary" /> Schedule
+              </Button>
+            </Link>
+          </div>
         </div>
       </div>
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 relative z-10">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 relative z-10">
         <StatCard label="My Active Tickets" value={activeTickets.length} icon={ClipboardList} gradient="primary" delay={0} />
-        <StatCard label="Urgent Issues" value={urgentTickets.length} icon={AlertTriangle} gradient="warm" delay={0.05} />
+        <StatCard label="Critical Escalations" value={urgentTickets.length} icon={AlertTriangle} gradient="warm" delay={0.05} />
         <StatCard label="Pending Verification" value={pendingVerification.length} icon={ShieldCheck} gradient="cool" delay={0.1} />
         <StatCard label="My Technicians" value={myTechnicians.length} icon={Users} gradient="primary" delay={0.15} />
       </div>
@@ -155,26 +181,27 @@ const SupervisorDashboard = () => {
           </div>
           <div className="space-y-3">
             {pendingVerification.map((t) => (
-              <div
+              <Link
                 key={t.id}
-                className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-xl border border-amber-500/20 bg-card hover:bg-amber-500/10 transition-colors"
+                to={`/complaints/${t.id}`}
+                className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-xl border border-amber-500/20 bg-card hover:bg-amber-500/10 transition-colors cursor-pointer group"
               >
                 <div>
                   <div className="flex items-center gap-2">
-                    <span className="text-xs font-mono font-bold text-amber-600">FSM-{t.id.slice(0, 4).toUpperCase()}</span>
+                    <span className="text-xs font-mono font-bold text-amber-600">{formatComplaintTicketId(t)}</span>
                     <span className="text-xs text-muted-foreground">•</span>
-                    <span className="font-bold text-sm text-foreground truncate max-w-[200px] sm:max-w-[400px] inline-block" title={t.title}>{t.title}</span>
+                    <span className="font-bold text-sm text-foreground truncate max-w-[200px] sm:max-w-[400px] inline-block group-hover:text-primary transition-colors" title={t.title}>{t.title}</span>
                   </div>
                   <p className="text-xs text-muted-foreground mt-1">
                     Completed by <span className="font-semibold text-foreground">{t.assigned_technician || 'Technician'}</span> • Customer: <span className="font-semibold text-primary">{t.customer_name || t.profiles?.full_name || t.created_by_name || 'Customer'}</span>
                   </p>
                 </div>
-                <Link to={`/complaints/${t.id}`} className="shrink-0 self-end sm:self-auto">
-                  <Button size="sm" className="gradient-primary text-white text-xs font-bold rounded-lg h-9 shadow-sm">
-                    Review & Verify
-                  </Button>
-                </Link>
-              </div>
+                <div className="shrink-0 self-end sm:self-auto">
+                  <span className="inline-flex items-center gap-1.5 gradient-primary text-white text-xs font-bold rounded-lg h-9 px-4 shadow-sm">
+                    <ShieldCheck className="w-3.5 h-3.5" /> Review & Verify
+                  </span>
+                </div>
+              </Link>
             ))}
           </div>
         </motion.div>
@@ -207,7 +234,7 @@ const SupervisorDashboard = () => {
                 <div className="absolute left-0 top-0 bottom-0 w-1 bg-primary opacity-0 group-hover:opacity-100 transition-opacity" />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-xs font-mono font-bold text-primary">FSM-{t.id.slice(0, 4).toUpperCase()}</span>
+                    <span className="text-xs font-mono font-bold text-primary">{formatComplaintTicketId(t)}</span>
                     <span className="text-xs text-muted-foreground">•</span>
                     {t.severity && <SeverityBadge severity={t.severity as any} />}
                     {t.status && <StatusBadge status={t.status} />}

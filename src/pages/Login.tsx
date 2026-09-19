@@ -716,7 +716,8 @@ const Login = () => {
     }
 
     // 2. Attempt login
-    const { error } = await signIn(email, password);
+    const cleanEmail = email.trim().toLowerCase();
+    const { error } = await signIn(cleanEmail, password);
 
     if (error) {
       console.error("Login error:", error);

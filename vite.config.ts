@@ -38,6 +38,11 @@
 //   },
 // }));
 
+import crypto from "node:crypto";
+if (typeof (global as any).crypto === "undefined" || !(global as any).crypto?.getRandomValues) {
+  (global as any).crypto = crypto.webcrypto;
+}
+
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";

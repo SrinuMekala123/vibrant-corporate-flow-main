@@ -23,6 +23,7 @@ export function NotificationCenter() {
   const [isOpen, setIsOpen] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [filterTab, setFilterTab] = useState<"all" | "unread">("all");
   const [shake, setShake] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -37,17 +38,18 @@ export function NotificationCenter() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // Fetch initial notifications and count
+  // Fetch initial notifications and count with auto-refresh every 30s
   useEffect(() => {
-    if (!user?.id) return;
-
     const fetchInitialData = async () => {
-      const data = await notificationService.getNotifications(user.id);
+      const data = await notificationService.getNotifications(user?.id);
       setNotifications(data);
-      setUnreadCount(data.filter(n => !n.is_read).length);
+      const unread = data.filter((n) => !n.is_read).length;
+      setUnreadCount(unread);
     };
 
     fetchInitialData();
+    const interval = setInterval(fetchInitialData, 30000);
+    return () => clearInterval(interval);
   }, [user?.id]);
 
   // Realtime updates are disabled to prevent WebSocket 403 errors
@@ -113,14 +115,18 @@ export function NotificationCenter() {
   };
 
   const handleMarkAllAsRead = async () => {
-    if (!user?.id) return;
-    
+    const allIds = notifications.map(n => n.id);
     // Optimistic update
     setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
     setUnreadCount(0);
     
-    await notificationService.markAllAsRead(user.id);
+    await notificationService.markAllAsRead(user?.id, allIds);
   };
+
+  // Filtered notifications based on tab
+  const displayedNotifications = filterTab === "unread" 
+    ? notifications.filter(n => !n.is_read) 
+    : notifications;
 
   // Group notifications
   const groupNotifications = (list: Notification[]) => {
@@ -150,7 +156,7 @@ export function NotificationCenter() {
     return { today, yesterday, older };
   };
 
-  const { today, yesterday, older } = groupNotifications(notifications);
+  const { today, yesterday, older } = groupNotifications(displayedNotifications);
 
   const getIcon = (type: string) => {
     switch (type) {
@@ -209,7 +215,11 @@ export function NotificationCenter() {
 
   // Format time
   const formatTime = (isoString: string) => {
-    return new Date(isoString).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    try {
+      return new Date(isoString).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } catch {
+      return "Now";
+    }
   };
 
   return (
@@ -217,8 +227,8 @@ export function NotificationCenter() {
       {/* Bell Button */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="relative p-2 rounded-full bg-white border border-slate-200/80 shadow-sm text-slate-600 hover:text-[#0083a2] hover:bg-slate-50 transition-all flex items-center justify-center min-w-[44px] min-h-[44px]"
-        aria-label="Notifications"
+        className="relative p-2.5 rounded-full bg-white dark:bg-slate-800 border border-slate-200/90 dark:border-slate-700 shadow-xs text-slate-700 dark:text-slate-200 hover:text-[#0083a2] hover:bg-slate-50 dark:hover:bg-slate-700/60 transition-all flex items-center justify-center min-w-[42px] min-h-[42px] focus:outline-none"
+        aria-label={`Notifications (${unreadCount} unread)`}
       >
         <motion.div
           animate={shake ? {
@@ -230,9 +240,13 @@ export function NotificationCenter() {
           <Bell className="w-5 h-5" />
         </motion.div>
 
+        {/* Notification Count Badge - Perfectly matching user reference image with coral-red circle & 9+ */}
         {unreadCount > 0 && (
-          <span className="absolute -top-1 -right-1 min-w-5 h-5 rounded-full bg-rose-500 text-white text-[10px] font-black flex items-center justify-center px-1 border-2 border-white shadow-sm animate-pulse">
-            {unreadCount}
+          <span
+            className="absolute -top-1.5 -right-1.5 flex h-[22px] min-w-[22px] px-1 items-center justify-center rounded-full bg-[#f87171] text-white text-[11px] font-black leading-none shadow-md ring-2 ring-white dark:ring-slate-900 pointer-events-none select-none"
+            title={`${unreadCount} unread notification${unreadCount === 1 ? '' : 's'}`}
+          >
+            {unreadCount > 9 ? "9+" : unreadCount}
           </span>
         )}
       </button>
@@ -245,50 +259,82 @@ export function NotificationCenter() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 10, scale: 0.95 }}
             transition={{ duration: 0.15 }}
-            className={`fixed top-16 right-4 w-[calc(100vw-2rem)] sm:w-80 md:w-96 max-w-[90vw] max-h-[70vh] overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-xl z-50 flex flex-col border-t-4 ${getRoleAccent()}`}
+            className={`fixed top-16 right-4 sm:right-6 md:right-8 lg:right-10 w-[calc(100vw-2rem)] sm:w-84 md:w-96 max-w-[92vw] max-h-[75vh] overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xl z-50 flex flex-col border-t-4 ${getRoleAccent()}`}
           >
             {/* Header */}
-            <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+            <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50/70 dark:bg-slate-800/50">
               <div className="flex items-center gap-2">
-                <span className="font-semibold text-slate-800 text-sm">Notifications</span>
-                {unreadCount > 0 && (
-                  <span className="text-[10px] bg-rose-50 text-rose-600 font-bold px-1.5 py-0.5 rounded border border-rose-100">
-                    {unreadCount} new
-                  </span>
-                )}
+                <span className="font-bold text-slate-900 dark:text-slate-100 text-sm">Notifications</span>
+                <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full border ${
+                  unreadCount > 0
+                    ? "bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800"
+                    : "bg-slate-100 dark:bg-slate-800 text-slate-500 border-slate-200 dark:border-slate-700"
+                }`}>
+                  {unreadCount > 0 ? `${unreadCount} New` : "0 New"}
+                </span>
               </div>
-              <div className="flex items-center gap-2.5">
+              <div className="flex items-center gap-2">
                 {unreadCount > 0 && (
                   <button
                     onClick={handleMarkAllAsRead}
-                    className="text-xs text-[#0083a2] hover:text-[#0083a2]/80 font-semibold flex items-center gap-1.5 transition-colors"
+                    className="text-xs text-[#0083a2] hover:underline font-semibold flex items-center gap-1 transition-colors"
                   >
                     <CheckCheck className="w-3.5 h-3.5" /> Mark all read
                   </button>
                 )}
                 <button
                   onClick={() => setIsOpen(false)}
-                  className="text-slate-400 hover:text-slate-600 p-0.5 rounded transition-colors"
+                  className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-0.5 rounded transition-colors"
                 >
                   <X className="w-4 h-4" />
                 </button>
               </div>
             </div>
 
+            {/* Filter Tabs */}
+            <div className="flex items-center gap-2 px-4 py-2 border-b border-slate-100 dark:border-slate-800 bg-slate-50/30 dark:bg-slate-800/20 text-xs font-semibold">
+              <button
+                type="button"
+                onClick={() => setFilterTab("all")}
+                className={`px-2.5 py-1 rounded-md transition-colors ${
+                  filterTab === "all"
+                    ? "bg-primary text-white shadow-xs"
+                    : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                }`}
+              >
+                All ({notifications.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setFilterTab("unread")}
+                className={`px-2.5 py-1 rounded-md transition-colors ${
+                  filterTab === "unread"
+                    ? "bg-primary text-white shadow-xs"
+                    : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                }`}
+              >
+                Unread ({unreadCount})
+              </button>
+            </div>
+
             {/* List */}
-            <div className="flex-1 overflow-y-auto divide-y divide-slate-100 max-h-[400px] scrollbar-thin">
-              {notifications.length === 0 ? (
+            <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800 max-h-[380px] scrollbar-thin">
+              {displayedNotifications.length === 0 ? (
                 <div className="py-12 text-center">
-                  <Bell className="w-10 h-10 text-slate-300 mx-auto mb-2" />
-                  <p className="text-slate-400 text-sm font-medium">All caught up!</p>
-                  <p className="text-slate-400 text-xs mt-0.5">No notifications yet.</p>
+                  <Bell className="w-10 h-10 text-slate-300 dark:text-slate-600 mx-auto mb-2 opacity-50" />
+                  <p className="text-slate-700 dark:text-slate-300 text-sm font-semibold">
+                    {filterTab === "unread" ? "No unread notifications" : "All caught up!"}
+                  </p>
+                  <p className="text-slate-400 text-xs mt-0.5">
+                    {filterTab === "unread" ? "All notifications have been reviewed." : "No new notifications at this time."}
+                  </p>
                 </div>
               ) : (
                 <>
                   {/* Today */}
                   {today.length > 0 && (
-                    <div className="bg-slate-50/30">
-                      <div className="px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400 bg-slate-50/60 border-b border-slate-100">
+                    <div className="bg-slate-50/20">
+                      <div className="px-4 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 bg-slate-50/60 dark:bg-slate-800/40 border-b border-slate-100 dark:border-slate-800">
                         Today
                       </div>
                       {today.map(n => renderNotificationItem(n))}
@@ -297,8 +343,8 @@ export function NotificationCenter() {
 
                   {/* Yesterday */}
                   {yesterday.length > 0 && (
-                    <div className="bg-slate-50/30">
-                      <div className="px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400 bg-slate-50/60 border-b border-slate-100">
+                    <div className="bg-slate-50/20">
+                      <div className="px-4 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 bg-slate-50/60 dark:bg-slate-800/40 border-b border-slate-100 dark:border-slate-800">
                         Yesterday
                       </div>
                       {yesterday.map(n => renderNotificationItem(n))}
@@ -307,8 +353,8 @@ export function NotificationCenter() {
 
                   {/* Older */}
                   {older.length > 0 && (
-                    <div className="bg-slate-50/30">
-                      <div className="px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400 bg-slate-50/60 border-b border-slate-100">
+                    <div className="bg-slate-50/20">
+                      <div className="px-4 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 bg-slate-50/60 dark:bg-slate-800/40 border-b border-slate-100 dark:border-slate-800">
                         Older
                       </div>
                       {older.map(n => renderNotificationItem(n))}
