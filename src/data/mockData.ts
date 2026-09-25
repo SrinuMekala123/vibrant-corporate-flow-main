@@ -1,5 +1,5 @@
 export type TicketStatus = "unassigned" | "assigned" | "in-progress" | "dispatched" | "completed" | "closed";
-export type SeverityTier = "minor" | "moderate" | "major";
+export type SeverityTier = "minor" | "moderate" | "major" | "critical";
 export type Phase = 1 | 2 | 3 | 4 | 5 | 6;
 
 export interface Ticket {

@@ -201,7 +201,11 @@ const Dashboard = () => {
       .subscribe();
 
     return () => {
-      supabase.removeChannel(channel);
+      try {
+        supabase.removeChannel(channel);
+      } catch {
+        // ignore cleanup errors
+      }
     };
   }, [queryClient]);
 
@@ -872,7 +876,7 @@ const Dashboard = () => {
               className={`w-11 h-11 rounded-2xl flex items-center justify-center text-white shrink-0 shadow-sm ${
                 isCritical
                   ? "bg-gradient-to-tr from-rose-600 to-amber-500"
-                  : ticket.status === "completed" || ticket.status === "closed"
+              : ticket.status === "completed" || ticket.status === "closed"
                   ? "bg-gradient-to-tr from-emerald-600 to-teal-500"
                   : "gradient-primary"
               }`}
@@ -921,6 +925,22 @@ const Dashboard = () => {
                   <span className="flex items-center gap-1 font-semibold text-foreground">
                     <UserCheck className="w-3.5 h-3.5 text-emerald-500" />
                     Tech: {ticket.assigned_technician}
+                  </span>
+                )}
+
+                {ticket.complaint_technicians && ticket.complaint_technicians.length > 0 && (
+                  <span className="flex items-center gap-1 font-medium text-foreground">
+                    <Users className="w-3.5 h-3.5 text-primary" />
+                    {(() => {
+                      const list = ticket.complaint_technicians.slice().sort((a: any, b: any) => {
+                        if (a.is_lead === b.is_lead) return 0;
+                        return a.is_lead ? -1 : 1;
+                      });
+                      const lead = list.filter((t: any) => t.is_lead).map((t: any) => t.technician?.full_name).filter(Boolean);
+                      const crew = list.filter((t: any) => !t.is_lead).map((t: any) => t.technician?.full_name).filter(Boolean);
+                      const parts = [...lead.map(n => `👑 ${n}`), ...crew];
+                      return parts.length > 0 ? parts.join(", ") : "Unassigned";
+                    })()}
                   </span>
                 )}
               </div>
@@ -1047,6 +1067,22 @@ const Dashboard = () => {
                   <span className="flex items-center gap-1 font-medium text-blue-600 dark:text-blue-400">
                     <Calendar className="w-3.5 h-3.5" />
                     {inst.scheduled_date} {inst.scheduled_time || ""}
+                  </span>
+                )}
+
+                {inst.installation_technicians && inst.installation_technicians.length > 0 && (
+                  <span className="flex items-center gap-1 font-medium text-foreground">
+                    <Users className="w-3.5 h-3.5 text-primary" />
+                    {(() => {
+                      const list = inst.installation_technicians.slice().sort((a: any, b: any) => {
+                        if (a.is_lead === b.is_lead) return 0;
+                        return a.is_lead ? -1 : 1;
+                      });
+                      const lead = list.filter((t: any) => t.is_lead).map((t: any) => t.technician?.full_name).filter(Boolean);
+                      const crew = list.filter((t: any) => !t.is_lead).map((t: any) => t.technician?.full_name).filter(Boolean);
+                      const parts = [...lead.map(n => `👑 ${n}`), ...crew];
+                      return parts.length > 0 ? parts.join(", ") : "Unassigned";
+                    })()}
                   </span>
                 )}
               </div>
@@ -1248,7 +1284,7 @@ const Dashboard = () => {
             </div>
 
             {/* Quick Action Buttons */}
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <Button
                 variant="outline"
                 size="sm"
@@ -2409,9 +2445,23 @@ const Dashboard = () => {
                   <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">
                     Assigned Field Team
                   </span>
-                  <p className="font-bold text-primary">
-                    {quickViewTicket.assigned_technician || "Unassigned"}
-                  </p>
+                  {quickViewTicket.complaint_technicians && quickViewTicket.complaint_technicians.length > 0 ? (
+                    <div className="space-y-1">
+                      {quickViewTicket.complaint_technicians.slice().sort((a: any, b: any) => {
+                        if (a.is_lead === b.is_lead) return 0;
+                        return a.is_lead ? -1 : 1;
+                      }).map((ct: any, idx: number) => (
+                        <p key={idx} className={`text-xs font-semibold ${ct.is_lead ? "text-primary" : "text-foreground"}`}>
+                          {ct.is_lead ? "👑 " : ""}{ct.technician?.full_name || "Technician"}
+                          {ct.is_lead && <span className="ml-1 text-[10px] bg-blue-100 text-blue-800 px-1 rounded">Lead</span>}
+                        </p>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="font-bold text-primary">
+                      {quickViewTicket.assigned_technician || "Unassigned"}
+                    </p>
+                  )}
                   <p className="text-muted-foreground">
                     Supervisor: {quickViewTicket.assigned_supervisor || "Standard Triage"}
                   </p>

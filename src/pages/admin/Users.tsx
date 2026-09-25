@@ -790,6 +790,13 @@ export default function UsersPage() {
     const selectedCount = selectedUserIds.size;
     if (selectedCount === 0) return;
 
+    const selectedProfiles = filteredProfiles.filter((p: any) => selectedUserIds.has(p.id));
+    const adminProfiles = selectedProfiles.filter((p: any) => p.role === 'admin');
+    if (adminProfiles.length > 0) {
+      toast.error("Security Alert: Cannot delete admin accounts.");
+      return;
+    }
+
     if (!confirm(`Are you sure you want to delete ${selectedCount} selected user(s)? This will permanently remove profiles, linked customer records, and auth accounts.`)) {
       return;
     }
@@ -1273,6 +1280,21 @@ export default function UsersPage() {
                 </button>
               ))}
             </div>
+            {user?.role === 'admin' && selectedUserIds.size > 0 && (
+              <Button
+                size="sm"
+                onClick={handleBulkDelete}
+                disabled={isBulkDeleting}
+                className="bg-red-600 hover:bg-red-700 text-white rounded-xl h-10 px-4 gap-2 font-bold shadow-sm text-xs shrink-0"
+              >
+                {isBulkDeleting ? (
+                  <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                ) : (
+                  <Trash2 className="w-4 h-4 shrink-0" />
+                )}
+                <span>Delete {selectedUserIds.size} rows</span>
+              </Button>
+            )}
           </div>
 
           <div className="relative">
@@ -1308,9 +1330,15 @@ export default function UsersPage() {
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
+                          if (p.role === 'admin') {
+                            toast.error("Admin accounts are protected");
+                            return;
+                          }
                           toggleSelectUser(p.id, e);
                         }}
-                        className="text-slate-500 hover:text-slate-700 shrink-0 mt-0.5"
+                        disabled={p.role === 'admin'}
+                        className={`shrink-0 mt-0.5 ${p.role === 'admin' ? 'text-slate-300 cursor-not-allowed' : 'text-slate-500 hover:text-slate-700'}`}
+                        title={p.role === 'admin' ? "Admin accounts are protected" : ""}
                       >
                         {selectedUserIds.has(p.id) ? (
                           <CheckSquare className="w-4 h-4 text-blue-600" />
@@ -1405,33 +1433,8 @@ export default function UsersPage() {
           )}
         </motion.div>
 
-        {/* Bulk Action Bar */}
-        {user?.role === 'admin' && selectedUserIds.size > 0 && (
-          <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-4">
-            <span className="text-sm font-medium">{selectedUserIds.size} selected</span>
-            <button
-              onClick={clearUserSelection}
-              className="text-xs font-semibold text-slate-300 hover:text-white uppercase tracking-wider"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleBulkDelete}
-              disabled={isBulkDeleting}
-              className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 text-white px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider disabled:opacity-50"
-            >
-              {isBulkDeleting ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Trash2 className="w-3.5 h-3.5" />
-              )}
-              Delete
-            </button>
-          </div>
-        )}
+        {/* View & Edit Overlay Modal */}
       </div>
-
-      {/* View & Edit Overlay Modal */}
       <AnimatePresence>
         {selectedUser && (
           <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex justify-end">

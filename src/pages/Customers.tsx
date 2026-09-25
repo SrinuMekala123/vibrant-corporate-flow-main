@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -29,7 +29,6 @@ import {
   Users, 
   MapPin, 
   Phone, 
-  Mail, 
   Building,
   ShieldCheck,
   UserCheck,
@@ -38,19 +37,95 @@ import {
   Upload,
   CheckSquare,
   Square,
-  UserPlus
+  UserPlus,
+  User,
+  ChevronDown,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { downloadCSV, generateSampleCSV } from "@/utils/csvHelpers";
 import ExportButton from "@/components/ExportButton";
-import { isValidEmail, isValidFullName, isValidPhone, normalizePhone } from "@/lib/validation";
+import {
+  validateCustomerFormFields,
+  buildCreateCustomerUserPayload,
+  createCustomerUserAccount,
+  syncCustomerBranches,
+  resolvePrimaryBranchId,
+  getCustomerBranchNames,
+  type CustomerEntityType,
+} from "@/lib/customerForm";
 import { useFormDraft } from "@/hooks/useFormDraft";
+import { Checkbox } from "@/components/ui/checkbox";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+
+type LocationDraft = {
+  location_name: string;
+  address: string;
+  city: string;
+  state: string;
+  pincode: string;
+  contact_person: string;
+  contact_phone: string;
+  is_primary: boolean;
+};
+
+const createEmptyLocationDraft = (isPrimary = true): LocationDraft => ({
+  location_name: "",
+  address: "",
+  city: "",
+  state: "",
+  pincode: "",
+  contact_person: "",
+  contact_phone: "",
+  is_primary: isPrimary,
+});
+
+const INDIAN_STATES = [
+  "Andaman and Nicobar Islands",
+  "Andhra Pradesh",
+  "Arunachal Pradesh",
+  "Assam",
+  "Bihar",
+  "Chandigarh",
+  "Chhattisgarh",
+  "Dadra and Nagar Haveli and Daman and Diu",
+  "Delhi (National Capital Territory)",
+  "Goa",
+  "Gujarat",
+  "Haryana",
+  "Himachal Pradesh",
+  "Jammu and Kashmir",
+  "Jharkhand",
+  "Karnataka",
+  "Kerala",
+  "Ladakh",
+  "Lakshadweep",
+  "Madhya Pradesh",
+  "Maharashtra",
+  "Manipur",
+  "Meghalaya",
+  "Mizoram",
+  "Nagaland",
+  "Odisha",
+  "Puducherry",
+  "Punjab",
+  "Rajasthan",
+  "Sikkim",
+  "Tamil Nadu",
+  "Telangana",
+  "Tripura",
+  "Uttar Pradesh",
+  "Uttarakhand",
+  "West Bengal"
+];
 
 export default function Customers() {
   const { user, session } = useAuth();
   const queryClient = useQueryClient();
   const [searchQuery, setSearchQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
+  const [entityFilter, setEntityFilter] = useState<"all" | CustomerEntityType>("all");
   const [loading, setLoading] = useState(false);
   const [deletingCustomerId, setDeletingCustomerId] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
@@ -64,35 +139,42 @@ export default function Customers() {
   const [fullName, setFullName] = useState("");
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
-  const [address, setAddress] = useState("");
+  const [entityType, setEntityType] = useState<CustomerEntityType>("Individual");
   const [isCustomerImportOpen, setIsCustomerImportOpen] = useState(false);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-  const [customerType, setCustomerType] = useState("Retail");
-  const [branchId, setBranchId] = useState("");
+  const [customerType, setCustomerType] = useState("");
+  const [branchIds, setBranchIds] = useState<string[]>([]);
+  const [branchPopoverOpen, setBranchPopoverOpen] = useState(false);
+  const [statePopoverOpenIndex, setStatePopoverOpenIndex] = useState<number | null>(null);
   const [profileUserId, setProfileUserId] = useState("");
   const [selectedCustomerIds, setSelectedCustomerIds] = useState<Set<string>>(new Set());
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
 
-  // Primary location fields
-  const [locationName, setLocationName] = useState("");
-  const [locationCity, setLocationCity] = useState("");
-  const [locationState, setLocationState] = useState("");
-  const [locationPincode, setLocationPincode] = useState("");
-  const [locationAddress, setLocationAddress] = useState("");
-  const [locationContactPerson, setLocationContactPerson] = useState("");
-  const [locationContactPhone, setLocationContactPhone] = useState("");
+  // Multi-address drafts (Individual contact addresses / Company site locations)
+  const [locationDrafts, setLocationDrafts] = useState<LocationDraft[]>([createEmptyLocationDraft(true)]);
   const [isLocationManagerOpen, setIsLocationManagerOpen] = useState(false);
   const [locationManagerOpen, setLocationManagerOpen] = useState(false);
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>("");
   const [selectedCustomerName, setSelectedCustomerName] = useState<string>("");
 
   const openLocationManager = (customerId: string, customerName?: string) => {
+    // Only open the locations dialog — do not set selectedCustomer (that opens the
+    // customer off-canvas and stacks both panels with a wrong "Add New" title).
     setSelectedCustomerId(customerId);
-    setSelectedCustomerName(customerName || "");
-    const found = customers?.find((c: any) => c.id === customerId);
-    if (found) setSelectedCustomer(found);
+    setSelectedCustomerName(
+      customerName ||
+        customers?.find((c: any) => c.id === customerId)?.full_name ||
+        ""
+    );
     setLocationManagerOpen(true);
     setIsLocationManagerOpen(true);
+  };
+
+  const closeCustomerPanel = () => {
+    setSelectedCustomer(null);
+    setModalMode("view");
+    setBranchPopoverOpen(false);
+    setStatePopoverOpenIndex(null);
   };
 
   // Login account creation states
@@ -102,24 +184,48 @@ export default function Customers() {
   const [creatingAccount, setCreatingAccount] = useState(false);
 
   const customerDraft = useFormDraft({
-    key: 'draft_create_customer',
+    key: 'draft_create_customer_v2',
     enabled: modalMode === "add",
     excludeFields: ['loginPassword'],
     fields: {
       fullName: { value: fullName, setter: setFullName },
       phone: { value: phone, setter: setPhone },
       email: { value: email, setter: setEmail },
-      address: { value: address, setter: setAddress },
+      entityType: {
+        value: entityType,
+        setter: (v: unknown) => setEntityType(v === "Company" ? "Company" : "Individual"),
+      },
       customerType: { value: customerType, setter: setCustomerType },
-      branchId: { value: branchId, setter: setBranchId },
+      branchIds: {
+        value: branchIds,
+        setter: (v: unknown) => {
+          if (Array.isArray(v)) setBranchIds(v.filter(Boolean).map(String));
+          else if (typeof v === "string" && v) setBranchIds([v]);
+          else setBranchIds([]);
+        },
+      },
       createLoginAccount: { value: createLoginAccount, setter: setCreateLoginAccount },
-      locationName: { value: locationName, setter: setLocationName },
-      locationCity: { value: locationCity, setter: setLocationCity },
-      locationState: { value: locationState, setter: setLocationState },
-      locationPincode: { value: locationPincode, setter: setLocationPincode },
-      locationAddress: { value: locationAddress, setter: setLocationAddress },
-      locationContactPerson: { value: locationContactPerson, setter: setLocationContactPerson },
-      locationContactPhone: { value: locationContactPhone, setter: setLocationContactPhone },
+      locationDrafts: {
+        value: locationDrafts,
+        setter: (v: unknown) => {
+          if (Array.isArray(v) && v.length > 0) {
+            setLocationDrafts(
+              v.map((row: any, index: number) => ({
+                location_name: String(row?.location_name || ""),
+                address: String(row?.address || ""),
+                city: String(row?.city || ""),
+                state: String(row?.state || ""),
+                pincode: String(row?.pincode || ""),
+                contact_person: String(row?.contact_person || ""),
+                contact_phone: String(row?.contact_phone || ""),
+                is_primary: Boolean(row?.is_primary) || index === 0,
+              }))
+            );
+          } else {
+            setLocationDrafts([createEmptyLocationDraft(true)]);
+          }
+        },
+      },
     },
   });
 
@@ -131,7 +237,7 @@ export default function Customers() {
 
   useEffect(() => {
     return customerDraft.save();
-  }, [fullName, phone, email, address, customerType, branchId, createLoginAccount, locationName, locationCity, locationState, locationPincode, locationAddress, locationContactPerson, locationContactPhone]);
+  }, [fullName, phone, email, entityType, customerType, branchIds, createLoginAccount, locationDrafts]);
 
   useEffect(() => {
     const handleBeforeUnload = () => {
@@ -190,7 +296,7 @@ export default function Customers() {
         // Fetch customers whose user_id is in customerProfileIds
         const { data, error } = await supabase
           .from('customers')
-          .select('*, branches(branch_name)')
+          .select('*, branches(branch_name), customer_branches(branch_id, branches(branch_name))')
           .in('user_id', customerProfileIds)
           .order('created_at', { ascending: false });
 
@@ -198,7 +304,7 @@ export default function Customers() {
         return data || [];
       }
 
-      let query = supabase.from('customers').select('*, branches(branch_name)');
+      let query = supabase.from('customers').select('*, branches(branch_name), customer_branches(branch_id, branches(branch_name))');
       if (user?.role === 'customer') {
         // Enforce customer constraint explicitly
         query = query.eq('user_id', user.id);
@@ -224,28 +330,74 @@ export default function Customers() {
     enabled: canModify
   });
 
+   const extractBranchIds = (cust: any): string[] => {
+     const fromJunction = (cust?.customer_branches || [])
+       .map((row: any) => row.branch_id)
+       .filter(Boolean);
+     if (fromJunction.length > 0) return [...new Set(fromJunction as string[])];
+     if (cust?.branch_id) return [cust.branch_id];
+     return [];
+   };
+
+   const toggleBranchId = (id: string, checked: boolean) => {
+     setBranchIds((prev) => {
+       if (checked) return prev.includes(id) ? prev : [...prev, id];
+       return prev.filter((b) => b !== id);
+     });
+   };
+
+   const primaryLocationAddress = useMemo(() => {
+     const primary =
+       locationDrafts.find((d) => d.is_primary && d.location_name.trim()) ||
+       locationDrafts.find((d) => d.location_name.trim());
+     return primary?.address?.trim() || "";
+   }, [locationDrafts]);
+
+   const updateLocationDraft = (index: number, patch: Partial<LocationDraft>) => {
+     setLocationDrafts((prev) =>
+       prev.map((row, i) => (i === index ? { ...row, ...patch } : row))
+     );
+   };
+
+   const setPrimaryLocationDraft = (index: number) => {
+     setLocationDrafts((prev) =>
+       prev.map((row, i) => ({ ...row, is_primary: i === index }))
+     );
+   };
+
+   const addLocationDraft = () => {
+     setLocationDrafts((prev) => [...prev, createEmptyLocationDraft(prev.length === 0)]);
+   };
+
+   const removeLocationDraft = (index: number) => {
+     setLocationDrafts((prev) => {
+       if (prev.length <= 1) return [createEmptyLocationDraft(true)];
+       const next = prev.filter((_, i) => i !== index);
+       if (!next.some((row) => row.is_primary) && next.length > 0) {
+         next[0] = { ...next[0], is_primary: true };
+       }
+       return next;
+     });
+   };
+
    const handleOpenModal = async (customer: any, mode: "view" | "add" | "edit") => {
      setModalMode(mode);
-     setCreateLoginAccount(mode === "add");
+     setCreateLoginAccount(false);
      setLoginPassword("");
      setShowPassword(false);
      setCreatingAccount(false);
-     if (mode === "add") {
+      setBranchPopoverOpen(false);
+      setStatePopoverOpenIndex(null);
+      if (mode === "add") {
        setSelectedCustomer({});
        setFullName("");
        setPhone("");
        setEmail("");
-       setAddress("");
-       setCustomerType("Retail");
-       setBranchId("");
+       setEntityType("Individual");
+        setCustomerType("");
+       setBranchIds([]);
        setProfileUserId("");
-       setLocationName("");
-       setLocationCity("");
-       setLocationState("");
-       setLocationPincode("");
-       setLocationAddress("");
-       setLocationContactPerson("");
-       setLocationContactPhone("");
+       setLocationDrafts([createEmptyLocationDraft(true)]);
     } else {
       if (!customer) return;
       const initialCust = { ...customer };
@@ -253,17 +405,18 @@ export default function Customers() {
       setFullName(initialCust.full_name || initialCust.name || "");
       setPhone(initialCust.phone || initialCust.mobile || "");
       setEmail(initialCust.email || "");
-      setAddress(initialCust.address || "");
-      setCustomerType(initialCust.customer_type || initialCust.type || "Retail");
-      setBranchId(initialCust.branch_id || "");
+      setEntityType(initialCust.entity_type === "Company" ? "Company" : "Individual");
+      setCustomerType(initialCust.customer_type || initialCust.type || "");
+      setBranchIds(extractBranchIds(initialCust));
       setProfileUserId(initialCust.user_id || "");
+      setLocationDrafts([createEmptyLocationDraft(true)]);
 
       // Ensure full fresh customer record is fetched if ID is available
       if (initialCust.id) {
         try {
           const { data: freshData, error: freshErr } = await supabase
             .from("customers")
-            .select("*, branches(branch_name)")
+            .select("*, branches(branch_name), customer_branches(branch_id, branches(branch_name))")
             .eq("id", initialCust.id)
             .maybeSingle();
 
@@ -272,9 +425,9 @@ export default function Customers() {
             setFullName(freshData.full_name || freshData.name || "");
             setPhone(freshData.phone || freshData.mobile || "");
             setEmail(freshData.email || "");
-            setAddress(freshData.address || "");
-            setCustomerType(freshData.customer_type || freshData.type || "Retail");
-            setBranchId(freshData.branch_id || "");
+            setEntityType(freshData.entity_type === "Company" ? "Company" : "Individual");
+            setCustomerType(freshData.customer_type || freshData.type || "");
+            setBranchIds(extractBranchIds(freshData));
             setProfileUserId(freshData.user_id || "");
           }
         } catch (e) {
@@ -284,9 +437,9 @@ export default function Customers() {
     }
   };
 
-  // Fetch primary location when editing an existing customer
+  // Load all locations when editing an existing customer
   useEffect(() => {
-    const fetchPrimaryLocation = async () => {
+    const fetchLocations = async () => {
       if (modalMode !== "edit" || !selectedCustomer?.id) {
         return;
       }
@@ -296,105 +449,96 @@ export default function Customers() {
           .from("customer_locations")
           .select("*")
           .eq("customer_id", selectedCustomer.id)
-          .eq("is_primary", true)
-          .maybeSingle();
+          .order("is_primary", { ascending: false })
+          .order("created_at", { ascending: false });
 
         if (error) {
-          console.error("Failed to fetch primary location:", error);
+          console.error("Failed to fetch locations:", error);
           return;
         }
 
-        if (data) {
-          setLocationName(data.location_name || "");
-          setLocationCity(data.city || "");
-          setLocationState(data.state || "");
-          setLocationPincode(data.pincode || "");
-          setLocationAddress(data.address || "");
-          setLocationContactPerson(data.contact_person || "");
-          setLocationContactPhone(data.contact_phone || "");
-          console.log("Primary location loaded for edit:", data);
+        if (data && data.length > 0) {
+          setLocationDrafts(
+            data.map((row: any, index: number) => ({
+              location_name: row.location_name || "",
+              address: row.address || "",
+              city: row.city || "",
+              state: row.state || "",
+              pincode: row.pincode || "",
+              contact_person: row.contact_person || "",
+              contact_phone: row.contact_phone || "",
+              is_primary: Boolean(row.is_primary) || index === 0,
+            }))
+          );
         } else {
-          // No primary location found, clear fields
-          setLocationName("");
-          setLocationCity("");
-          setLocationState("");
-          setLocationPincode("");
-          setLocationAddress("");
-          setLocationContactPerson("");
-          setLocationContactPhone("");
+          setLocationDrafts([createEmptyLocationDraft(true)]);
         }
       } catch (err) {
-        console.error("Error fetching primary location:", err);
+        console.error("Error fetching locations:", err);
       }
     };
 
-    fetchPrimaryLocation();
+    fetchLocations();
   }, [selectedCustomer?.id, modalMode]);
 
-  const savePrimaryLocation = async (customerId: string) => {
-     console.log("=== ATTEMPTING TO SAVE LOCATION ===");
-     console.log("Customer ID for location:", customerId);
-     console.log("Location Form Data:", {
-       locationName,
-       locationCity,
-       locationState,
-       locationPincode,
-       locationAddress,
-       locationContactPerson,
-       locationContactPhone,
-     });
+  const saveCustomerLocations = async (customerId: string) => {
+     const filled = locationDrafts
+       .filter((d) => d.location_name.trim())
+       .map((d) => ({ ...d }));
 
-     if (!customerId || !locationName.trim()) {
-       console.log("⚠️ No location name provided or no customer ID");
-       console.log("locationName:", locationName);
-       console.log("customerId:", customerId);
+     if (!customerId || filled.length === 0) {
        return false;
      }
 
-     const locationData = {
-       customer_id: customerId,
-       location_name: locationName.trim(),
-       address: locationAddress.trim() || null,
-       city: locationCity.trim() || null,
-       state: locationState.trim() || null,
-       pincode: locationPincode.trim() || null,
-       contact_person: locationContactPerson.trim() || null,
-       contact_phone: locationContactPhone.trim() || null,
-       is_primary: true,
-     };
+     if (!filled.some((d) => d.is_primary)) {
+       filled[0].is_primary = true;
+     } else {
+       let seenPrimary = false;
+       for (const row of filled) {
+         if (row.is_primary && !seenPrimary) {
+           seenPrimary = true;
+         } else {
+           row.is_primary = false;
+         }
+       }
+     }
 
-     console.log("Location data to save:", locationData);
+     const rows = filled.map((d) => ({
+       customer_id: customerId,
+       location_name: d.location_name.trim(),
+       address: d.address.trim() || null,
+       city: d.city.trim() || null,
+       state: d.state.trim() || null,
+       pincode: d.pincode.trim() || null,
+       contact_person: d.contact_person.trim() || null,
+       contact_phone: d.contact_phone.trim() || null,
+       is_primary: d.is_primary,
+     }));
 
      try {
-       // First, try to delete any existing primary location for this customer
        const { error: deleteError } = await supabase
          .from("customer_locations")
          .delete()
-         .eq("customer_id", customerId)
-         .eq("is_primary", true);
+         .eq("customer_id", customerId);
 
        if (deleteError) {
-         console.error("Failed to delete existing primary location:", deleteError);
+         console.error("Failed to clear existing locations:", deleteError);
        }
 
-       // Then insert the new primary location
-       const { data, error: insertError } = await supabase
+       const { error: insertError } = await supabase
          .from("customer_locations")
-         .insert(locationData)
-         .select()
-         .single();
+         .insert(rows);
 
        if (insertError) {
-         console.error("❌ LOCATION SAVE FAILED:", insertError);
-         toast.warning("Customer saved, but primary location failed to save.");
+         console.error("LOCATION SAVE FAILED:", insertError);
+         toast.warning("Customer saved, but addresses failed to save.");
          return false;
        }
 
-       console.log("✅ LOCATION SAVED SUCCESSFULLY:", data);
        return true;
      } catch (err) {
-       console.error("Unexpected error saving primary location:", err);
-       toast.warning("Customer saved, but primary location failed to save.");
+       console.error("Unexpected error saving locations:", err);
+       toast.warning("Customer saved, but addresses failed to save.");
        return false;
      }
    };
@@ -408,40 +552,25 @@ export default function Customers() {
        return;
      }
 
-     console.log("=== STARTING CUSTOMER SAVE ===");
-     console.log("Form data:", {
+     let customerId: string | null = null;
+     const addressForCustomer = primaryLocationAddress;
+
+     const validation = validateCustomerFormFields({
        fullName,
        phone,
        email,
-       address,
-       customerType,
-       branchId,
+       entityType,
+       createLoginAccount,
        profileUserId,
-       locationName,
-       locationCity,
-       locationState,
-       locationPincode,
-       locationAddress,
-       locationContactPerson,
-       locationContactPhone,
+       loginPassword,
      });
-     console.log("Is editing:", modalMode === "edit");
-
-     let customerId: string | null = null;
-
-     const trimmedName = fullName.trim();
-     if (!isValidFullName(trimmedName)) {
-       toast.error("Name must be 3-100 characters and contain only letters and spaces.");
+     if (validation.ok === false) {
+       toast.error(validation.error);
        return;
      }
+     const { trimmedName, cleanPhone, trimmedEmail } = validation;
 
-     const cleanPhone = normalizePhone(phone);
-     if (!isValidPhone(phone)) {
-       toast.error("Please enter a valid 10-digit Indian mobile number (e.g., +91 9876543210)");
-       return;
-     }
-
-     // 🔴 Duplicate Customer Check (BUG 1 Fix)
+     // Duplicate Customer Check
      const last10Digits = cleanPhone.replace(/\D/g, '').slice(-10);
      if (last10Digits.length === 10) {
        try {
@@ -466,66 +595,27 @@ export default function Customers() {
        }
      }
 
-     const trimmedEmail = email.trim().toLowerCase();
-     if (trimmedEmail && !isValidEmail(trimmedEmail)) {
-       toast.error("Please enter a valid email address");
-       return;
-     }
-
-     // Validate login account fields when checkbox is checked
-     if (createLoginAccount && !profileUserId) {
-       if (!trimmedEmail) {
-         toast.error("Email is required to create a login account.");
-         return;
-       }
-       if (!loginPassword || loginPassword.length < 8) {
-         toast.error("Password must be at least 8 characters.");
-         return;
-       }
-     }
-
      setLoading(true);
      try {
        // --- Path A: Create Login Account + Customer in one Edge Function call ---
        if (createLoginAccount && !profileUserId) {
          setCreatingAccount(true);
-         const { data, error: fnError } = await supabase.functions.invoke("create-customer-user", {
-           body: {
-             email: trimmedEmail,
-             password: loginPassword,
-             full_name: trimmedName,
-             phone: cleanPhone,
-             role: "customer",
-             createCustomerRecord: modalMode === "add",
-             customerData: modalMode === "add" ? {
-               address: address.trim() || null,
-               customer_type: customerType,
-               branch_id: branchId || null,
-             } : {},
-           },
+         const primaryBranchId = resolvePrimaryBranchId(branchIds);
+         const payload = buildCreateCustomerUserPayload({
+           email: trimmedEmail,
+           password: loginPassword,
+           fullName: trimmedName,
+           phone: cleanPhone,
+           address: addressForCustomer,
+           customerType,
+           entityType,
+           branchIds,
+           mode: modalMode === "edit" ? "edit" : "add",
          });
-
-         if (fnError) {
-           let errorMessage = fnError.message || "";
-           const errorResponse = fnError.context;
-           if (errorResponse instanceof Response) {
-             try {
-               const errorBody = await errorResponse.clone().json();
-               errorMessage = errorBody?.error || errorMessage;
-             } catch {
-               // Keep the client error message when the Edge Function body is unavailable.
-             }
-           }
-           if (/already exists|email.*(duplicate|exists)|user.*already/i.test(errorMessage)) {
-             throw new Error("An account with this email already exists.");
-           }
-           throw new Error(errorMessage || "Failed to create login account.");
-         }
-          if (data?.error) throw new Error(data.error);
-
-          // The edge function returns { user, customer } — capture both IDs safely
-          const authUserId = data?.user?.id || data?.userId;
-          if (!authUserId) throw new Error("Did not receive user ID from server.");
+         const { userId: authUserId, data } = await createCustomerUserAccount(
+           (name, options) => supabase.functions.invoke(name, options),
+           payload
+         );
 
           // If editing, update the existing customer record to link user_id
           if (modalMode === "edit" && selectedCustomer?.id) {
@@ -535,18 +625,18 @@ export default function Customers() {
                 full_name: trimmedName,
                 phone: cleanPhone,
                 email: trimmedEmail || null,
-                address: address.trim() || null,
+                address: addressForCustomer || null,
                 customer_type: customerType,
-                branch_id: branchId || null,
+                entity_type: entityType,
+                branch_id: primaryBranchId,
                 user_id: authUserId,
               })
               .eq("id", selectedCustomer.id);
             if (updateError) throw updateError;
 
             customerId = selectedCustomer.id;
-            console.log("Customer updated, ID:", customerId);
+            await syncCustomerBranches(supabase as any, customerId, branchIds);
 
-            // Synchronize linked profile in profiles table so phone updates take effect everywhere
             const linkedProfileId = authUserId;
             if (linkedProfileId) {
               try {
@@ -557,23 +647,17 @@ export default function Customers() {
                     phone: cleanPhone || null,
                     email: trimmedEmail || null,
                     customer_type: customerType || null,
-                    branch_id: branchId || null,
+                    branch_id: primaryBranchId,
                   })
                   .eq('id', linkedProfileId);
-                console.log("✅ Customer profile synchronized with updated phone:", cleanPhone);
               } catch (profSyncErr) {
                 console.warn("Could not sync profile table on customer update:", profSyncErr);
               }
             }
           } else if (modalMode === "add") {
-            console.log("Edge function response:", data);
-            // The edge function may return the created customer record directly
             customerId = data?.customer?.id || null;
-            console.log("Customer created via edge function, ID from response:", customerId);
 
-            // Fallback: If customer ID not in response, query by user_id
             if (!customerId && authUserId) {
-              console.log("Customer ID not in edge response, querying by user_id:", authUserId);
               const { data: customerData, error: fetchError } = await supabase
                 .from("customers")
                 .select("id")
@@ -584,8 +668,19 @@ export default function Customers() {
                 console.error("Failed to fetch customer ID after edge function:", fetchError);
               } else if (customerData?.id) {
                 customerId = customerData.id;
-                console.log("✅ Successfully retrieved Customer ID from DB:", customerId);
               }
+            }
+
+            if (customerId) {
+              await syncCustomerBranches(supabase as any, customerId, branchIds);
+              // Ensure entity_type / address are stored even if edge function was older
+              await supabase
+                .from("customers")
+                .update({
+                  entity_type: entityType,
+                  address: addressForCustomer || null,
+                })
+                .eq("id", customerId);
             }
           }
 
@@ -596,33 +691,30 @@ export default function Customers() {
          setCreatingAccount(false);
        } else {
          // --- Path B: Just save customer data (no login account creation) ---
+         const primaryBranchId = resolvePrimaryBranchId(branchIds);
          const payload = {
            full_name: trimmedName,
            phone: cleanPhone,
            email: trimmedEmail || null,
-           address: address.trim() || null,
+           address: addressForCustomer || null,
            customer_type: customerType,
-           branch_id: branchId || null,
+           entity_type: entityType,
+           branch_id: primaryBranchId,
            user_id: (profileUserId && profileUserId !== "none_clear") ? profileUserId : null
          };
 
          if (modalMode === "add") {
-           console.log("Inserting new customer...");
            const { data: insertedCustomer, error } = await supabase.from('customers').insert([payload]).select('id').single();
            if (error) throw error;
            customerId = insertedCustomer?.id || null;
-           console.log("Customer created with ID:", customerId);
          } else {
-           console.log("Updating existing customer:", selectedCustomer.id);
            const { error } = await supabase
              .from('customers')
              .update(payload)
              .eq('id', selectedCustomer.id);
            if (error) throw error;
            customerId = selectedCustomer.id;
-           console.log("Customer updated, ID:", customerId);
 
-           // Synchronize linked profile in profiles table so phone updates take effect everywhere
            const linkedProfileId = (profileUserId && profileUserId !== "none_clear") ? profileUserId : selectedCustomer.user_id;
            if (linkedProfileId) {
              try {
@@ -633,33 +725,31 @@ export default function Customers() {
                    phone: cleanPhone || null,
                    email: trimmedEmail || null,
                    customer_type: customerType || null,
-                   branch_id: branchId || null,
+                   branch_id: primaryBranchId,
                  })
                  .eq('id', linkedProfileId);
-               console.log("✅ Customer profile synchronized with updated phone:", cleanPhone);
              } catch (profSyncErr) {
                console.warn("Could not sync profile table on customer update:", profSyncErr);
              }
            }
          }
+
+         if (customerId) {
+           await syncCustomerBranches(supabase as any, customerId, branchIds);
+         }
        }
 
-       // 5. CRITICAL: Save location with the customerId
-       console.log("=== ATTEMPTING TO SAVE LOCATION ===");
-       console.log("Customer ID:", customerId);
-       console.log("Location name:", locationName);
-
        if (!customerId) {
-         console.error("ERROR: customerId is null/undefined!");
-         toast.warning("Customer saved, but could not determine customer ID for location.");
-       } else if (locationName.trim()) {
-         const locationSaved = await savePrimaryLocation(customerId);
-         console.log("Location save result:", locationSaved);
+         toast.warning("Customer saved, but could not determine customer ID for locations.");
        } else {
-         console.log("No location name provided, skipping location save.");
+         const hasNamedLocation = locationDrafts.some((d) => d.location_name.trim());
+         if (hasNamedLocation) {
+           await saveCustomerLocations(customerId);
+         }
        }
 
        setSelectedCustomer(null);
+       setModalMode("view");
        customerDraft.clear();
        await refetch();
        await queryClient.invalidateQueries({ queryKey: ["admin-profiles-list"] });
@@ -719,6 +809,13 @@ export default function Customers() {
 
     const selectedCount = selectedCustomerIds.size;
     if (selectedCount === 0) return;
+
+    const selectedCustomers = filteredCustomers.filter((c: any) => selectedCustomerIds.has(c.id));
+    const adminCustomers = selectedCustomers.filter((c: any) => c.role === 'admin');
+    if (adminCustomers.length > 0) {
+      toast.error("Security Alert: Cannot delete admin accounts.");
+      return;
+    }
 
     if (!confirm(`Are you sure you want to delete ${selectedCount} selected customer(s)? This will permanently remove customer records, linked profiles, and auth accounts.`)) {
       return;
@@ -785,7 +882,7 @@ export default function Customers() {
       (c.full_name || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
       (c.phone || "").includes(searchQuery) ||
       (c.email || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (c.branches?.branch_name || "").toLowerCase().includes(searchQuery.toLowerCase());
+      (getCustomerBranchNames(c).join(" ").toLowerCase().includes(searchQuery.toLowerCase()));
     
     const matchesType = 
       typeFilter === "all" || 
@@ -794,12 +891,18 @@ export default function Customers() {
       (typeFilter === "Walk-in" && (c.customer_type === "Walk-in" || (c.customer_type || "").toLowerCase().includes("walk-in"))) ||
       c.customer_type === typeFilter;
 
-    return matchesSearch && matchesType;
+    const matchesEntity =
+      entityFilter === "all" ||
+      (entityFilter === "Company"
+        ? c.entity_type === "Company"
+        : !c.entity_type || c.entity_type === "Individual");
+
+    return matchesSearch && matchesType && matchesEntity;
   }) || [];
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchQuery, typeFilter]);
+  }, [searchQuery, typeFilter, entityFilter]);
 
   const totalPages = Math.max(1, Math.ceil(filteredCustomers.length / ITEMS_PER_PAGE));
   const paginatedCustomers = filteredCustomers.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
@@ -811,8 +914,18 @@ export default function Customers() {
         ? [1, "ellipsis", totalPages - 4, totalPages - 3, totalPages - 2, totalPages - 1, totalPages]
         : [1, "ellipsis", currentPage - 1, currentPage, currentPage + 1, "ellipsis", totalPages];
 
+  const selectedBranchNames = useMemo(
+    () =>
+      (branches || [])
+        .filter((b: any) => branchIds.includes(b.id))
+        .map((b: any) => b.branch_name as string),
+    [branches, branchIds]
+  );
+
   const stats = {
     total: customers?.length || 0,
+    individual: customers?.filter((c: any) => !c.entity_type || c.entity_type === "Individual").length || 0,
+    company: customers?.filter((c: any) => c.entity_type === "Company").length || 0,
     retail: customers?.filter((c: any) => !c.customer_type || c.customer_type === 'Retail').length || 0,
     corporate: customers?.filter((c: any) => c.customer_type === 'Corporate').length || 0,
     government: customers?.filter((c: any) => c.customer_type === 'Government').length || 0,
@@ -884,6 +997,22 @@ export default function Customers() {
                 <Plus className="w-4 h-4 shrink-0" />
                 <span>Add Customer</span>
               </Button>
+              
+              {isAdmin && selectedCustomerIds.size > 0 && (
+                <Button
+                  size="sm"
+                  onClick={handleBulkDelete}
+                  disabled={isBulkDeleting}
+                  className="bg-red-600 hover:bg-red-700 text-white rounded-xl h-10 px-4 gap-2 font-bold shadow-sm text-xs"
+                >
+                  {isBulkDeleting ? (
+                    <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                  ) : (
+                    <Trash2 className="w-4 h-4 shrink-0" />
+                  )}
+                  <span>Delete {selectedCustomerIds.size} rows</span>
+                </Button>
+              )}
             </div>
           )}
           
@@ -896,12 +1025,12 @@ export default function Customers() {
       </div>
 
       {/* 📊 Stat Summary Grid */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 relative z-10">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 relative z-10">
         {/* Total Accounts */}
         <div 
-          onClick={() => setTypeFilter("all")}
+          onClick={() => { setTypeFilter("all"); setEntityFilter("all"); }}
           className={`glass-card rounded-2xl p-4 border shadow-sm flex items-center justify-between cursor-pointer transition-all hover:scale-[1.02] ${
-            typeFilter === "all"
+            typeFilter === "all" && entityFilter === "all"
               ? "border-primary ring-2 ring-primary/20 bg-primary/5"
               : "border-border/60 hover:border-primary/40"
           }`}
@@ -913,6 +1042,44 @@ export default function Customers() {
           </div>
           <div className="w-10 h-10 rounded-xl bg-primary/10 text-primary flex items-center justify-center">
             <Users className="w-5 h-5" />
+          </div>
+        </div>
+
+        {/* Individuals */}
+        <div
+          onClick={() => setEntityFilter(entityFilter === "Individual" ? "all" : "Individual")}
+          className={`glass-card rounded-2xl p-4 border shadow-sm flex items-center justify-between cursor-pointer transition-all hover:scale-[1.02] ${
+            entityFilter === "Individual"
+              ? "border-sky-500 ring-2 ring-sky-500/20 bg-sky-50/20"
+              : "border-border/60 hover:border-sky-400/50"
+          }`}
+          title="Filter individuals"
+        >
+          <div>
+            <span className="text-[11px] uppercase font-bold text-sky-600 block">Individuals</span>
+            <span className="text-2xl font-black text-sky-600 mt-0.5 block">{stats.individual}</span>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-sky-500/10 text-sky-600 flex items-center justify-center">
+            <User className="w-5 h-5" />
+          </div>
+        </div>
+
+        {/* Companies */}
+        <div
+          onClick={() => setEntityFilter(entityFilter === "Company" ? "all" : "Company")}
+          className={`glass-card rounded-2xl p-4 border shadow-sm flex items-center justify-between cursor-pointer transition-all hover:scale-[1.02] ${
+            entityFilter === "Company"
+              ? "border-violet-500 ring-2 ring-violet-500/20 bg-violet-50/20"
+              : "border-border/60 hover:border-violet-400/50"
+          }`}
+          title="Filter companies"
+        >
+          <div>
+            <span className="text-[11px] uppercase font-bold text-violet-600 block">Companies</span>
+            <span className="text-2xl font-black text-violet-600 mt-0.5 block">{stats.company}</span>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-violet-500/10 text-violet-600 flex items-center justify-center">
+            <Building className="w-5 h-5" />
           </div>
         </div>
 
@@ -954,25 +1121,6 @@ export default function Customers() {
           </div>
         </div>
 
-        {/* Gov / Partners */}
-        <div 
-          onClick={() => setTypeFilter(typeFilter === "Government" ? "all" : "Government")}
-          className={`glass-card rounded-2xl p-4 border shadow-sm flex items-center justify-between cursor-pointer transition-all hover:scale-[1.02] ${
-            typeFilter === "Government" || typeFilter === "Partner"
-              ? "border-purple-500 ring-2 ring-purple-500/20 bg-purple-50/20 dark:bg-purple-950/20"
-              : "border-border/60 hover:border-purple-400/50"
-          }`}
-          title="Click to filter by Government & Partners"
-        >
-          <div>
-            <span className="text-[11px] uppercase font-bold text-purple-600 dark:text-purple-400 block">Gov / Partners</span>
-            <span className="text-2xl font-black text-purple-600 dark:text-purple-400 mt-0.5 block">{stats.government + stats.partner}</span>
-          </div>
-          <div className="w-10 h-10 rounded-xl bg-purple-500/10 text-purple-600 flex items-center justify-center">
-            <ShieldCheck className="w-5 h-5" />
-          </div>
-        </div>
-
         {/* Walk-in Clients */}
         <div 
           onClick={() => setTypeFilter(typeFilter === "Walk-in" ? "all" : "Walk-in")}
@@ -1005,7 +1153,18 @@ export default function Customers() {
           />
         </div>
 
-        <div className="flex items-center gap-2 w-full md:w-auto shrink-0 justify-end">
+        <div className="flex flex-wrap items-center gap-2 w-full md:w-auto shrink-0 justify-end">
+          <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Entity:</span>
+          <Select value={entityFilter} onValueChange={(v) => setEntityFilter(v as "all" | CustomerEntityType)}>
+            <SelectTrigger className="w-[130px] h-10 rounded-lg border-slate-200 bg-white">
+              <SelectValue placeholder="Entity" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All</SelectItem>
+              <SelectItem value="Individual">Individual</SelectItem>
+              <SelectItem value="Company">Company</SelectItem>
+            </SelectContent>
+          </Select>
           <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Type:</span>
           <Select value={typeFilter} onValueChange={setTypeFilter}>
             <SelectTrigger className="w-[140px] h-10 rounded-lg border-slate-200 bg-white">
@@ -1096,33 +1255,53 @@ export default function Customers() {
                         </button>
                       </td>
                     )}
-                     <td className="py-3 px-4">
-                       <div className="font-semibold text-slate-800 truncate max-w-[180px] sm:max-w-[260px]" title={c.full_name}>{c.full_name}</div>
-                       {c.email && <div className="text-xs text-slate-400 mt-0.5 truncate max-w-[180px] sm:max-w-[260px]" title={c.email}>{c.email}</div>}
-                     </td>
+                      <td className="py-3 px-4">
+                        <div className="font-semibold text-slate-800 break-words" title={c.full_name}>{c.full_name}</div>
+                        {c.email && <div className="text-xs text-slate-400 mt-0.5 break-words" title={c.email}>{c.email}</div>}
+                      </td>
                     <td className="py-3 px-4 font-medium text-slate-600">
                       {c.phone}
                     </td>
                     <td className="py-3 px-4">
-                      {c.branches?.branch_name ? (
-                        <span className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 bg-slate-100 text-slate-700 rounded-full border border-slate-200/50">
-                          <Building className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                          {c.branches.branch_name}
-                        </span>
-                      ) : (
-                        <span className="text-xs text-slate-400 italic">None</span>
-                      )}
+                      {(() => {
+                        const names = getCustomerBranchNames(c);
+                        if (names.length === 0) {
+                          return <span className="text-xs text-slate-400 italic">None</span>;
+                        }
+                        return (
+                          <div className="flex flex-wrap gap-1 max-w-[220px]">
+                            {names.map((name) => (
+                              <span
+                                key={name}
+                                className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 bg-slate-100 text-slate-700 rounded-full border border-slate-200/50"
+                              >
+                                <Building className="w-3 h-3 text-slate-500 shrink-0" />
+                                {name}
+                              </span>
+                            ))}
+                          </div>
+                        );
+                      })()}
                     </td>
                     <td className="py-3 px-4">
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
-                        c.customer_type === 'Walk-in' ? 'bg-amber-100/90 border border-amber-300 text-amber-800' :
-                        c.customer_type === 'Corporate' ? 'bg-indigo-50 border border-indigo-200 text-indigo-600' :
-                        c.customer_type === 'Government' ? 'bg-rose-50 border border-rose-200 text-rose-600' :
-                        c.customer_type === 'Partner' ? 'bg-amber-50 border border-amber-200 text-amber-600' :
-                        'bg-teal-50 border border-teal-200 text-teal-600'
-                      }`}>
-                        {c.customer_type || 'Retail'}
-                      </span>
+                      <div className="flex flex-col gap-1 items-start">
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
+                          c.entity_type === "Company"
+                            ? "bg-violet-50 border border-violet-200 text-violet-700"
+                            : "bg-sky-50 border border-sky-200 text-sky-700"
+                        }`}>
+                          {c.entity_type === "Company" ? "Company" : "Individual"}
+                        </span>
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
+                          c.customer_type === 'Walk-in' ? 'bg-amber-100/90 border border-amber-300 text-amber-800' :
+                          c.customer_type === 'Corporate' ? 'bg-indigo-50 border border-indigo-200 text-indigo-600' :
+                          c.customer_type === 'Government' ? 'bg-rose-50 border border-rose-200 text-rose-600' :
+                          c.customer_type === 'Partner' ? 'bg-amber-50 border border-amber-200 text-amber-600' :
+                          'bg-teal-50 border border-teal-200 text-teal-600'
+                        }`}>
+                          {c.customer_type || 'Retail'}
+                        </span>
+                      </div>
                     </td>
                     <td className="py-3 px-4 text-right" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center justify-end gap-1.5">
@@ -1175,31 +1354,6 @@ export default function Customers() {
             </table>
           </div>
 
-          {/* Bulk Action Bar */}
-          {isAdmin && selectedCustomerIds.size > 0 && (
-            <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-4">
-              <span className="text-sm font-medium">{selectedCustomerIds.size} selected</span>
-              <button
-                onClick={clearSelection}
-                className="text-xs font-semibold text-slate-300 hover:text-white uppercase tracking-wider"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleBulkDelete}
-                disabled={isBulkDeleting}
-                className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 text-white px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider disabled:opacity-50"
-              >
-                {isBulkDeleting ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Trash2 className="w-3.5 h-3.5" />
-                )}
-                Delete
-              </button>
-            </div>
-          )}
-
           {/* Mobile Card List View */}
           <div className="grid grid-cols-1 gap-4 md:hidden">
             {paginatedCustomers.map((c: any) => {
@@ -1225,30 +1379,41 @@ export default function Customers() {
                       </button>
                     </div>
                   )}
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <h3 className="font-semibold text-slate-800 text-base truncate" title={c.full_name}>{c.full_name}</h3>
-                      {c.email && <p className="text-xs text-slate-400 font-light mt-0.5 truncate" title={c.email}>{c.email}</p>}
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <h3 className="font-semibold text-slate-800 text-base break-words whitespace-normal" title={c.full_name}>{c.full_name}</h3>
+                        {c.email && <p className="text-xs text-slate-400 font-light mt-0.5 break-words whitespace-normal" title={c.email}>{c.email}</p>}
+                      </div>
+                    <div className="flex flex-col gap-1 items-end shrink-0">
+                      <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
+                        c.entity_type === "Company"
+                          ? "bg-violet-50 border border-violet-200 text-violet-700"
+                          : "bg-sky-50 border border-sky-200 text-sky-700"
+                      }`}>
+                        {c.entity_type === "Company" ? "Company" : "Individual"}
+                      </span>
+                      <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
+                        c.customer_type === 'Walk-in' ? 'bg-amber-100/90 border border-amber-300 text-amber-800' :
+                        c.customer_type === 'Corporate' ? 'bg-indigo-50 border border-indigo-200 text-indigo-600' :
+                        c.customer_type === 'Government' ? 'bg-rose-50 border border-rose-200 text-rose-600' :
+                        c.customer_type === 'Partner' ? 'bg-amber-50 border border-amber-200 text-amber-600' :
+                        'bg-teal-50 border border-teal-200 text-teal-600'
+                      }`}>
+                        {c.customer_type || 'Retail'}
+                      </span>
                     </div>
-                    <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider shrink-0 ${
-                      c.customer_type === 'Walk-in' ? 'bg-amber-100/90 border border-amber-300 text-amber-800' :
-                      c.customer_type === 'Corporate' ? 'bg-indigo-50 border border-indigo-200 text-indigo-600' :
-                      c.customer_type === 'Government' ? 'bg-rose-50 border border-rose-200 text-rose-600' :
-                      c.customer_type === 'Partner' ? 'bg-amber-50 border border-amber-200 text-amber-600' :
-                      'bg-teal-50 border border-teal-200 text-teal-600'
-                    }`}>
-                      {c.customer_type || 'Retail'}
-                    </span>
                   </div>
 
                   <div className="grid grid-cols-2 gap-2 text-xs border-t border-slate-100 pt-3 text-slate-500">
                     <div className="flex items-center gap-1.5">
                       <Phone className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                      <span>{c.phone}</span>
+                      <span className="truncate">{c.phone}</span>
                     </div>
-                    <div className="flex items-center gap-1.5">
-                      <Building className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                      <span className="truncate">{c.branches?.branch_name || "No branch"}</span>
+                    <div className="flex items-start gap-1.5 col-span-2">
+                      <Building className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-0.5" />
+                      <span className="text-xs text-slate-600 truncate">
+                        {getCustomerBranchNames(c).join(", ") || "No branch"}
+                      </span>
                     </div>
                   </div>
 
@@ -1350,7 +1515,7 @@ export default function Customers() {
         </div>
       )}
 
-      {/* View & Add/Edit Overlay Modal */}
+      {/* View & Add/Edit Overlay Modal — ~80% off-canvas */}
       <AnimatePresence>
         {selectedCustomer && (
           <div className="fixed inset-0 bg-black/30 backdrop-blur-sm z-50 flex justify-end">
@@ -1359,19 +1524,19 @@ export default function Customers() {
               animate={{ x: 0 }}
               exit={{ x: "100%" }}
               transition={{ type: "spring", damping: 26, stiffness: 220 }}
-              className="bg-white w-full max-w-xl h-full rounded-lg p-4 sm:p-6 md:p-8 relative flex flex-col gap-6 overflow-y-auto shadow-xl border border-gray-200"
+              className="bg-white w-full max-w-none sm:w-[80vw] h-full relative flex flex-col shadow-xl border-l border-gray-200"
             >
               {/* Close Button */}
               <button 
-                onClick={() => setSelectedCustomer(null)}
+                onClick={closeCustomerPanel}
                 aria-label="Close modal"
-                className="absolute top-5 right-5 text-slate-400 hover:text-slate-600 hover:bg-slate-100/50 p-1.5 rounded-lg transition-colors z-20"
+                className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 hover:bg-slate-100/50 p-1.5 rounded-lg transition-colors z-20"
               >
                 <X className="w-5 h-5" />
               </button>
 
-              {/* Modal Header */}
-              <div className="flex items-center gap-4 border-b pb-4 pr-8 min-w-0">
+              {/* Modal Header — sticky */}
+              <div className="flex items-center gap-4 border-b border-slate-100 pb-4 pr-12 shrink-0 px-4 sm:px-6 md:px-8 pt-5 min-w-0">
                 <div className={`w-14 h-14 rounded-2xl flex items-center justify-center text-xl font-bold text-white uppercase gradient-warm`}>
                   {(modalMode === 'add' ? 'N' : fullName)?.charAt(0) || 'C'}
                 </div>
@@ -1380,22 +1545,34 @@ export default function Customers() {
                     {modalMode === 'view' ? "Customer Profile Details" : modalMode === 'add' ? "Add New Customer" : "Edit Customer Details"}
                   </h3>
                   <p className="text-xs text-muted-foreground mt-0.5">
-                    {modalMode === 'view' ? selectedCustomer.email || "No email provided" : "Fill details below to save."}
+                    {modalMode === 'view' ? selectedCustomer.email || "No email provided" : "Fill details below. You can assign multiple branch locations (e.g. Hyderabad and Secunderabad)."}
                   </p>
                 </div>
               </div>
 
               {modalMode === 'view' ? (
                 /* View Mode */
-                <div className="space-y-6 flex-1">
+                <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-6 md:px-8 py-4 space-y-6">
                   <div className="space-y-4 bg-muted/40 p-4 rounded-xl border border-slate-100">
                     <h4 className="text-xs font-bold text-primary uppercase tracking-wider">Profile Information</h4>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div className="sm:col-span-2 min-w-0">
-                        <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Full Name</span>
-                        <span className="text-sm font-semibold text-slate-800 block truncate max-w-[250px] sm:max-w-full" title={selectedCustomer.full_name}>{selectedCustomer.full_name}</span>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                      <div className="sm:col-span-2 lg:col-span-3 min-w-0">
+                        <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">
+                          {selectedCustomer.entity_type === "Company" ? "Company Name" : "Customer Name"}
+                        </span>
+                         <span className="text-sm font-semibold text-slate-800 block break-words whitespace-normal" title={selectedCustomer.full_name}>{selectedCustomer.full_name}</span>
                       </div>
-                      <div className="sm:col-span-2">
+                      <div>
+                        <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Entity</span>
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider inline-block mt-0.5 ${
+                          selectedCustomer.entity_type === "Company"
+                            ? "bg-violet-50 border border-violet-200 text-violet-700"
+                            : "bg-sky-50 border border-sky-200 text-sky-700"
+                        }`}>
+                          {selectedCustomer.entity_type === "Company" ? "Company" : "Individual"}
+                        </span>
+                      </div>
+                      <div>
                         <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Type</span>
                         <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider inline-block mt-0.5 ${
                           selectedCustomer.customer_type === 'Corporate' ? 'bg-indigo-50 border border-indigo-200 text-indigo-600' :
@@ -1406,7 +1583,7 @@ export default function Customers() {
                           {selectedCustomer.customer_type || 'Retail'}
                         </span>
                       </div>
-                      <div className="col-span-2">
+                      <div>
                         <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Email Address</span>
                         <span className="text-xs font-medium text-slate-700 block truncate">{selectedCustomer.email || "Not specified"}</span>
                       </div>
@@ -1414,18 +1591,28 @@ export default function Customers() {
                         <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Phone Contact</span>
                         <span className="text-xs font-semibold text-slate-700">{selectedCustomer.phone}</span>
                       </div>
-                      <div>
-                        <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Branch</span>
-                        <span className="text-xs font-semibold text-slate-700 block truncate">{selectedCustomer.branches?.branch_name || "Not assigned"}</span>
+                      <div className="sm:col-span-2 lg:col-span-3">
+                        <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Branches</span>
+                        <div className="flex flex-wrap gap-1.5 mt-1">
+                          {getCustomerBranchNames(selectedCustomer).length > 0 ? (
+                            getCustomerBranchNames(selectedCustomer).map((name) => (
+                              <span key={name} className="px-2 py-0.5 rounded-md bg-slate-100 border border-slate-200 text-xs font-semibold text-slate-700">
+                                {name}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-xs font-semibold text-slate-500">Not assigned</span>
+                          )}
+                        </div>
                       </div>
-                      <div className="col-span-2">
+                      <div className="sm:col-span-2 lg:col-span-3">
                         <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Address</span>
                         <span className="text-xs font-medium text-slate-600 leading-relaxed block max-h-24 overflow-y-auto whitespace-pre-wrap">{selectedCustomer.address || "No address provided."}</span>
                       </div>
 
                       {/* Linked Account Details */}
                       {selectedCustomer.user_id && (
-                        <div className="col-span-2 pt-3 border-t border-slate-200/50 mt-1">
+                        <div className="sm:col-span-2 lg:col-span-3 pt-3 border-t border-slate-200/50 mt-1">
                           <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider flex items-center gap-1">
                             <UserCheck className="w-3.5 h-3.5 text-emerald-500" /> Linked Login Account
                           </span>
@@ -1437,12 +1624,12 @@ export default function Customers() {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-3 pt-4 border-t border-slate-100">
+                  <div className="flex items-center gap-3 pt-4 border-t border-slate-100 shrink-0 bg-white">
                     <Button 
                       type="button" 
                       variant="outline" 
                       className="flex-1 rounded-xl h-11 font-bold text-sm"
-                      onClick={() => setSelectedCustomer(null)}
+                      onClick={closeCustomerPanel}
                     >
                       Close Details
                     </Button>
@@ -1451,7 +1638,11 @@ export default function Customers() {
                         type="button" 
                         variant="outline"
                         className="flex-1 rounded-xl h-11 font-bold text-sm border-emerald-200 text-emerald-700 hover:bg-emerald-50"
-                        onClick={() => setIsLocationManagerOpen(true)}
+                        onClick={() => {
+                          if (selectedCustomer?.id) {
+                            openLocationManager(selectedCustomer.id, selectedCustomer.full_name);
+                          }
+                        }}
                       >
                         <MapPin className="w-4 h-4 mr-2 text-emerald-600" /> Manage Locations
                       </Button>
@@ -1468,11 +1659,11 @@ export default function Customers() {
                   </div>
                 </div>
               ) : (
-                /* Add / Edit Form Mode */
-                <form onSubmit={handleSaveCustomer} className="space-y-4 flex flex-col flex-1 justify-between">
-                  <div className="space-y-4">
+                /* Add / Edit Form Mode — two-column on wide canvas */
+                <form onSubmit={handleSaveCustomer} className="flex flex-col flex-1 min-h-0">
+                  <div className="flex-1 overflow-y-auto px-4 sm:px-6 md:px-8 py-4">
                     {modalMode === "edit" && selectedCustomer?.id && (
-                      <div className="p-3 bg-emerald-50/70 border border-emerald-200/80 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="p-3 mb-4 bg-emerald-50/70 border border-emerald-200/80 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                         <div className="flex items-center gap-2 text-xs text-emerald-800">
                           <MapPin className="w-4 h-4 text-emerald-600 shrink-0" />
                           <span>Need to manage multiple installation / service addresses?</span>
@@ -1481,254 +1672,419 @@ export default function Customers() {
                           type="button"
                           variant="outline"
                           size="sm"
-                          onClick={() => setIsLocationManagerOpen(true)}
+                          onClick={() => {
+                            if (selectedCustomer?.id) {
+                              openLocationManager(selectedCustomer.id, selectedCustomer.full_name);
+                            }
+                          }}
                           className="h-8 text-xs font-semibold text-emerald-700 bg-white border-emerald-200 hover:bg-emerald-50 shrink-0"
                         >
                           Manage Multi-Locations
                         </Button>
                       </div>
                     )}
-                    <div className="space-y-1.5">
-                      <label className="text-xs font-semibold text-slate-600">Full Name <span className="text-destructive">*</span></label>
-                      <Input
-                        value={fullName}
-                        onChange={(e) => setFullName(e.target.value)}
-                        placeholder="Customer Full Name"
-                        required
-                        maxLength={100}
-                        disabled={loading}
-                        className="w-full rounded-lg border-slate-200 h-10"
-                      />
-                    </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div className="space-y-1.5">
-                        <label className="text-xs font-semibold text-slate-600">Phone Number <span className="text-destructive">*</span></label>
-                        <Input
-                          value={phone}
-                          onChange={(e) => setPhone(e.target.value)}
-                          placeholder="Contact phone"
-                          required
-                          disabled={loading}
-                          className="w-full rounded-lg border-slate-200 h-10"
-                        />
-                      </div>
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-8">
+                      {/* Left: identity + type + branch + login */}
+                      <div className="space-y-4">
+                        <h4 className="text-xs font-bold text-primary uppercase tracking-wider">Customer &amp; Account</h4>
 
-                      <div className="space-y-1.5">
-                        <label className="text-xs font-semibold text-slate-600">Email Address</label>
-                        <Input
-                          type="email"
-                          value={email}
-                          onChange={(e) => setEmail(e.target.value)}
-                          placeholder="customer@example.com"
-                          disabled={loading}
-                          className="w-full rounded-lg border-slate-200 h-10"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div className="space-y-1.5">
-                        <label className="text-xs font-semibold text-slate-600">Customer Type</label>
-                        <Select value={customerType} onValueChange={setCustomerType} disabled={loading}>
-                          <SelectTrigger className="w-full h-10 rounded-lg border-slate-200">
-                            <SelectValue placeholder="Select type" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="Retail">Retail</SelectItem>
-                            <SelectItem value="Corporate">Corporate</SelectItem>
-                            <SelectItem value="Government">Government</SelectItem>
-                            <SelectItem value="Partner">Partner</SelectItem>
-                            <SelectItem value="Walk-in">Walk-in / Direct</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-
-                      <div className="space-y-1.5">
-                        <label className="text-xs font-semibold text-slate-600">Branch Location</label>
-                        <Select value={branchId} onValueChange={setBranchId} disabled={loading}>
-                          <SelectTrigger className="w-full h-10 rounded-lg border-slate-200">
-                            <SelectValue placeholder="Select branch" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {branches?.map((b: any) => (
-                              <SelectItem key={b.id} value={b.id}>{b.branch_name}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    </div>
-
-                    {/* Create Login Account section */}
-                    <div className="bg-slate-50 p-4 rounded-xl border border-slate-200/60 space-y-3">
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          id="createLoginAccountCheckbox"
-                          checked={createLoginAccount || !!profileUserId}
-                          disabled={loading || !!profileUserId}
-                          onChange={(e) => {
-                            setCreateLoginAccount(e.target.checked);
-                            if (!e.target.checked) {
-                              setLoginPassword("");
-                              setShowPassword(false);
-                            }
-                          }}
-                          className="h-4 w-4 rounded border-slate-300 text-primary focus:ring-primary"
-                        />
-                        <label htmlFor="createLoginAccountCheckbox" className="text-xs font-bold text-slate-700 cursor-pointer">
-                          Create Login Account for Customer
-                        </label>
-                      </div>
-
-                      {profileUserId ? (
-                        <div className="flex items-center gap-1.5 text-xs text-success font-semibold pl-6">
-                          <ShieldCheck className="w-4 h-4 text-success" />
-                          Login Account Linked ({email || "linked"})
-                        </div>
-                      ) : createLoginAccount && (
-                        <div className="space-y-2 pl-6">
-                          <p className="text-[10px] text-muted-foreground">
-                            A login account will be created with the email and password below when you save.
-                          </p>
-                          <div className="space-y-1.5">
-                            <label className="text-xs font-semibold text-slate-600 flex items-center gap-1">
-                              <Lock className="w-3 h-3" /> Password <span className="text-destructive">*</span>
+                        <div className="space-y-2">
+                          <label className="text-xs font-semibold text-slate-600">Customer Entity</label>
+                          <RadioGroup
+                            value={entityType}
+                            onValueChange={(v) => setEntityType(v === "Company" ? "Company" : "Individual")}
+                            disabled={loading}
+                            className="grid grid-cols-2 gap-2"
+                          >
+                            <label
+                              htmlFor="entity-individual"
+                              className={`flex items-center gap-2 rounded-lg border px-3 py-2.5 cursor-pointer ${
+                                entityType === "Individual" ? "border-primary bg-primary/5" : "border-slate-200 bg-white"
+                              }`}
+                            >
+                              <RadioGroupItem value="Individual" id="entity-individual" />
+                              <User className="w-3.5 h-3.5 text-sky-600" />
+                              <span className="text-xs font-semibold text-slate-700">Individual</span>
                             </label>
-                            <div className="relative">
-                              <Input
-                                type={showPassword ? "text" : "password"}
-                                value={loginPassword}
-                                onChange={(e) => setLoginPassword(e.target.value)}
-                                placeholder="Minimum 8 characters"
-                                required
-                                disabled={loading}
-                                autoComplete="new-password"
-                                className="rounded-lg border-slate-200 h-10 pr-10"
-                              />
-                              {loginPassword.length > 0 && (
-                                <button
-                                  type="button"
-                                  onClick={() => setShowPassword(!showPassword)}
-                                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground focus:outline-none"
-                                >
-                                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                                </button>
-                              )}
-                            </div>
-                            {loginPassword.length > 0 && loginPassword.length < 8 && (
-                              <p className="text-[10px] text-destructive font-medium">Password must be at least 8 characters</p>
-                            )}
-                            {loginPassword.length >= 8 && (
-                              <p className="text-[10px] text-emerald-600 font-medium flex items-center gap-1">
-                                <ShieldCheck className="w-3 h-3" /> Password meets minimum requirements
-                              </p>
-                            )}
+                            <label
+                              htmlFor="entity-company"
+                              className={`flex items-center gap-2 rounded-lg border px-3 py-2.5 cursor-pointer ${
+                                entityType === "Company" ? "border-primary bg-primary/5" : "border-slate-200 bg-white"
+                              }`}
+                            >
+                              <RadioGroupItem value="Company" id="entity-company" />
+                              <Building className="w-3.5 h-3.5 text-violet-600" />
+                              <span className="text-xs font-semibold text-slate-700">Company</span>
+                            </label>
+                          </RadioGroup>
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <label className="text-xs font-semibold text-slate-600">
+                            {entityType === "Company" ? "Company Name" : "Customer Name"}{" "}
+                            <span className="text-destructive">*</span>
+                          </label>
+                          <Input
+                            value={fullName}
+                            onChange={(e) => setFullName(e.target.value)}
+                            placeholder={entityType === "Company" ? "Company / organization name" : "Customer full name"}
+                            required
+                            maxLength={100}
+                            disabled={loading}
+                            className="w-full rounded-lg border-slate-200 h-10"
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          <div className="space-y-1.5">
+                            <label className="text-xs font-semibold text-slate-600">Phone Number <span className="text-destructive">*</span></label>
+                            <Input
+                              value={phone}
+                              onChange={(e) => setPhone(e.target.value)}
+                              placeholder="Contact phone"
+                              required
+                              disabled={loading}
+                              className="w-full rounded-lg border-slate-200 h-10"
+                            />
+                          </div>
+
+                          <div className="space-y-1.5">
+                            <label className="text-xs font-semibold text-slate-600">Email Address</label>
+                            <Input
+                              type="email"
+                              value={email}
+                              onChange={(e) => setEmail(e.target.value)}
+                              placeholder="customer@example.com"
+                              disabled={loading}
+                              className="w-full rounded-lg border-slate-200 h-10"
+                            />
                           </div>
                         </div>
-                      )}
-                    </div>
 
-                                         {/* Primary Location Fields */}
-                     <div className="bg-slate-50 p-4 rounded-xl border border-slate-200/60 space-y-3">
-                       <div className="flex items-center gap-2">
-                         <MapPin className="w-4 h-4 text-primary" />
-                         <span className="text-xs font-bold text-slate-700 uppercase tracking-wider">Primary Location</span>
-                       </div>
-                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                         <div className="space-y-1.5">
-                           <label className="text-xs font-semibold text-slate-600">Location Name <span className="text-destructive">*</span></label>
-                           <Input
-                             value={locationName}
-                             onChange={(e) => setLocationName(e.target.value)}
-                             placeholder="Head Office, Warehouse, etc."
-                             required={!!locationName}
-                             disabled={loading}
-                             className="w-full rounded-lg border-slate-200 h-9"
-                           />
-                         </div>
-                         <div className="space-y-1.5">
-                           <label className="text-xs font-semibold text-slate-600">City</label>
-                           <Input
-                             value={locationCity}
-                             onChange={(e) => setLocationCity(e.target.value)}
-                             placeholder="Hyderabad"
-                             disabled={loading}
-                             className="w-full rounded-lg border-slate-200 h-9"
-                           />
-                         </div>
-                         <div className="space-y-1.5">
-                           <label className="text-xs font-semibold text-slate-600">State</label>
-                           <Input
-                             value={locationState}
-                             onChange={(e) => setLocationState(e.target.value)}
-                             placeholder="Telangana"
-                             disabled={loading}
-                             className="w-full rounded-lg border-slate-200 h-9"
-                           />
-                         </div>
-                         <div className="space-y-1.5">
-                           <label className="text-xs font-semibold text-slate-600">Pincode</label>
-                           <Input
-                             value={locationPincode}
-                             onChange={(e) => setLocationPincode(e.target.value)}
-                             placeholder="500081"
-                             disabled={loading}
-                             className="w-full rounded-lg border-slate-200 h-9"
-                           />
-                         </div>
-                       </div>
-                       <div className="space-y-1.5">
-                         <label className="text-xs font-semibold text-slate-600">Address</label>
-                         <textarea
-                           value={locationAddress}
-                           onChange={(e) => setLocationAddress(e.target.value)}
-                           placeholder="Street, Area, Landmark..."
-                           disabled={loading}
-                           rows={2}
-                           className="w-full p-2 border border-slate-200 rounded-lg text-sm bg-transparent focus:ring-2 focus:ring-primary focus:border-transparent outline-none resize-none transition-all"
-                         />
-                       </div>
-                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                         <div className="space-y-1.5">
-                           <label className="text-xs font-semibold text-slate-600">Contact Person</label>
-                           <Input
-                             value={locationContactPerson}
-                             onChange={(e) => setLocationContactPerson(e.target.value)}
-                             placeholder="Ravi Kumar"
-                             disabled={loading}
-                             className="w-full rounded-lg border-slate-200 h-9"
-                           />
-                         </div>
-                         <div className="space-y-1.5">
-                           <label className="text-xs font-semibold text-slate-600">Contact Phone</label>
-                           <Input
-                             value={locationContactPhone}
-                             onChange={(e) => setLocationContactPhone(e.target.value)}
-                             placeholder="9876543210"
-                             disabled={loading}
-                             className="w-full rounded-lg border-slate-200 h-9"
-                           />
-                         </div>
-                       </div>
-                     </div>
+                        <div className="space-y-1.5">
+                          <label className="text-xs font-semibold text-slate-600">Customer Type <span className="text-destructive">*</span></label>
+                          <Select value={customerType} onValueChange={setCustomerType} disabled={loading}>
+                            <SelectTrigger className="w-full h-10 rounded-lg border-slate-200">
+                              <SelectValue placeholder="Select Customer Type" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="BTL Corporate">BTL Corporate</SelectItem>
+                              <SelectItem value="AMC Client">AMC Client</SelectItem>
+                              <SelectItem value="Retail">Retail</SelectItem>
+                              <SelectItem value="Walk-in / Non-BTL">Walk-in / Non-BTL</SelectItem>
+                              <SelectItem value="Government">Government</SelectItem>
+                              <SelectItem value="Individual">Individual</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
 
-                     {/* Manual login-account linking is disabled. New accounts are linked automatically. */}
+                        <div className="space-y-1.5">
+                          <label className="text-xs font-semibold text-slate-600">
+                            Branch Locations
+                            <span className="font-normal text-muted-foreground ml-1">(select one or more)</span>
+                          </label>
+                          <Popover open={branchPopoverOpen} onOpenChange={setBranchPopoverOpen}>
+                            <PopoverTrigger asChild>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                disabled={loading}
+                                className="w-full justify-between h-auto min-h-10 rounded-lg border-slate-200 font-normal px-3 py-2"
+                              >
+                                <span className="text-left text-xs text-slate-700 truncate">
+                                  {selectedBranchNames.length === 0
+                                    ? "Search and select branches..."
+                                    : selectedBranchNames.join(", ")}
+                                </span>
+                                <ChevronDown className="w-4 h-4 shrink-0 text-slate-400" />
+                              </Button>
+                            </PopoverTrigger>
+                            <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+                              <Command>
+                                <CommandInput placeholder="Search branches..." />
+                                <CommandList className="max-h-48">
+                                  <CommandEmpty>No branches found.</CommandEmpty>
+                                  {(branches || []).map((b: any) => {
+                                    const checked = branchIds.includes(b.id);
+                                    return (
+                                      <CommandItem
+                                        key={b.id}
+                                        value={b.branch_name}
+                                        onSelect={() => toggleBranchId(b.id, !checked)}
+                                        className="flex items-center gap-2 cursor-pointer"
+                                      >
+                                        <Checkbox
+                                          checked={checked}
+                                          onCheckedChange={(value) => toggleBranchId(b.id, value === true)}
+                                        />
+                                        <span className="text-xs font-medium">{b.branch_name}</span>
+                                      </CommandItem>
+                                    );
+                                  })}
+                                </CommandList>
+                              </Command>
+                            </PopoverContent>
+                          </Popover>
+                          <p className="text-[10px] text-muted-foreground">
+                            {entityType === "Company"
+                              ? "Service branches this company operates under."
+                              : "Service branches that cover this customer."}
+                            {branchIds.length > 0
+                              ? ` ${branchIds.length} selected.`
+                              : ""}
+                          </p>
+                        </div>
 
-                    <div className="space-y-1.5">
-                      <label className="text-xs font-semibold text-slate-600">Physical Address</label>
-                      <textarea
-                        value={address}
-                        onChange={(e) => setAddress(e.target.value)}
-                        placeholder="Customer residential/commercial address details..."
-                        disabled={loading}
-                        rows={3}
-                        className="w-full p-3 border border-slate-200 rounded-lg text-sm bg-transparent focus:ring-2 focus:ring-primary focus:border-transparent outline-none resize-none transition-all"
-                      />
+                        <div className="bg-slate-50 p-4 rounded-xl border border-slate-200/60 space-y-3">
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              id="createLoginAccountCheckbox"
+                              checked={createLoginAccount || !!profileUserId}
+                              disabled={loading || !!profileUserId}
+                              onChange={(e) => {
+                                setCreateLoginAccount(e.target.checked);
+                                if (!e.target.checked) {
+                                  setLoginPassword("");
+                                  setShowPassword(false);
+                                }
+                              }}
+                              className="h-4 w-4 rounded border-slate-300 text-primary focus:ring-primary"
+                            />
+                            <label htmlFor="createLoginAccountCheckbox" className="text-xs font-bold text-slate-700 cursor-pointer">
+                              Create Login Account for Customer
+                            </label>
+                          </div>
+
+                          {profileUserId ? (
+                            <div className="flex items-center gap-1.5 text-xs text-success font-semibold pl-6">
+                              <ShieldCheck className="w-4 h-4 text-success" />
+                              Login Account Linked ({email || "linked"})
+                            </div>
+                          ) : createLoginAccount && (
+                            <div className="space-y-2 pl-6">
+                              <p className="text-[10px] text-muted-foreground">
+                                A login account will be created with the email and password below when you save.
+                              </p>
+                              <div className="space-y-1.5">
+                                <label className="text-xs font-semibold text-slate-600 flex items-center gap-1">
+                                  <Lock className="w-3 h-3" /> Password <span className="text-destructive">*</span>
+                                </label>
+                                <div className="relative">
+                                  <Input
+                                    type={showPassword ? "text" : "password"}
+                                    value={loginPassword}
+                                    onChange={(e) => setLoginPassword(e.target.value)}
+                                    placeholder="Minimum 8 characters"
+                                    required
+                                    disabled={loading}
+                                    autoComplete="new-password"
+                                    className="rounded-lg border-slate-200 h-10 pr-10"
+                                  />
+                                  {loginPassword.length > 0 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setShowPassword(!showPassword)}
+                                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground focus:outline-none"
+                                    >
+                                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                                    </button>
+                                  )}
+                                </div>
+                                {loginPassword.length > 0 && loginPassword.length < 8 && (
+                                  <p className="text-[10px] text-destructive font-medium">Password must be at least 8 characters</p>
+                                )}
+                                {loginPassword.length >= 8 && (
+                                  <p className="text-[10px] text-emerald-600 font-medium flex items-center gap-1">
+                                    <ShieldCheck className="w-3 h-3" /> Password meets minimum requirements
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Right: multi-address list */}
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between gap-2">
+                          <h4 className="text-xs font-bold text-primary uppercase tracking-wider">
+                            {entityType === "Company" ? "Office / Site Locations" : "Contact Addresses"}
+                          </h4>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={addLocationDraft}
+                            disabled={loading}
+                            className="h-8 text-xs font-semibold"
+                          >
+                            <Plus className="w-3.5 h-3.5 mr-1" /> Add another address
+                          </Button>
+                        </div>
+
+                        <div className="space-y-3 max-h-[28rem] overflow-y-auto pr-1">
+                          {locationDrafts.map((draft, index) => (
+                            <div
+                              key={index}
+                              className="bg-slate-50 p-4 rounded-xl border border-slate-200/60 space-y-3"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-2">
+                                  <MapPin className="w-4 h-4 text-primary" />
+                                  <span className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                                    Address {index + 1}
+                                  </span>
+                                  {draft.is_primary && (
+                                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 border border-emerald-200">
+                                      PRIMARY
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-1">
+                                  {!draft.is_primary && (
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="sm"
+                                      className="h-7 text-[10px] font-semibold"
+                                      disabled={loading}
+                                      onClick={() => setPrimaryLocationDraft(index)}
+                                    >
+                                      Set primary
+                                    </Button>
+                                  )}
+                                  {locationDrafts.length > 1 && (
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="sm"
+                                      className="h-7 w-7 p-0 text-destructive hover:bg-destructive/5"
+                                      disabled={loading}
+                                      onClick={() => removeLocationDraft(index)}
+                                      title="Remove address"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </Button>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div className="space-y-1.5 sm:col-span-2">
+                                  <label className="text-xs font-semibold text-slate-600">
+                                    Location Name
+                                    {index === 0 ? (
+                                      <span className="text-muted-foreground font-normal ml-1">(optional)</span>
+                                    ) : null}
+                                  </label>
+                                  <Input
+                                    value={draft.location_name}
+                                    onChange={(e) => updateLocationDraft(index, { location_name: e.target.value })}
+                                    placeholder={entityType === "Company" ? "Head Office, Warehouse..." : "Home, Office..."}
+                                    disabled={loading}
+                                    className="w-full rounded-lg border-slate-200 h-9"
+                                  />
+                                </div>
+                                <div className="space-y-1.5">
+                                  <label className="text-xs font-semibold text-slate-600">City</label>
+                                  <Input
+                                    value={draft.city}
+                                    onChange={(e) => updateLocationDraft(index, { city: e.target.value })}
+                                    placeholder="Hyderabad"
+                                    disabled={loading}
+                                    className="w-full rounded-lg border-slate-200 h-9"
+                                  />
+                                </div>
+                                <div className="space-y-1.5">
+                                  <label className="text-xs font-semibold text-slate-600">State</label>
+                                  <Popover open={statePopoverOpenIndex === index} onOpenChange={(open) => setStatePopoverOpenIndex(open ? index : null)}>
+                                    <PopoverTrigger asChild>
+                                      <Button
+                                        type="button"
+                                        variant="outline"
+                                        disabled={loading}
+                                        className="w-full justify-between h-9 rounded-lg border-slate-200 font-normal px-3 py-1.5 text-sm"
+                                      >
+                                        <span className="text-left truncate">
+                                          {draft.state || "Select State or Type to Search"}
+                                        </span>
+                                        <ChevronDown className="w-4 h-4 shrink-0 text-slate-400" />
+                                      </Button>
+                                    </PopoverTrigger>
+                                    <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+                                      <Command>
+                                        <CommandInput placeholder="Search states..." />
+                                        <CommandList className="max-h-48">
+                                          <CommandEmpty>No state found.</CommandEmpty>
+                                          {INDIAN_STATES.map((state) => (
+                                            <CommandItem
+                                              key={state}
+                                              value={state}
+                                              onSelect={() => {
+                                                updateLocationDraft(index, { state });
+                                                setStatePopoverOpenIndex(null);
+                                              }}
+                                            >
+                                              {state}
+                                            </CommandItem>
+                                          ))}
+                                        </CommandList>
+                                      </Command>
+                                    </PopoverContent>
+                                  </Popover>
+                                </div>
+                                <div className="space-y-1.5">
+                                  <label className="text-xs font-semibold text-slate-600">Pincode</label>
+                                  <Input
+                                    value={draft.pincode}
+                                    onChange={(e) => updateLocationDraft(index, { pincode: e.target.value })}
+                                    placeholder="500081"
+                                    disabled={loading}
+                                    className="w-full rounded-lg border-slate-200 h-9"
+                                  />
+                                </div>
+                                <div className="space-y-1.5 sm:col-span-2">
+                                  <label className="text-xs font-semibold text-slate-600">Address</label>
+                                  <textarea
+                                    value={draft.address}
+                                    onChange={(e) => updateLocationDraft(index, { address: e.target.value })}
+                                    placeholder="Street, Area, Landmark..."
+                                    disabled={loading}
+                                    rows={2}
+                                    className="w-full p-2 border border-slate-200 rounded-lg text-sm bg-transparent focus:ring-2 focus:ring-primary focus:border-transparent outline-none resize-none transition-all"
+                                  />
+                                </div>
+                                <div className="space-y-1.5">
+                                  <label className="text-xs font-semibold text-slate-600">Contact Person</label>
+                                  <Input
+                                    value={draft.contact_person}
+                                    onChange={(e) => updateLocationDraft(index, { contact_person: e.target.value })}
+                                    placeholder="Ravi Kumar"
+                                    disabled={loading}
+                                    className="w-full rounded-lg border-slate-200 h-9"
+                                  />
+                                </div>
+                                <div className="space-y-1.5">
+                                  <label className="text-xs font-semibold text-slate-600">Contact Phone</label>
+                                  <Input
+                                    value={draft.contact_phone}
+                                    onChange={(e) => updateLocationDraft(index, { contact_phone: e.target.value })}
+                                    placeholder="9876543210"
+                                    disabled={loading}
+                                    className="w-full rounded-lg border-slate-200 h-9"
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-3 pt-6 border-t border-slate-100 mt-6">
+                  <div className="flex items-center gap-3 shrink-0 px-4 sm:px-6 md:px-8 py-4 border-t border-slate-100 bg-white">
                       {modalMode === "add" && customerDraft.hasDraft() && (
                         <Button
                           type="button"
@@ -1739,19 +2095,13 @@ export default function Customers() {
                             setFullName("");
                             setPhone("");
                             setEmail("");
-                            setAddress("");
-                            setCustomerType("Retail");
-                            setBranchId("");
+                            setEntityType("Individual");
+        setCustomerType("");
+                            setBranchIds([]);
                             setProfileUserId("");
                             setCreateLoginAccount(false);
                             setLoginPassword("");
-                            setLocationName("");
-                            setLocationCity("");
-                            setLocationState("");
-                            setLocationPincode("");
-                            setLocationAddress("");
-                            setLocationContactPerson("");
-                            setLocationContactPhone("");
+                            setLocationDrafts([createEmptyLocationDraft(true)]);
                             toast.success("Draft cleared");
                           }}
                           className="text-xs text-slate-500 hover:text-destructive"
@@ -1764,24 +2114,18 @@ export default function Customers() {
                       variant="outline" 
                       className="flex-1 rounded-xl h-11 font-bold text-sm"
                       onClick={() => {
-                        setSelectedCustomer(null);
+                        closeCustomerPanel();
                         customerDraft.clear();
                         setFullName("");
                         setPhone("");
                         setEmail("");
-                        setAddress("");
-                        setCustomerType("Retail");
-                        setBranchId("");
+                        setEntityType("Individual");
+                            setCustomerType("");
+                        setBranchIds([]);
                         setProfileUserId("");
                         setCreateLoginAccount(false);
                         setLoginPassword("");
-                        setLocationName("");
-                        setLocationCity("");
-                        setLocationState("");
-                        setLocationPincode("");
-                        setLocationAddress("");
-                        setLocationContactPerson("");
-                        setLocationContactPhone("");
+                        setLocationDrafts([createEmptyLocationDraft(true)]);
                       }}
                       disabled={loading}
                     >
@@ -1808,6 +2152,7 @@ export default function Customers() {
           </div>
         )}
       </AnimatePresence>
+
       <CustomerImportModal
         open={isCustomerImportOpen}
         onOpenChange={setIsCustomerImportOpen}

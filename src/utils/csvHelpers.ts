@@ -32,7 +32,7 @@ export function downloadCSV(csvContent: string, filename: string): void {
 export function generateSampleCSV(type: "customer" | "asset" | "technician" | "supervisor" | "complaint"): string {
   if (type === "customer") {
     const headers = ["full_name", "email", "phone", "customer_type", "branch", "password"];
-    const example = ["John Doe", "john@test.com", "9876543210", "Retail", "Hyderabad", "Welcome@123!"];
+    const example = ["John Doe", "john@test.com", "9876543210", "BTL Corporate", "Hyderabad", "Welcome@123!"];
     return [headers.join(","), example.join(",")].join("\n");
   }
 
@@ -45,9 +45,15 @@ export function generateSampleCSV(type: "customer" | "asset" | "technician" | "s
       "serial_number",
       "category",
       "purchase_date",
+      "warranty_type",
       "warranty_months",
+      "status",
+      "customer_email",
+      "location",
+      "installation_date",
+      "notes",
     ];
-    const example = ["John Doe", "5kW Solar Inverter", "Luminous", "LUM-5000", "SN123456789", "Solar PV", "2025-01-15", "12"];
+    const example = ["John Doe", "5kW Solar Inverter", "Luminous", "LUM-5000", "SN123456789", "Solar PV & Inverters", "2025-01-15", "Manufacturer Warranty", "12", "Active", "john@example.com", "Main Branch", "2025-01-20", "Rooftop array installation unit #1"];
     return [headers.join(","), example.join(",")].join("\n");
   }
 
@@ -56,6 +62,7 @@ export function generateSampleCSV(type: "customer" | "asset" | "technician" | "s
       "title",
       "customer_name",
       "customer_phone",
+      "customer_type",
       "category",
       "coverage",
       "chargeable_service",
@@ -71,12 +78,13 @@ export function generateSampleCSV(type: "customer" | "asset" | "technician" | "s
       "Inverter error code E02",
       "Ramesh Kumar",
       "9876543210",
+      "Existing BTL Customer",
       "Solar PV",
       "Under Warranty",
       "No",
       "Luminous",
-      "moderate",
-      "medium",
+      "High",
+      "High",
       "Hyderabad, Jubilee Hills",
       "System turns off after 10 minutes of operation",
       "2026-09-25",

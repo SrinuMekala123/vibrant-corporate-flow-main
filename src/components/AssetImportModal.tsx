@@ -206,6 +206,40 @@ export default function AssetImportModal({
           return;
         }
 
+        const validCategories = ['Solar PV & Inverters', 'CCTV & Video Surveillance', 'Networking & IT Infrastructure', 'HVAC & Cooling', 'Security Systems', 'Access Control', 'Fire Safety Systems', 'Biometric Systems', 'Other'];
+        const normalizedCategory = category.trim();
+        const categoryMatch = validCategories.find(c => c.toLowerCase() === normalizedCategory.toLowerCase());
+        if (!categoryMatch) {
+          errors.push({ rowNumber, rowData: row, errorReason: `Invalid category: "${category}". Allowed values: ${validCategories.join(', ')}` });
+          return;
+        }
+        const resolvedCategory = categoryMatch;
+
+        const validStatuses = ['Active', 'Inactive', 'Under Maintenance', 'Decommissioned', 'In Stock'];
+        let resolvedStatus = 'Active';
+        if (statusRaw) {
+          const statusMatch = validStatuses.find(s => s.toLowerCase() === statusRaw.toLowerCase());
+          if (statusMatch) {
+            resolvedStatus = statusMatch;
+          } else {
+            errors.push({ rowNumber, rowData: row, errorReason: `Invalid status: "${statusRaw}". Allowed values: ${validStatuses.join(', ')}` });
+            return;
+          }
+        }
+
+        const warrantyTypeRaw = getFieldValue(row, ['warranty_type', 'warrantytype', 'warrantytype']);
+        const validWarrantyTypes = ['Manufacturer Warranty', 'Extended Warranty', 'AMC Warranty', 'No Warranty', 'On-site Warranty', 'Carry-in Warranty'];
+        let resolvedWarrantyType = 'Manufacturer Warranty';
+        if (warrantyTypeRaw) {
+          const wtMatch = validWarrantyTypes.find(w => w.toLowerCase() === warrantyTypeRaw.toLowerCase());
+          if (wtMatch) {
+            resolvedWarrantyType = wtMatch;
+          } else {
+            errors.push({ rowNumber, rowData: row, errorReason: `Invalid warranty_type: "${warrantyTypeRaw}". Allowed values: ${validWarrantyTypes.join(', ')}` });
+            return;
+          }
+        }
+
         // Validate purchase_date
         let purchaseDate = purchaseDateRaw;
         if (!purchaseDate) {
@@ -293,7 +327,7 @@ export default function AssetImportModal({
         validRowsToInsert.push({
           customer_id: resolvedCustomerId,
           branch_id: resolvedBranchId,
-          category,
+          category: resolvedCategory,
           product_name: productName,
           brand: manufacturer || null,
           model_number: modelNumber || null,
@@ -301,7 +335,7 @@ export default function AssetImportModal({
           purchase_date: purchaseDate,
           warranty_months: warrantyMonths,
           installation_date: installationDate,
-          status,
+          status: resolvedStatus,
           notes: notesParts.length > 0 ? notesParts.join(' | ') : null,
         });
       });

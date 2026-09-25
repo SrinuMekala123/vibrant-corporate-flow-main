@@ -320,3 +320,112 @@ body {
     page-break-inside: avoid !important;
   }
 }
+
+/* Prevent horizontal scrolling on mobile devices */
+html, body {
+  overflow-x: hidden !important;
+  width: 100%;
+  max-width: 100vw;
+}
+
+#root {
+  overflow-x: hidden !important;
+  width: 100%;
+}
+
+/* react-datepicker calendar popup fixes for desktop/laptop */
+.react-datepicker {
+  font-family: inherit;
+  border: 1px solid hsl(var(--border));
+  border-radius: 0.75rem;
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  z-index: 99999 !important;
+}
+
+.react-datepicker__portal {
+  z-index: 99999 !important;
+  position: fixed;
+}
+
+.react-datepicker__portal .react-datepicker {
+  z-index: 99999 !important;
+  position: relative;
+}
+
+.react-datepicker__day--selected,
+.react-datepicker__day--keyboard-selected {
+  background-color: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  font-weight: 700;
+}
+
+.react-datepicker__day:hover:not(.react-datepicker__day--disabled) {
+  background-color: hsl(var(--primary) / 0.1);
+  color: hsl(var(--foreground));
+}
+
+.react-datepicker__header {
+  background-color: hsl(var(--card));
+  border-bottom: 1px solid hsl(var(--border));
+}
+
+.react-datepicker__month-text,
+.react-datepicker__year-text,
+.react-datepicker__month-year-text {
+  color: hsl(var(--foreground));
+}
+
+.react-datepicker__day-name {
+  color: hsl(var(--muted-foreground));
+}
+
+.react-datepicker__day {
+  color: hsl(var(--foreground));
+}
+
+.react-datepicker__day--disabled {
+  color: hsl(var(--muted-foreground));
+  opacity: 0.5;
+}
+
+.react-datepicker__current-month {
+  color: hsl(var(--foreground));
+  font-weight: 700;
+}
+
+.react-datepicker__navigation-icon::before {
+  border-color: hsl(var(--muted-foreground));
+}
+
+.react-datepicker__day--today {
+  font-weight: 700;
+  color: hsl(var(--primary));
+  border-color: hsl(var(--primary));
+}
+
+.react-datepicker__triangle {
+  display: none !important;
+}
+
+/* Ensure datepicker input is visible and not clipped */
+.react-datepicker-wrapper {
+  display: inline-flex;
+  align-items: center;
+  position: relative;
+}
+
+.react-datepicker__input-container {
+  position: relative;
+  display: inline-flex;
+}
+
+.react-datepicker__input-container input {
+  cursor: pointer;
+  outline: none;
+}
+
+/* Fix for portal mode: ensure dropdown is not clipped by parent overflow */
+.react-datepicker__portal .react-datepicker {
+  animation: none !important;
+}

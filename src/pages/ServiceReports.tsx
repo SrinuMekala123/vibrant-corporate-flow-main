@@ -404,7 +404,7 @@ export default function ServiceReports() {
   // ============================================================================
   const totalTickets = allComplaints.length + allInstallations.length;
   const completedTickets =
-    allComplaints.filter((c: any) => ["completed", "closed"].includes(c.status)).length +
+    allComplaints.filter((c: any) => ["completed", "verified"].includes(c.status)).length +
     allInstallations.filter((i: any) =>
       ["completed", "handed over", "handed_over"].includes(i.status?.toLowerCase() || "")
     ).length;
@@ -677,7 +677,7 @@ export default function ServiceReports() {
 
     const activeOrders = filteredTickets.length;
     const completedOrders = filteredTickets.filter((t) =>
-      ["completed", "closed", "handed over", "handed_over"].includes(t.status?.toLowerCase() || "")
+      ["completed", "verified", "handed over", "handed_over"].includes(t.status?.toLowerCase() || "")
     ).length;
     const chargeableOrders = filteredTickets.filter((t) => t.is_chargeable).length;
     const totalRevenueSum = filteredPaymentsForReport
@@ -1413,7 +1413,8 @@ export default function ServiceReports() {
             </div>
 
             {/* Desktop Table View */}
-            <div className="hidden md:block overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
+            <div className="hidden md:block overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 relative">
+              <div className="absolute top-0 right-0 bottom-0 w-8 bg-gradient-to-l from-white to-transparent pointer-events-none z-10"></div>
               <table className="w-full text-left text-xs">
                 <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-700 dark:text-slate-300 font-bold border-b border-slate-200 dark:border-slate-700 uppercase tracking-wider text-[11px]">
                   <tr>
@@ -1650,7 +1651,8 @@ export default function ServiceReports() {
           </div>
 
           {/* Combined List Table */}
-          <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
+          <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 relative">
+            <div className="absolute top-0 right-0 bottom-0 w-8 bg-gradient-to-l from-white to-transparent pointer-events-none z-10"></div>
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold border-b uppercase tracking-wider text-[11px]">
                 <tr>
@@ -2459,7 +2461,8 @@ export default function ServiceReports() {
             </div>
 
             {/* Desktop Structured Table */}
-            <div className="hidden md:block overflow-x-auto rounded-xl border border-border/70">
+            <div className="hidden md:block overflow-x-auto rounded-xl border border-border/70 relative">
+              <div className="absolute top-0 right-0 bottom-0 w-8 bg-gradient-to-l from-white to-transparent pointer-events-none z-10"></div>
               <table className="w-full text-left text-xs border-collapse">
                 <thead className="bg-slate-50 dark:bg-slate-800/70 border-b border-border text-slate-700 dark:text-slate-300 font-bold uppercase tracking-wider text-[10px]">
                   <tr>

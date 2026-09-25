@@ -3,6 +3,10 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 import { toast } from 'sonner';
 import SignatureCanvas from 'react-signature-canvas';
+import DatePicker from 'react-datepicker';
+import 'react-datepicker/dist/react-datepicker.css';
+import { useQuery } from '@tanstack/react-query';
+import { DateTimePicker } from '@/components/ui/datetime-picker';
 import {
   ArrowLeft,
   Phone,
@@ -26,7 +30,11 @@ import {
   RotateCcw,
   Calendar,
   Zap,
-  RefreshCw
+  RefreshCw,
+  Eye,
+  History,
+  Crown,
+  Users
 } from 'lucide-react';
 import { installationService, formatInstallationTicketId } from '@/services/installationService';
 import { Button } from '@/components/ui/button';
@@ -48,6 +56,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { ManualWhatsAppButton } from '@/components/ManualWhatsAppButton';
+import OffCanvasPanel from '@/components/OffCanvasPanel';
 import {
   sendWhatsAppMessage,
   getCustomerPhone,
@@ -56,6 +65,11 @@ import {
   getInstallationClosedMessage,
   getTicketFullSummaryMessage,
 } from '@/utils/whatsappService';
+import { notificationService, type Notification } from '@/services/notificationService';
+import {
+  INSTALLATION_STATUSES,
+  getInstallationStatusLabel,
+} from '@/constants/installationStatuses';
 
 // Local cache helpers to preserve completion evidence & happiness codes across schema cache variations
 const getLocalInstallationData = (instId: string) => {
@@ -86,6 +100,7 @@ export default function InstallationDetail() {
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [currentPhase, setCurrentPhase] = useState(1);
   const [isLeadTechnician, setIsLeadTechnician] = useState(false);
+  const [isAssignedTechnician, setIsAssignedTechnician] = useState(false);
   
   // Interactive Phase Timeline State
   const [activePhase, setActivePhase] = useState<number | null>(null);
@@ -100,16 +115,21 @@ export default function InstallationDetail() {
   const [uploadedPhotos, setUploadedPhotos] = useState<any[]>([]);
   const [signatureCaptured, setSignatureCaptured] = useState(false);
   const [signatureData, setSignatureData] = useState<string | null>(null);
-  const [showCorrectionModal, setShowCorrectionModal] = useState(false);
-  const [correctionNotes, setCorrectionNotes] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  
+  // Material Shortage State
+  const [materialShortageDetails, setMaterialShortageDetails] = useState('');
+  const [materialShortagePhotos, setMaterialShortagePhotos] = useState<any[]>([]);
   
   // Force Close Modal & Data State
   const [showForceCloseModal, setShowForceCloseModal] = useState(false);
   const [forceCloseReason, setForceCloseReason] = useState('');
   const [forceCloseComments, setForceCloseComments] = useState('');
   const [isForceClosing, setIsForceClosing] = useState(false);
-  
+
+  // Admin Verification Form Visibility
+  const [showAdminVerification, setShowAdminVerification] = useState(false);
+
   // Admin Edit Modal State
   const [showAdminEditModal, setShowAdminEditModal] = useState(false);
   const [adminEditData, setAdminEditData] = useState<any>({});
@@ -122,11 +142,47 @@ export default function InstallationDetail() {
   const [happinessCodeVerified, setHappinessCodeVerified] = useState(false);
   const [happinessCodeError, setHappinessCodeError] = useState(false);
   const [finalAction, setFinalAction] = useState<'close' | 'followup' | 'rework' | null>(null);
+  const [followupReason, setFollowupReason] = useState('');
+  const [followupDate, setFollowupDate] = useState('');
+  const [followupTime, setFollowupTime] = useState('');
+  const [reworkReason, setReworkReason] = useState('');
+  const [showReassignModal, setShowReassignModal] = useState(false);
+  const [reassignSelectedTechs, setReassignSelectedTechs] = useState<string[]>([]);
+  const [reassignLeadTechId, setReassignLeadTechId] = useState<string | null>(null);
+  const [reassignReason, setReassignReason] = useState('');
+  const [reassignSearchTerm, setReassignSearchTerm] = useState('');
+  const [isReassigning, setIsReassigning] = useState(false);
   
   const sigRef = useRef<any>(null);
 
   const openAdminEdit = () => {
     if (!installation) return;
+    const rawStatus = String(installation.status || '').trim();
+    const lower = rawStatus.toLowerCase();
+    const workflowToAdminStatus: Record<string, string> = {
+      unassigned: 'Unassigned',
+      assigned: 'Assigned',
+      en_route: 'Assigned',
+      dispatched: 'Dispatched',
+      arrived: 'In Progress',
+      in_progress: 'In Progress',
+      completed: 'Site Completed and Handed Over',
+      verified: 'Verified',
+      closed: 'Verified',
+      force_closed: 'Verified',
+      revision_requested: 'In Progress',
+      pending_material_shortage: 'Pending due to Material Shortage',
+      'work in progress': 'In Progress',
+      'configuration pending': 'In Progress',
+      'signature pending due to client unavailability': 'In Progress',
+    };
+    const adminStatuses = INSTALLATION_STATUSES;
+    const normalizedStatus =
+      workflowToAdminStatus[lower] ||
+      adminStatuses.find((s) => s.toLowerCase() === lower) ||
+      (adminStatuses.includes(rawStatus) ? rawStatus : null) ||
+      (rawStatus || 'Assigned');
+
     setAdminEditData({
       equipment_details: installation.equipment_details || '',
       equipment_model: installation.equipment_model || installation.brand || '',
@@ -140,9 +196,89 @@ export default function InstallationDetail() {
       non_btl_customer_name: installation.non_btl_customer_name || '',
       non_btl_contact_number: installation.non_btl_contact_number || '',
       non_btl_address: installation.non_btl_address || '',
-      status: installation.status || 'Assigned'
+      status: normalizedStatus,
     });
     setShowAdminEditModal(true);
+  };
+
+  const { data: allTechnicians = [] } = useQuery({
+    queryKey: ['technicians-list-for-installation-reassign'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('role', 'technician')
+        .order('full_name');
+      if (error) {
+        console.warn("Error fetching technicians for reassign:", error);
+        return [];
+      }
+      return data || [];
+    },
+  });
+
+  const getReassignRemainingHours = (): number | null => {
+    if (!installation) return null;
+    const isClosed = currentStatusLower === 'verified' || currentStatusLower === 'force_closed' || installation?.force_closed || currentStatusLower === 'closed';
+    if (!isClosed) return null;
+    const closedDateStr = installation.verified_at || installation.force_closed_at || installation.updated_at;
+    if (!closedDateStr) return 48;
+    const closedDate = new Date(closedDateStr).getTime();
+    if (isNaN(closedDate)) return null;
+    const now = Date.now();
+    const hoursSinceClosed = (now - closedDate) / (1000 * 60 * 60);
+    if (hoursSinceClosed > 48) return null;
+    return Math.max(0, Math.round((48 - hoursSinceClosed) * 10) / 10);
+  };
+
+  const canReassign = (): boolean => {
+    if (!isAdmin && !isSupervisor) return false;
+    const isClosed = currentStatusLower === 'verified' || currentStatusLower === 'force_closed' || installation?.force_closed || currentStatusLower === 'closed';
+    if (!isClosed) return true;
+    const closedDateStr = installation.verified_at || installation.force_closed_at || installation.updated_at;
+    if (!closedDateStr) return true;
+    const closedDate = new Date(closedDateStr).getTime();
+    if (isNaN(closedDate)) return true;
+    const now = Date.now();
+    const hoursSinceClosed = (now - closedDate) / (1000 * 60 * 60);
+    return hoursSinceClosed <= 48;
+  };
+
+  const handleConfirmReassign = async () => {
+    if (!reassignReason.trim() || reassignReason.trim().length < 10) {
+      toast.error("Reassignment reason must be at least 10 characters.");
+      return;
+    }
+    if (reassignSelectedTechs.length === 0) {
+      toast.error("Please select at least one technician.");
+      return;
+    }
+    if (!reassignLeadTechId || !reassignSelectedTechs.includes(reassignLeadTechId)) {
+      toast.error("Please designate exactly one Lead Technician.");
+      return;
+    }
+
+    setIsReassigning(true);
+    try {
+      const techPayload = reassignSelectedTechs.map((tid) => ({
+        technician_id: tid,
+        is_lead: tid === reassignLeadTechId,
+      }));
+
+      await installationService.reassignTechnicians(id!, techPayload, reassignReason);
+
+      toast.success("Installation reassigned successfully! Status set to Assigned.");
+      setShowReassignModal(false);
+      setReassignReason('');
+      setReassignSelectedTechs([]);
+      setReassignLeadTechId(null);
+      setReassignSearchTerm('');
+      fetchInstallation();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to reassign installation");
+    } finally {
+      setIsReassigning(false);
+    }
   };
 
   const saveAdminEdit = async (e: React.FormEvent) => {
@@ -210,10 +346,18 @@ export default function InstallationDetail() {
         .from('installations')
         .select(`
           *,
-          customer:customers(id, full_name, phone, email, address, city, state, pincode, customer_type),
+          customer:customers(id, full_name, phone, email, customer_type),
           location:customer_locations(address, city, location_name),
           technicians:installation_technicians(
-            technician:profiles(full_name, id, employee_id, phone, email, role),
+            id,
+            technician_id,
+            technician:profiles!installation_technicians_technician_id_fkey (
+              id,
+              full_name,
+              phone,
+              email,
+              role
+            ),
             is_lead
           )
         `)
@@ -221,6 +365,7 @@ export default function InstallationDetail() {
         .maybeSingle();
 
       if (!deepError && deepData) {
+        console.log('[InstallationDetail] deepData.technicians:', deepData.technicians);
         instData = deepData;
       } else {
         // Strategy 2: Fallback to flat query + manual join
@@ -240,7 +385,7 @@ export default function InstallationDetail() {
           try {
             const { data: cust } = await supabase
               .from('customers')
-              .select('id, full_name, phone, email, address, city, state, pincode, customer_type')
+              .select('id, full_name, phone, email, customer_type')
               .eq('id', baseInst.customer_id)
               .single();
             if (cust) instData.customer = cust;
@@ -251,24 +396,34 @@ export default function InstallationDetail() {
 
         // Manually fetch technicians
         try {
-          const { data: techLinks } = await supabase
+          const { data: techLinks, error: techLinksError } = await supabase
             .from('installation_technicians')
             .select('technician_id, is_lead')
             .eq('installation_id', id);
 
+          console.log('[InstallationDetail] techLinks:', techLinks, 'error:', techLinksError);
+
           if (techLinks && techLinks.length > 0) {
             const techIds = techLinks.map((tl: any) => tl.technician_id).filter(Boolean);
+            console.log('[InstallationDetail] techIds:', techIds);
             if (techIds.length > 0) {
-              const { data: profs } = await supabase
+              const { data: profs, error: profsError } = await supabase
                 .from('profiles')
-                .select('id, full_name, employee_id, phone, email, role')
+                .select('*')
                 .in('id', techIds);
+
+              console.log('[InstallationDetail] profs:', profs, 'error:', profsError);
 
               instData.technicians = techLinks.map((tl: any) => {
                 const p = profs?.find((prof: any) => prof.id === tl.technician_id);
+                const techData = p ? {
+                  ...p,
+                  full_name: p.full_name || p.designation || p.email || 'Technician'
+                } : { id: tl.technician_id, full_name: 'Technician', employee_id: null, role: 'technician' };
                 return {
+                  technician_id: tl.technician_id,
                   is_lead: tl.is_lead,
-                  technician: p || { id: tl.technician_id, full_name: 'Technician' }
+                  technician: techData
                 };
               });
             }
@@ -307,12 +462,12 @@ export default function InstallationDetail() {
         }
 
         setInstallation(instData);
-        const st = (instData.status || '').toLowerCase();
+        const st = getInstallationStatusLabel(instData.status || '').toLowerCase();
         let phase = instData.current_phase || 1;
-        if (st === 'verified' || st === 'force_closed' || instData.force_closed) phase = 6;
-        else if (st === 'completed') phase = 5;
-        else if (st === 'in_progress' || st === 'in progress' || st === 'arrived' || st === 'revision_requested') phase = 4;
-        else if (st === 'en_route' || st === 'en route') phase = 3;
+        if (st === 'verified' || instData.force_closed) phase = 6;
+        else if (st === 'site completed and handed over') phase = 5;
+        else if (st === 'in progress') phase = 4;
+        else if (st === 'dispatched') phase = 3;
         else if (st === 'assigned') phase = 2;
         else if (st === 'unassigned') phase = 1;
         setCurrentPhase(phase);
@@ -345,9 +500,24 @@ export default function InstallationDetail() {
 
         const { data: { user } } = await supabase.auth.getUser();
         if (user) {
-          const leadTech = instData.technicians?.find((t: any) => t.is_lead && t.technician?.id === user.id);
-          const assignedTech = instData.technicians?.find((t: any) => t.technician?.id === user.id);
-          setIsLeadTechnician(!!leadTech || !!assignedTech || user.id === instData.lead_technician_id);
+          const leadTech = instData.technicians?.find((t: any) => t.is_lead === true || t.is_lead === 'true');
+          const assignedTech = instData.technicians?.find((t: any) => {
+            const techId = t.technician_id || t.technician?.id;
+            return techId === user.id;
+          });
+
+          const isLead = 
+            (leadTech && (leadTech.technician_id === user.id || leadTech.technician?.id === user.id)) ||
+            instData.lead_technician_id === user.id;
+
+          setIsLeadTechnician(isLead);
+          setIsAssignedTechnician(!!assignedTech || isLead);
+
+          console.log('[InstallationDetail] Current User ID:', user.id);
+          console.log('[InstallationDetail] Lead Tech ID from DB:', instData.lead_technician_id);
+          console.log('[InstallationDetail] Technicians array:', instData.technicians);
+          console.log('[InstallationDetail] isLeadTechnician:', isLead);
+          console.log('[InstallationDetail] isAssignedTechnician:', !!assignedTech || isLead);
         }
       }
     } catch (e) {
@@ -397,14 +567,15 @@ export default function InstallationDetail() {
           arrival_gps_lat: position.coords.latitude,
           arrival_gps_lng: position.coords.longitude,
           arrival_time: new Date().toISOString(),
-          status: 'arrived',
+          status: 'In Progress',
           updated_at: new Date().toISOString()
         })
         .eq('id', id);
 
       if (error) throw error;
       
-      toast.success('GPS arrival recorded successfully! Status updated to Arrived.');
+      toast.success('GPS arrival recorded successfully! Status updated to In Progress.');
+      setCurrentPhase(4);
       fetchInstallation();
     } catch (error) {
       console.error('GPS Error:', error);
@@ -417,11 +588,12 @@ export default function InstallationDetail() {
           .update({
             current_phase: 4,
             arrival_time: new Date().toISOString(),
-            status: 'arrived',
+            status: 'In Progress',
             updated_at: new Date().toISOString()
           })
           .eq('id', id);
         toast.info('Arrival marked successfully (without GPS coordinates).');
+        setCurrentPhase(4);
         fetchInstallation();
       } catch (fallbackErr) {
         console.error('Fallback arrival update error:', fallbackErr);
@@ -435,22 +607,40 @@ export default function InstallationDetail() {
       const lower = newStatus.toLowerCase();
       if (lower === 'unassigned') nextPhase = 1;
       else if (lower === 'assigned') nextPhase = 2;
-      else if (lower === 'en_route' || lower === 'en route') nextPhase = 3;
-      else if (lower === 'arrived' || lower === 'in_progress' || lower === 'in progress' || lower === 'revision_requested') nextPhase = 4;
-      else if (lower === 'completed') nextPhase = 5;
-      else if (lower === 'verified' || lower === 'force_closed') nextPhase = 6;
+      else if (lower === 'dispatched') nextPhase = 3;
+      else if (lower === 'in progress') nextPhase = 4;
+      else if (lower === 'pending due to material shortage') nextPhase = 2;
+      else if (lower === 'site completed and handed over') nextPhase = 5;
+      else if (lower === 'verified') nextPhase = 6;
+
+      const payload: any = {
+        status: newStatus,
+        current_phase: nextPhase,
+        updated_at: new Date().toISOString()
+      };
+
+      if (lower === 'pending due to material shortage') {
+        payload.notes = materialShortageDetails || installation.notes || 'Pending due to material shortage';
+        if (materialShortagePhotos.length > 0) {
+          payload.evidence_photos = materialShortagePhotos.map(p => p.url || p);
+        }
+      }
 
       const { error } = await supabase
         .from('installations')
-        .update({ 
-          status: newStatus,
-          current_phase: nextPhase,
-          updated_at: new Date().toISOString()
-        })
+        .update(payload)
         .eq('id', id);
 
       if (error) throw error;
-      toast.success(`Status updated to: ${newStatus}`);
+      
+      setCurrentPhase(nextPhase);
+      
+      if (lower === 'pending due to material shortage') {
+        toast.success('Status updated: Pending due to Material Shortage. Admin/Supervisor has been notified.');
+      } else {
+        toast.success(`Status updated to: ${newStatus}`);
+      }
+      
       fetchInstallation();
     } catch (err: any) {
       toast.error(`Failed to update status: ${err?.message || 'Error'}`);
@@ -565,14 +755,14 @@ export default function InstallationDetail() {
         installation_notes: formData.installation_notes,
         testing_results: formData.testing_results,
         completed_at: new Date().toISOString(),
-        status: 'completed',
+        status: 'Site Completed and Handed Over',
         current_phase: 5
       });
 
       // Update installation to Phase 5 (Completion) using resilient installationService
       const payload: any = {
         current_phase: 5,
-        status: 'completed',
+        status: 'Site Completed and Handed Over',
         equipment_model: formData.equipment_model || null,
         equipment_scope: formData.equipment_model || null,
         equipment_details: formData.equipment_model || null,
@@ -595,7 +785,7 @@ export default function InstallationDetail() {
       setInstallation((prev: any) => ({
         ...prev,
         ...payload,
-        status: 'completed',
+        status: 'Site Completed and Handed Over',
         current_phase: 5,
         happiness_code: happinessCode,
         completed_at: new Date().toISOString(),
@@ -635,6 +825,25 @@ export default function InstallationDetail() {
       }
       
       toast.success('Installation completed! Happiness Code sent to customer via WhatsApp.');
+      
+      const customerId = installation?.customer_id || installation?.customer?.id;
+      if (customerId) {
+        try {
+          await notificationService.insertNotification(
+            customerId,
+            installation.id,
+            "success",
+            "Installation Completed",
+            `Installation ${displayId} has been signed off. Happiness code verification is now with admin.`,
+            4,
+            `/installations/${installation.id}`,
+            user?.id
+          );
+        } catch (notifErr) {
+          console.warn("Installation sign-off app notification warning:", notifErr);
+        }
+      }
+      
       fetchInstallation();
     } catch (error: any) {
       console.error('Submission error:', error);
@@ -668,31 +877,67 @@ export default function InstallationDetail() {
 
   // ADMIN FINAL ACTION DECISION HANDLER
   const handleFinalAction = async () => {
-    if (!happinessCodeVerified) {
-      toast.error('Please verify Happiness Code first');
-      return;
-    }
     if (!finalAction) {
-      toast.error('Please select a Final Action Decision');
+      toast.error('Please select a final action');
       return;
     }
 
     try {
       const nowIso = new Date().toISOString();
       const updateData: any = {
-        current_phase: finalAction === 'close' ? 6 : finalAction === 'rework' ? 4 : 3,
-        status: finalAction === 'close' ? 'verified' : 
-                finalAction === 'followup' ? 'followup_scheduled' : 'revision_requested',
-        verified_at: nowIso,
-        verified_by: currentUser?.id,
-        customer_satisfaction: customerSatisfaction,
-        customer_feedback_comments: customerComments || null,
-        happiness_code_verified: happinessCodeVerified,
-        updated_at: nowIso
+        updated_at: nowIso,
       };
 
-      if (finalAction === 'followup') {
-        updateData.followup_scheduled_at = nowIso;
+      if (finalAction === 'close') {
+        if (!enteredHappinessCode || enteredHappinessCode.length !== 5) {
+          toast.error('Please enter valid 5-digit happiness code');
+          return;
+        }
+        if (!customerSatisfaction) {
+          toast.error('Please select customer satisfaction level');
+          return;
+        }
+
+        updateData.status = 'Verified';
+        updateData.current_phase = 6;
+        updateData.happiness_code = enteredHappinessCode;
+        updateData.happiness_code_verified = true;
+        updateData.customer_satisfaction = customerSatisfaction;
+        updateData.customer_feedback_comments = customerComments;
+        updateData.verified_at = nowIso;
+        updateData.verified_by = currentUser?.id;
+
+      } else if (finalAction === 'followup') {
+        if (!followupReason) {
+          toast.error('Please provide follow-up reason');
+          return;
+        }
+        if (!followupDate) {
+          toast.error('Please schedule follow-up date');
+          return;
+        }
+        if (!followupTime) {
+          toast.error('Please select follow-up time');
+          return;
+        }
+
+        updateData.status = 'Dispatched';
+        updateData.current_phase = 3;
+        updateData.followup_reason = followupReason;
+        updateData.followup_scheduled_date = followupDate;
+        updateData.followup_scheduled_time = followupTime;
+        updateData.reassignment_reason = `Follow-up visit scheduled: ${followupReason}`;
+
+      } else if (finalAction === 'rework') {
+        if (!reworkReason) {
+          toast.error('Please provide rework reason');
+          return;
+        }
+
+        updateData.status = 'In Progress';
+        updateData.current_phase = 4;
+        updateData.rework_reason = reworkReason;
+        updateData.reassignment_reason = `Rework required: ${reworkReason}`;
       }
 
       const { error } = await supabase
@@ -700,45 +945,72 @@ export default function InstallationDetail() {
         .update(updateData)
         .eq('id', id);
 
-      if (error) {
-        console.warn("Update error, fallback basic status update:", error);
-        await supabase
-          .from('installations')
-          .update({
-            status: updateData.status,
-            current_phase: updateData.current_phase,
-            verified_at: updateData.verified_at
-          })
-          .eq('id', id);
-      }
+      if (error) throw error;
 
-      // Stage 4 WhatsApp Notification on Close
-      if (finalAction === 'close') {
+      toast.success(`Installation ${finalAction === 'close' ? 'verified and closed' : finalAction === 'followup' ? 'follow-up scheduled' : 'rework requested'} successfully`);
+      
+      const customerIdAction = installation?.customer_id || installation?.customer?.id;
+      const leadTechId = installation?.technicians?.find((t: any) => t.is_lead)?.technician_id || installation?.lead_technician_id;
+      
+      if (finalAction === 'close' && customerIdAction) {
         try {
-          const custPhone = getCustomerPhone(installation);
-          const custName = getCustomerName(installation);
-          const displayId = formatInstallationTicketId(installation) || installation?.ticket_id || id?.slice(0, 8);
-          if (custPhone) {
-            const closeMsg = getInstallationClosedMessage({
-              customerName: custName,
-              ticketId: displayId
-            });
-            await sendWhatsAppMessage(custPhone, closeMsg, {
-              ticketId: displayId,
-              name: custName,
-              event_type: 'closed'
-            });
-          }
-        } catch (waErr) {
-          console.warn("Final action close WhatsApp error:", waErr);
+          await notificationService.insertNotification(
+            customerIdAction,
+            installation.id,
+            "success",
+            "Installation Verified & Closed",
+            `Installation ${displayTicketId} has been verified and closed by admin.`,
+            6,
+            `/installations/${installation.id}`,
+            user?.id
+          );
+        } catch (notifErr) {
+          console.warn("Installation close app notification warning:", notifErr);
+        }
+      } else if (finalAction === 'rework' && leadTechId) {
+        try {
+          await notificationService.insertNotification(
+            leadTechId,
+            installation.id,
+            "warning",
+            "Rework Required",
+            `Rework required for installation ${displayTicketId}. Reason: ${reworkReason}`,
+            6,
+            `/installations/${installation.id}`,
+            user?.id
+          );
+        } catch (notifErr) {
+          console.warn("Installation rework app notification warning:", notifErr);
+        }
+      } else if (finalAction === 'followup' && leadTechId) {
+        try {
+          await notificationService.insertNotification(
+            leadTechId,
+            installation.id,
+            "info",
+            "Follow-up Scheduled",
+            `Follow-up visit scheduled for installation ${displayTicketId} on ${followupDate} at ${followupTime}. Reason: ${followupReason}`,
+            6,
+            `/installations/${installation.id}`,
+            user?.id
+          );
+        } catch (notifErr) {
+          console.warn("Installation followup app notification warning:", notifErr);
         }
       }
-
-      toast.success(`Installation ${finalAction === 'close' ? 'verified and closed successfully' : finalAction === 'followup' ? 'follow-up scheduled' : 'returned for rework'}`);
+      
       fetchInstallation();
-    } catch (error) {
-      toast.error('Failed to finalize installation');
-      console.error(error);
+      
+      setFinalAction(null);
+      setEnteredHappinessCode('');
+      setCustomerSatisfaction('');
+      setCustomerComments('');
+      setFollowupReason('');
+      setFollowupDate('');
+      setFollowupTime('');
+      setReworkReason('');
+    } catch (err: any) {
+      toast.error(`Failed to ${finalAction}: ${err?.message || 'Error'}`);
     }
   };
 
@@ -756,7 +1028,7 @@ export default function InstallationDetail() {
       const formattedComments = forceCloseComments.trim();
       const updateData: any = {
         current_phase: 6,
-        status: 'force_closed',
+        status: 'Verified',
         verified_at: nowIso,
         verified_by: currentUser?.id,
         customer_satisfaction: customerSatisfaction || 'Satisfied (Force Closed)',
@@ -780,7 +1052,7 @@ export default function InstallationDetail() {
         await supabase
           .from('installations')
           .update({
-            status: 'force_closed',
+            status: 'Verified',
             current_phase: 6,
             verified_at: nowIso,
             force_closed: true,
@@ -813,6 +1085,26 @@ export default function InstallationDetail() {
       }
 
       toast.success("⚡ Installation Force Closed successfully!");
+      
+      const customerIdForce = installation?.customer_id || installation?.customer?.id;
+      if (customerIdForce) {
+        try {
+          const adminIds = await notificationService.getAdminUserIds();
+          await notificationService.insertNotification(
+            [customerIdForce, ...adminIds],
+            installation.id,
+            "warning",
+            "Installation Force Closed",
+            `Installation ${displayId} has been force closed by admin.${forceCloseReason ? ` Reason: ${forceCloseReason}` : ''}`,
+            6,
+            `/installations/${installation.id}`,
+            user?.id
+          );
+        } catch (notifErr) {
+          console.warn("Installation force close app notification warning:", notifErr);
+        }
+      }
+      
       setShowForceCloseModal(false);
       setForceCloseReason('');
       setForceCloseComments('');
@@ -825,80 +1117,11 @@ export default function InstallationDetail() {
     }
   };
 
-  const submitCorrectionRequest = async () => {
-    if (!correctionNotes.trim()) {
-      toast.error('Please provide correction notes');
-      return;
-    }
-
-    try {
-      const { error } = await supabase
-        .from('installations')
-        .update({
-          status: 'revision_requested',
-          current_phase: 4,
-          correction_requested: true,
-          correction_notes: correctionNotes,
-          corrected_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', id);
-
-      if (error) {
-        await supabase
-          .from('installations')
-          .update({
-            status: 'revision_requested',
-            reassignment_reason: correctionNotes,
-            current_phase: 4
-          })
-          .eq('id', id);
-      }
-      
-      toast.success('Correction request sent back to the technician team');
-      setShowCorrectionModal(false);
-      setCorrectionNotes('');
-      fetchInstallation();
-    } catch (error) {
-      toast.error('Failed to submit correction request');
-    }
-  };
-
   // 2-DAY (48-HOUR) POST-CLOSURE REASSIGN CHECK
-  const isWithinTwoDays = (verifiedAt?: string) => {
-    if (!verifiedAt) return false;
-    const verifiedDate = new Date(verifiedAt);
-    const now = new Date();
-    const twoDaysInMs = 2 * 24 * 60 * 60 * 1000;
-    return (now.getTime() - verifiedDate.getTime()) < twoDaysInMs;
-  };
-
-  const handleReassignInstallation = async () => {
-    if (!window.confirm("🔄 Reassign this installation for follow-up rework?\nThis will return the installation to Phase 4 (Execution).")) {
-      return;
-    }
-    try {
-      const { error } = await supabase
-        .from('installations')
-        .update({
-          status: 'revision_requested',
-          current_phase: 4,
-          reassignment_reason: 'Post-closure follow-up (Reassigned within 48 hours)',
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', id);
-      
-      if (error) throw error;
-      toast.success('Installation reassigned for follow-up successfully');
-      fetchInstallation();
-    } catch (err: any) {
-      toast.error(err?.message || 'Failed to reassign installation');
-    }
-  };
-
   const siteAddress = installation?.site_address || 
     installation?.location?.address || 
     installation?.non_btl_address || 
+    installation?.customer?.address ||
     [installation?.location?.location_name, installation?.location?.city].filter(Boolean).join(", ") || 
     'N/A';
 
@@ -908,6 +1131,7 @@ export default function InstallationDetail() {
   
   const leadTechnicianInfo = installation?.technicians?.find((t: any) => t.is_lead)?.technician || 
     installation?.technicians?.[0]?.technician;
+  const leadTechnicianName = leadTechnicianInfo?.full_name || "Lead Technician";
 
   const callClient = () => {
     if (!customerPhone) {
@@ -948,27 +1172,48 @@ export default function InstallationDetail() {
     return isNaN(d.getTime()) ? dateString : d.toLocaleString();
   };
 
+  const getFileType = (url: string) => {
+    const lowercaseUrl = url.toLowerCase();
+    if (
+      lowercaseUrl.endsWith('.mp4') ||
+      lowercaseUrl.endsWith('.webm') ||
+      lowercaseUrl.endsWith('.ogg') ||
+      lowercaseUrl.endsWith('.mov') ||
+      lowercaseUrl.endsWith('.quicktime') ||
+      lowercaseUrl.includes('video')
+    ) {
+      return 'video';
+    }
+    if (
+      lowercaseUrl.endsWith('.png') ||
+      lowercaseUrl.endsWith('.jpg') ||
+      lowercaseUrl.endsWith('.jpeg') ||
+      lowercaseUrl.endsWith('.gif') ||
+      lowercaseUrl.endsWith('.webp') ||
+      lowercaseUrl.endsWith('.svg') ||
+      lowercaseUrl.includes('/images/') ||
+      lowercaseUrl.includes('/evidence/')
+    ) {
+      return 'image';
+    }
+    return 'document';
+  };
+
   // ROLES: Strict isolation so admin/supervisor never see technician mission control
   const isAdmin = currentUser?.role === 'admin';
   const isTechnician = currentUser?.role === 'technician';
   const isSupervisor = currentUser?.role === 'supervisor';
+  const canEdit = isAdmin || isSupervisor;
+  const canView = isAdmin || isSupervisor || isLeadTechnician || isAssignedTechnician;
   const currentStatusLower = (installation?.status || '').toLowerCase();
   
   const isForceClosed = Boolean(installation?.force_closed || currentStatusLower === 'force_closed');
-  const isVerified = currentStatusLower === 'verified';
+  const isVerified = currentStatusLower === 'verified' || getInstallationStatusLabel(currentStatusLower) === 'Verified';
+  const isClosed = currentStatusLower === 'verified' || currentStatusLower === 'force_closed' || installation?.force_closed || currentStatusLower === 'closed';
   const isClosedOrVerified = isForceClosed || isVerified;
-  const isPhase5ReadyForVerification = (currentPhase === 5 || currentStatusLower === 'completed') && !isClosedOrVerified;
+  const isPhase5ReadyForVerification = (currentPhase === 5 || getInstallationStatusLabel(currentStatusLower) === 'Site Completed and Handed Over') && !isClosedOrVerified;
 
-  const normalizedStatusValue = (() => {
-    const s = currentStatusLower;
-    if (s.includes('verif') || s === 'closed' || s === 'force_closed') return 'verified';
-    if (s.includes('complete') || s.includes('handed') || s.includes('awaiting') || currentPhase === 5) return 'completed';
-    if (s.includes('progress') || s === 'in_progress') return 'in_progress';
-    if (s.includes('arrive') || s === 'arrived') return 'arrived';
-    if (s.includes('route') || s === 'en_route') return 'en_route';
-    if (s.includes('revision')) return 'revision_requested';
-    return s || 'assigned';
-  })();
+  const normalizedStatusValue = getInstallationStatusLabel(installation?.status || 'Assigned');
 
   const canClickArrived = [
     'assigned',
@@ -1008,11 +1253,12 @@ export default function InstallationDetail() {
           </div>
           <div className="flex flex-wrap items-center gap-2 mt-2">
             <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider border ${
-              currentStatusLower === 'verified' ? 'bg-emerald-100 text-emerald-800 border-emerald-300' :
-              (currentPhase === 5 || currentStatusLower === 'completed') ? 'bg-amber-100 text-amber-900 border-amber-300' :
+              getInstallationStatusLabel(installation?.status || '') === 'Verified' ? 'bg-emerald-100 text-emerald-800 border-emerald-300' :
+              getInstallationStatusLabel(installation?.status || '') === 'Site Completed and Handed Over' ? 'bg-amber-100 text-amber-900 border-amber-300' :
+              getInstallationStatusLabel(installation?.status || '') === 'Pending due to Material Shortage' ? 'bg-rose-100 text-rose-800 border-rose-300' :
               'bg-blue-100 text-blue-800 border-blue-200'
             }`}>
-              {(currentPhase === 5 || currentStatusLower === 'completed') ? 'Completed (Awaiting Verification)' : (installation.status || 'Unassigned')}
+              {getInstallationStatusLabel(installation?.status || 'Unassigned')}
             </span>
             {installation.is_chargeable && (
               <span className="px-3 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
@@ -1028,48 +1274,6 @@ export default function InstallationDetail() {
         </div>
 
         <div className="flex items-center gap-2.5 flex-wrap">
-          {/* Share Summary Button */}
-          {customerPhone && (
-            <button
-              type="button"
-              onClick={() => {
-                const cleanDigits = customerPhone.replace(/\D/g, "");
-                if (!cleanDigits) {
-                  toast.error("No valid customer phone number found.");
-                  return;
-                }
-                const formattedPhone = cleanDigits.length === 10 ? `91${cleanDigits}` : cleanDigits;
-                const displayId = formatInstallationTicketId(installation);
-                const sDate = installation.scheduled_date ? new Date(`${installation.scheduled_date}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : undefined;
-                const sTime = installation.scheduled_time ? installation.scheduled_time.slice(0, 5) : undefined;
-                const techName = leadTechnicianInfo?.full_name || undefined;
-                const hpCode = installation.happiness_code || undefined;
-
-                const messageText = getTicketFullSummaryMessage({
-                  ticketType: "installation",
-                  ticketId: displayId,
-                  customerName: customerName,
-                  titleOrEquipment: installation.equipment_details || installation.brand || "Installation",
-                  status: installation.status,
-                  phase: installation.current_phase || 1,
-                  technicianName: techName,
-                  scheduledDate: sDate,
-                  scheduledTime: sTime,
-                  happinessCode: hpCode,
-                  location: siteAddress,
-                  notes: installation.installation_notes || installation.notes || undefined,
-                });
-
-                window.open(`https://api.whatsapp.com/send?phone=${formattedPhone}&text=${encodeURIComponent(messageText)}`, "_blank");
-              }}
-              className="px-3.5 py-2 border border-emerald-500/60 text-emerald-600 hover:bg-emerald-50 font-semibold text-xs rounded-lg shadow-2xs flex items-center gap-1.5 transition-all cursor-pointer"
-              title="Share installation details directly with customer via WhatsApp"
-            >
-              <MessageSquare className="w-3.5 h-3.5 text-emerald-600" />
-              Share Summary
-            </button>
-          )}
-
           <ManualWhatsAppButton
             ticket={installation}
             ticketType="installation"
@@ -1079,44 +1283,58 @@ export default function InstallationDetail() {
           />
 
           {isAdmin && (
-            <button
-              onClick={openAdminEdit}
-              className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs rounded-lg shadow-sm flex items-center gap-1.5 transition-all"
-            >
-              <Edit3 className="w-3.5 h-3.5" /> Edit Details
-            </button>
+            <>
+                   <button
+                     type="button"
+                     onClick={() => {
+                       if (!isPhase5ReadyForVerification) {
+                         toast.error("Please wait until the Lead Technician completes the installation (Phase 5).");
+                         return;
+                       }
+                       setShowAdminVerification(true);
+                       setActivePhase(6);
+                     }}
+                     className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs rounded-lg shadow-sm flex items-center gap-1.5 transition-all"
+                     title="Open Phase 6 Admin Verification & Customer Feedback"
+                   >
+                     <ShieldCheck className="w-3.5 h-3.5" /> Verify Installation
+                   </button>
+            </>
           )}
-          <button 
-            onClick={() => navigate('/installations')} 
-            className="text-xs font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 px-3.5 py-2 rounded-lg transition-colors"
-          >
-            ← Back
-          </button>
         </div>
       </div>
 
       {/* 2. Lead Technician Banner & Manual Status Modifier */}
-      {leadTechnicianInfo && (
+      {(leadTechnicianInfo || installation.lead_technician_id) ? (
         <div className="bg-blue-50/80 border border-blue-200 rounded-xl p-3.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
           <p className="text-xs font-medium text-blue-900 flex items-center gap-2">
             <ShieldCheck className="w-4 h-4 text-blue-600 shrink-0" />
             <span>
-              🔒 Status progression is managed by Lead Technician: <strong>{leadTechnicianInfo.full_name}</strong>
-              {leadTechnicianInfo.employee_id && (
+              🔒 Status progression is managed by Lead Technician: <strong>{leadTechnicianInfo?.full_name || 'Not Assigned'}</strong>
+              {leadTechnicianInfo?.employee_id && (
                 <span className="text-blue-700 ml-1">({leadTechnicianInfo.employee_id})</span>
               )}
             </span>
           </p>
-          {leadTechnicianInfo.phone && (
+          {leadTechnicianInfo?.phone && (
             <span className="text-xs text-blue-800 font-semibold shrink-0">
               📞 {leadTechnicianInfo.phone}
             </span>
           )}
         </div>
+      ) : (
+        <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+          <p className="text-xs font-medium text-slate-600 flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4 text-slate-400 shrink-0" />
+            <span>
+              🔒 Status progression is managed by Lead Technician: <strong>Not Assigned</strong>
+            </span>
+          </p>
+        </div>
       )}
 
-      {/* Manual Status Override for Lead Tech & Admin */}
-      {(isLeadTechnician || isAdmin) && (
+      {/* 3. TECHNICIAN MISSION CONTROL - TECHNICIANS ONLY (Hidden from Admin / Supervisor) */}
+      {canEdit && (
         <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm space-y-2">
           <div className="flex items-center justify-between">
             <label className="block text-xs font-bold uppercase tracking-wider text-slate-700">
@@ -1129,19 +1347,89 @@ export default function InstallationDetail() {
             onChange={(e) => handleManualStatusChange(e.target.value)}
             className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm font-semibold text-slate-800 focus:ring-2 focus:ring-primary/20 focus:border-primary"
           >
-            <option value="assigned">Assigned</option>
-            <option value="en_route">En Route</option>
-            <option value="arrived">Arrived on Site</option>
-            <option value="in_progress">In Progress</option>
-            <option value="completed">Completed (Awaiting Admin Verification)</option>
-            <option value="verified">Verified & Closed</option>
-            <option value="revision_requested">Revision Requested</option>
+            {INSTALLATION_STATUSES.map((status) => (
+              <option key={status} value={status}>{status}</option>
+            ))}
           </select>
+          
+          {/* Material Shortage Details - Conditional */}
+          {(normalizedStatusValue === 'Pending due to Material Shortage') && (
+            <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-xl space-y-3">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-amber-600" />
+                <label className="text-sm font-bold text-amber-900">Material Shortage Details</label>
+              </div>
+              
+              <div>
+                <label className="block text-xs font-semibold text-amber-800 mb-1">List Required Materials *</label>
+                <textarea
+                  rows={3}
+                  value={materialShortageDetails}
+                  onChange={(e) => setMaterialShortageDetails(e.target.value)}
+                  placeholder="e.g., 50m cable, 4 connectors, 2 circuit breakers..."
+                  className="w-full border-2 border-amber-300 rounded-lg px-3 py-2 text-xs bg-white focus:outline-none focus:border-amber-500"
+                />
+              </div>
+              
+              <div>
+                <label className="block text-xs font-semibold text-amber-800 mb-1">Upload Photos of Missing Materials/Defective Parts</label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={(e) => {
+                    const files = Array.from(e.target.files || []);
+                    const newPhotos = files.map(file => ({
+                      url: URL.createObjectURL(file),
+                      file,
+                      uploading: true
+                    }));
+                    setMaterialShortagePhotos(prev => [...prev, ...newPhotos]);
+                    
+                    // Upload to Supabase
+                    files.forEach(async (file) => {
+                      const fileName = `${id}/material_shortage/${Date.now()}_${file.name.replace(/\s+/g, '_')}`;
+                      const { data, error } = await supabase.storage
+                        .from('installation-evidence')
+                        .upload(fileName, file);
+                      
+                      if (!error) {
+                        const { data: urlData } = supabase.storage
+                          .from('installation-evidence')
+                          .getPublicUrl(fileName);
+                        setMaterialShortagePhotos(prev => prev.map(p => 
+                          p.file === file ? { url: urlData.publicUrl, file, uploading: false } : p
+                        ));
+                      }
+                    });
+                  }}
+                  className="block w-full text-xs text-slate-500 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-amber-100 file:text-amber-800 hover:file:bg-amber-200"
+                />
+              </div>
+              
+              {materialShortagePhotos.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {materialShortagePhotos.map((photo, idx) => (
+                    <div key={idx} className="relative w-16 h-16 border rounded-lg overflow-hidden">
+                      <img src={photo.url} alt={`Material shortage ${idx + 1}`} className="w-full h-full object-cover" />
+                      <button
+                        type="button"
+                        onClick={() => setMaterialShortagePhotos(prev => prev.filter((_, i) => i !== idx))}
+                        className="absolute top-0.5 right-0.5 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
-      {/* 3. TECHNICIAN MISSION CONTROL - TECHNICIANS ONLY (Hidden from Admin / Supervisor) */}
-      {isTechnician && currentPhase >= 2 && currentPhase < 6 && (
+      {/* 3. TECHNICIAN MISSION CONTROL - LEAD TECHNICIAN ONLY */}
+      {isLeadTechnician && isTechnician && currentPhase >= 2 && currentPhase < 6 && (
         <div className="mission-control-banner bg-slate-900 text-white p-5 sm:p-6 rounded-2xl shadow-md space-y-4">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-bold tracking-wider uppercase text-amber-400 flex items-center gap-2">
@@ -1182,14 +1470,14 @@ export default function InstallationDetail() {
               className="bg-amber-600 hover:bg-amber-700 active:scale-95 transition-all text-white py-3 px-4 rounded-xl font-semibold flex items-center justify-center gap-2 text-xs shadow-sm disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
             >
               <MapPin className="w-4 h-4" /> 
-              {currentStatusLower === 'arrived' ? 'Arrived (GPS) ✓' : 'I Arrived (GPS)'}
+              {getInstallationStatusLabel(installation?.status || '') === 'In Progress' && installation?.arrival_time ? 'Arrived (GPS) ✓' : 'I Arrived (GPS)'}
             </button>
           </div>
           
           <div className="p-3 bg-slate-800/90 rounded-xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border border-slate-700">
             <div>
               <p className="text-[11px] text-slate-400 font-semibold">Site Address:</p>
-              <p className="font-semibold text-xs text-slate-100">{siteAddress}</p>
+              <p className="font-semibold text-xs text-slate-100">{siteAddress === 'N/A' ? 'Address not provided' : siteAddress}</p>
             </div>
             <button 
               type="button"
@@ -1199,6 +1487,28 @@ export default function InstallationDetail() {
               <Copy className="w-3.5 h-3.5" /> Copy
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Crew Member View - Non-Lead Assigned Technicians */}
+      {isAssignedTechnician && !isLeadTechnician && (
+        <div className="bg-blue-50 border-2 border-blue-200 p-5 rounded-2xl">
+          <h3 className="font-bold text-sm text-blue-900 mb-1">Crew Member View (Read-Only)</h3>
+          <p className="text-xs text-blue-700 mb-3">Lead Tech: {leadTechnicianInfo?.full_name || 'Not Assigned'}</p>
+          <button
+            type="button"
+            onClick={() => {
+              const address = siteAddress === 'N/A' ? '' : siteAddress;
+              if (address) {
+                window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`, '_blank');
+              } else {
+                toast.error('No address available for navigation');
+              }
+            }}
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl flex items-center justify-center gap-2 text-sm font-semibold"
+          >
+            <Navigation className="w-4 h-4" /> Navigate to Site
+          </button>
         </div>
       )}
 
@@ -1215,6 +1525,8 @@ export default function InstallationDetail() {
           ].map(phase => {
             const isCompleted = currentPhase > phase.num;
             const isSelected = activePhase === phase.num;
+            const isPhase6Ready = phase.num === 6 && isPhase5ReadyForVerification;
+            const isPhaseActive = currentPhase >= phase.num || isPhase6Ready;
             return (
               <button
                 key={phase.num}
@@ -1222,13 +1534,13 @@ export default function InstallationDetail() {
                 onClick={() => setActivePhase(activePhase === phase.num ? null : phase.num)}
                 className={`flex flex-col items-center flex-1 min-w-[75px] cursor-pointer transition-all duration-200 group focus:outline-none p-1.5 rounded-xl ${
                   isSelected ? 'bg-primary/10 ring-2 ring-primary/40' : 'hover:bg-slate-100/80'
-                } ${currentPhase >= phase.num ? 'text-primary font-bold' : 'text-slate-400'}`}
+                } ${isPhaseActive ? 'text-primary font-bold' : 'text-slate-400'}`}
                 title={`Click to view Phase ${phase.num}: ${phase.label} details`}
               >
                 <div className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold border-2 transition-all ${
                   isSelected
                     ? 'border-primary bg-primary text-white shadow-md scale-110'
-                    : currentPhase >= phase.num 
+                    : isPhaseActive
                       ? 'border-primary bg-primary text-white shadow-xs group-hover:scale-105' 
                       : 'border-slate-300 bg-white text-slate-500 group-hover:border-slate-400'
                 }`}>
@@ -1332,10 +1644,12 @@ export default function InstallationDetail() {
                             <User className="w-4 h-4 text-blue-600" />
                             <div>
                               <p className="font-bold text-xs text-slate-900">
-                                {t.technician?.full_name || 'Technician'}
+                                {t.technician?.full_name || t.technician?.designation || t.technician?.employee_id || t.technician?.email || 'Technician'}
                                 {t.is_lead && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800">LEAD</span>}
                               </p>
-                              <p className="text-[11px] text-slate-500">{t.technician?.employee_id || t.technician?.role || 'Field Engineer'}</p>
+                              <p className="text-[11px] text-slate-500">
+                                {[t.technician?.employee_id, t.technician?.role, t.technician?.designation].filter(Boolean).join(' • ') || 'Assigned Technician'}
+                              </p>
                             </div>
                           </div>
                           {t.technician?.phone && (
@@ -1510,14 +1824,22 @@ export default function InstallationDetail() {
                     </span>
                     {((uploadedPhotos && uploadedPhotos.length > 0) || (installation.evidence_photos && installation.evidence_photos.length > 0)) ? (
                       <div className="flex flex-wrap gap-2">
-                        {(uploadedPhotos.length > 0 ? uploadedPhotos : (installation.evidence_photos || [])).map((photo: any, idx: number) => (
-                          <a key={idx} href={photo.url || photo} target="_blank" rel="noreferrer" className="block relative group">
-                            <img src={photo.url || photo} alt={`Evidence ${idx + 1}`} className="w-14 h-14 object-cover rounded-lg border border-blue-300 shadow-2xs group-hover:opacity-80" />
-                            <span className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-[10px] rounded-lg transition-opacity font-bold">
-                              View
-                            </span>
-                          </a>
-                        ))}
+                        {(uploadedPhotos.length > 0 ? uploadedPhotos : (installation.evidence_photos || [])).map((photo: any, idx: number) => {
+                          const src = photo.url || photo;
+                          const fileType = getFileType(src);
+                          return (
+                            <a key={idx} href={src} target="_blank" rel="noreferrer" className="block relative group">
+                              {fileType === 'video' ? (
+                                <video src={src} className="w-14 h-14 object-cover rounded-lg border border-blue-300 shadow-2xs group-hover:opacity-80" muted />
+                              ) : (
+                                <img src={src} alt={`Evidence ${idx + 1}`} className="w-14 h-14 object-cover rounded-lg border border-blue-300 shadow-2xs group-hover:opacity-80" />
+                              )}
+                              <span className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-[10px] rounded-lg transition-opacity font-bold">
+                                View
+                              </span>
+                            </a>
+                          );
+                        })}
                       </div>
                     ) : (
                       <p className="italic text-slate-500">No completion photos uploaded.</p>
@@ -1590,61 +1912,6 @@ export default function InstallationDetail() {
         )}
       </div>
 
-      {/* Customer & Site Info */}
-      <div className="customer-site-info border border-slate-200 bg-white rounded-2xl p-5 shadow-xs space-y-3">
-        <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
-          <h3 className="font-bold text-sm text-slate-900 uppercase tracking-wider flex items-center gap-2">
-            <MapPin className="w-4 h-4 text-primary" /> CUSTOMER & SITE ADDRESS
-          </h3>
-          {customerPhone && (
-            <ManualWhatsAppButton
-              stage={
-                currentPhase >= 6 ? 'closed' :
-                currentPhase >= 5 ? 'technician_signoff' :
-                currentPhase >= 2 ? 'field_visit_scheduled' : 'creation'
-              }
-              ticket={installation}
-              ticketType="installation"
-              customTechnicianName={leadTechnicianInfo?.full_name}
-              customEquipmentType={installation.equipment_details || installation.brand}
-              buttonVariant="button"
-              buttonText="WhatsApp"
-              size="xs"
-            />
-          )}
-        </div>
-        <div className="grid md:grid-cols-2 gap-4 text-xs">
-          <div>
-            <p className="text-muted-foreground font-semibold">Customer Name:</p>
-            <p className="font-bold text-sm text-slate-800">{customerName}</p>
-          </div>
-          <div>
-            <p className="text-muted-foreground font-semibold">Contact Phone:</p>
-            <div className="flex items-center gap-2 mt-0.5">
-              <p className="font-bold text-sm text-slate-800">{customerPhone || 'N/A'}</p>
-              {customerPhone && (
-                <ManualWhatsAppButton
-                  stage={
-                    currentPhase >= 6 ? 'closed' :
-                    currentPhase >= 5 ? 'technician_signoff' :
-                    currentPhase >= 2 ? 'field_visit_scheduled' : 'creation'
-                  }
-                  ticket={installation}
-                  ticketType="installation"
-                  customTechnicianName={leadTechnicianInfo?.full_name}
-                  customEquipmentType={installation.equipment_details || installation.brand}
-                  buttonVariant="icon"
-                />
-              )}
-            </div>
-          </div>
-          <div className="md:col-span-2">
-            <p className="text-muted-foreground font-semibold">Installation Address:</p>
-            <p className="font-semibold text-xs text-slate-800">{siteAddress}</p>
-          </div>
-        </div>
-      </div>
-
       {/* Equipment Info */}
       <div className="equipment-info border border-slate-200 bg-white rounded-2xl p-5 shadow-xs space-y-3">
         <h3 className="font-bold text-sm text-slate-900 uppercase tracking-wider flex items-center gap-2 border-b border-slate-100 pb-2.5">
@@ -1678,147 +1945,271 @@ export default function InstallationDetail() {
         </div>
       </div>
 
-      {/* 5. INSTALLATION EXECUTION & COMPLETION - TECHNICIAN ONLY (Filled during on-site execution in Phase 4) */}
-      {isTechnician && (isLeadTechnician || !installation.lead_technician_id) && 
-       (currentPhase === 4 || currentStatusLower === 'arrived' || currentStatusLower === 'in_progress' || currentStatusLower === 'revision_requested') && 
-       currentPhase < 5 && currentStatusLower !== 'completed' && currentStatusLower !== 'verified' && currentStatusLower !== 'closed' && !installation.force_closed && (
-        <div className="installation-execution-form border border-blue-200 bg-white rounded-2xl p-6 shadow-sm space-y-5">
-          <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-            <div>
-              <h3 className="font-bold text-base text-slate-900 flex items-center gap-2">
-                <CheckCircle2 className="w-5 h-5 text-blue-600" />
-                INSTALLATION EXECUTION & COMPLETION
-              </h3>
-              <p className="text-xs text-muted-foreground">Record hardware serial, upload site photos, and capture customer sign-off.</p>
-            </div>
-            <span className="text-xs font-semibold px-2.5 py-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-md">
-              Lead Technician Only
-            </span>
-          </div>
-          
-          {/* Equipment Details */}
-          <div className="grid md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1.5">Equipment Model *</label>
-              <input
-                type="text"
-                required
-                value={formData.equipment_model}
-                onChange={(e) => setFormData({...formData, equipment_model: e.target.value})}
-                placeholder="e.g., Luminous 2kW Inverter"
-                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-primary/20 focus:border-primary"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1.5">Serial Number *</label>
-              <input
-                type="text"
-                required
-                value={formData.serial_number}
-                onChange={(e) => setFormData({...formData, serial_number: e.target.value})}
-                placeholder="e.g., SN123456789"
-                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-primary/20 focus:border-primary"
-              />
-            </div>
-          </div>
-
-          {/* Installation Notes */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1.5">Installation Notes & Work Performed *</label>
-            <textarea
-              required
-              rows={4}
-              value={formData.installation_notes}
-              onChange={(e) => setFormData({...formData, installation_notes: e.target.value})}
-              placeholder="Describe the complete installation work performed, configuration details, and any observations..."
-              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-primary/20 focus:border-primary"
-            />
-          </div>
-
-          {/* Testing Results */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1.5">Testing Results & Configuration Details</label>
-            <textarea
-              rows={3}
-              value={formData.testing_results}
-              onChange={(e) => setFormData({...formData, testing_results: e.target.value})}
-              placeholder="Voltage readings, connectivity tests, network configuration, settings applied..."
-              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-primary/20 focus:border-primary"
-            />
-          </div>
-
-          {/* Photo Upload */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1.5">Upload Installation Photos & Videos *</label>
-            <input
-              type="file"
-              multiple
-              accept="image/*,video/*"
-              onChange={handlePhotoUpload}
-              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs bg-slate-50"
-            />
-            {uploadedPhotos.length > 0 && (
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5 mt-3">
-                {uploadedPhotos.map((photo, index) => (
-                  <div key={index} className="relative rounded-xl overflow-hidden border border-slate-200 aspect-video bg-slate-100">
-                    <img src={photo.url} alt={`Evidence ${index + 1}`} className="w-full h-full object-cover" />
-                    {photo.uploading && (
-                      <div className="absolute inset-0 bg-black/60 flex items-center justify-center text-white text-[11px] font-semibold">
-                        Uploading...
-                      </div>
-                    )}
-                    <button 
-                      type="button"
-                      onClick={() => removePhoto(index)} 
-                      className="absolute top-1.5 right-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs shadow-sm"
-                    >
-                      ×
-                    </button>
+      {/* 5. INSTALLATION EXECUTION & COMPLETION */}
+      {(currentPhase === 4 || getInstallationStatusLabel(currentStatusLower) === 'In Progress') && 
+       currentPhase < 5 && 
+       !isClosedOrVerified && (
+         <div className="space-y-5">
+          {/* PREVIOUS ATTEMPT HISTORY - Read Only */}
+          {(installation.installation_notes || installation.testing_results || (installation.evidence_photos && installation.evidence_photos.length > 0) || installation.rework_log) && (
+            <div className="mb-6 p-5 bg-amber-50 border-2 border-amber-300 rounded-xl">
+              <h4 className="font-bold text-sm text-amber-900 mb-3 flex items-center gap-2">
+                <History className="w-4 h-4" /> Previous Attempt History (Read-Only)
+              </h4>
+              <div className="space-y-3 text-xs">
+                {installation.rework_log && (
+                  <div>
+                    <span className="font-semibold text-amber-800 block mb-1">Rework Log:</span>
+                    <p className="text-amber-900 whitespace-pre-wrap bg-white/70 p-2 rounded border border-amber-200">{installation.rework_log}</p>
                   </div>
-                ))}
+                )}
+                {installation.installation_notes && (
+                  <div>
+                    <span className="font-semibold text-amber-800 block mb-1">Previous Installation Notes:</span>
+                    <p className="text-amber-900 whitespace-pre-wrap bg-white/70 p-2 rounded border border-amber-200">{installation.installation_notes}</p>
+                  </div>
+                )}
+                {installation.testing_results && (
+                  <div>
+                    <span className="font-semibold text-amber-800 block mb-1">Previous Testing Results:</span>
+                    <p className="text-amber-900 whitespace-pre-wrap bg-white/70 p-2 rounded border border-amber-200">{installation.testing_results}</p>
+                  </div>
+                )}
+                {(installation.evidence_photos && installation.evidence_photos.length > 0) && (
+                  <div>
+                    <span className="font-semibold text-amber-800 block mb-1">Previous Evidence Photos:</span>
+                    <div className="flex flex-wrap gap-2">
+                      {(Array.isArray(installation.evidence_photos) ? installation.evidence_photos : []).map((photo: any, idx: number) => {
+                        const src = typeof photo === 'string' ? photo : photo.url;
+                        const fileType = getFileType(src);
+                        return fileType === 'video' ? (
+                          <video key={idx} src={src} className="w-20 h-20 object-cover rounded-lg border border-amber-300" muted />
+                        ) : (
+                          <img key={idx} src={src} alt={`Previous evidence ${idx + 1}`} className="w-20 h-20 object-cover rounded-lg border border-amber-300" />
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
-
-          {/* Customer Signature */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1.5">Customer Sign-Off *</label>
-            <div className="border border-slate-300 rounded-xl overflow-hidden bg-white shadow-inner">
-              <SignatureCanvas
-                ref={sigRef}
-                canvasProps={{ className: 'signature-pad w-full h-32 bg-white' }}
-                onEnd={() => setSignatureCaptured(true)}
-              />
             </div>
-            <div className="flex flex-wrap items-center gap-2 mt-2">
-              <button 
-                type="button"
-                onClick={clearSignature} 
-                className="px-3 py-1 border border-slate-300 hover:bg-slate-50 rounded-md text-xs font-medium text-slate-700"
-              >
-                Clear Signature
-              </button>
-              <span className="text-xs text-muted-foreground">OR upload signature image:</span>
-              <input type="file" accept="image/*" onChange={handleSignatureUpload} className="text-xs" />
-            </div>
-            {signatureCaptured && (
-              <p className="text-emerald-600 font-semibold text-xs mt-1.5 flex items-center gap-1">
-                <CheckCircle2 className="w-3.5 h-3.5" /> ✓ Signature captured
-              </p>
-            )}
-          </div>
+          )}
 
-          {/* Submit Button */}
-          <button
-            type="button"
-            onClick={handleCompleteInstallation}
-            disabled={!formData.installation_notes || uploadedPhotos.length === 0 || !signatureCaptured || isSubmitting}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed shadow-md transition-all text-xs sm:text-sm cursor-pointer"
-          >
-            {isSubmitting ? 'Submitting...' : '✓ Complete Installation & Submit for Verification'}
-          </button>
+          {/* FRESH NEW ATTEMPT FORM */}
+          <div className="border-2 border-primary/20 rounded-xl p-4 bg-white">
+            <h4 className="font-bold text-sm text-primary mb-3">New Attempt - Fresh Data Entry</h4>
+            {isLeadTechnician ? (
+             <>
+               <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                 <div>
+                   <h3 className="font-bold text-base text-slate-900 flex items-center gap-2">
+                     <CheckCircle2 className="w-5 h-5 text-blue-600" />
+                     INSTALLATION EXECUTION & COMPLETION
+                   </h3>
+                   <p className="text-xs text-muted-foreground">Record hardware serial, upload site photos, and capture customer sign-off.</p>
+                 </div>
+                 <span className="text-xs font-semibold px-2.5 py-1 bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-md">
+                   {isLeadTechnician ? '️ Editable - Lead Technician' : isAdmin ? 'Admin' : 'Supervisor'}
+                 </span>
+               </div>
+
+               {/* Equipment Details */}
+               <div className="grid md:grid-cols-2 gap-4">
+                 <div>
+                   <label className="block text-xs font-semibold text-slate-700 mb-1.5">Equipment Model *</label>
+                   <input
+                     type="text"
+                     required
+                     value={formData.equipment_model}
+                     onChange={(e) => setFormData({...formData, equipment_model: e.target.value})}
+                     placeholder="e.g., Luminous 2kW Inverter"
+                     className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-primary/20 focus:border-primary"
+                   />
+                 </div>
+                 <div>
+                   <label className="block text-xs font-semibold text-slate-700 mb-1.5">Serial Number *</label>
+                   <input
+                     type="text"
+                     required
+                     value={formData.serial_number}
+                     onChange={(e) => setFormData({...formData, serial_number: e.target.value})}
+                     placeholder="e.g., SN123456789"
+                     className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-primary/20 focus:border-primary"
+                   />
+                 </div>
+               </div>
+
+               {/* Installation Notes */}
+               <div>
+                 <label className="block text-xs font-semibold text-slate-700 mb-1.5">Installation Notes & Work Performed *</label>
+                 <textarea
+                   required
+                   rows={4}
+                   value={formData.installation_notes}
+                   onChange={(e) => setFormData({...formData, installation_notes: e.target.value})}
+                   placeholder="Describe the complete installation work performed, configuration details, and any observations..."
+                   className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-primary/20 focus:border-primary"
+                 />
+               </div>
+
+               {/* Testing Results */}
+               <div>
+                 <label className="block text-xs font-semibold text-slate-700 mb-1.5">Testing Results & Configuration Details</label>
+                 <textarea
+                   rows={3}
+                   value={formData.testing_results}
+                   onChange={(e) => setFormData({...formData, testing_results: e.target.value})}
+                   placeholder="Voltage readings, connectivity tests, network configuration, settings applied..."
+                   className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-primary/20 focus:border-primary"
+                 />
+               </div>
+
+               {/* Photo Upload */}
+               <div>
+                 <label className="block text-xs font-semibold text-slate-700 mb-1.5">Upload Installation Photos & Videos *</label>
+                 <input
+                   type="file"
+                   multiple
+                   accept="image/*,video/*"
+                   onChange={handlePhotoUpload}
+                   className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs bg-slate-50"
+                 />
+                  {uploadedPhotos.length > 0 && (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5 mt-3">
+                      {uploadedPhotos.map((photo, index) => {
+                        const src = photo.url;
+                        const fileType = getFileType(src);
+                        return (
+                          <div key={index} className="relative rounded-xl overflow-hidden border border-slate-200 aspect-video bg-slate-100">
+                            {fileType === 'video' ? (
+                              <video src={src} className="w-full h-full object-cover" muted playsInline />
+                            ) : (
+                              <img src={src} alt={`Evidence ${index + 1}`} className="w-full h-full object-cover" />
+                            )}
+                            {photo.uploading && (
+                              <div className="absolute inset-0 bg-black/60 flex items-center justify-center text-white text-[11px] font-semibold">
+                                Uploading...
+                              </div>
+                            )}
+                            <button 
+                              type="button"
+                              onClick={() => removePhoto(index)} 
+                              className="absolute top-1.5 right-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs shadow-sm"
+                            >
+                              ×
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+               </div>
+
+               {/* Customer Signature */}
+               <div>
+                 <label className="block text-xs font-semibold text-slate-700 mb-1.5">Customer Sign-Off *</label>
+                 <div className="border border-slate-300 rounded-xl overflow-hidden bg-white shadow-inner">
+                   <SignatureCanvas
+                     ref={sigRef}
+                     canvasProps={{ className: 'signature-pad w-full h-32 bg-white' }}
+                     onEnd={() => setSignatureCaptured(true)}
+                   />
+                 </div>
+                 <div className="flex flex-wrap items-center gap-2 mt-2">
+                   <button 
+                     type="button"
+                     onClick={clearSignature} 
+                     className="px-3 py-1 border border-slate-300 hover:bg-slate-50 rounded-md text-xs font-medium text-slate-700"
+                   >
+                     Clear Signature
+                   </button>
+                   <span className="text-xs text-muted-foreground">OR upload signature image:</span>
+                   <input type="file" accept="image/*" onChange={handleSignatureUpload} className="text-xs" />
+                 </div>
+                 {signatureCaptured && (
+                   <p className="text-emerald-600 font-semibold text-xs mt-1.5 flex items-center gap-1">
+                     <CheckCircle2 className="w-3.5 h-3.5" /> ✓ Signature captured
+                   </p>
+                 )}
+               </div>
+
+                 {/* Complete Button */}
+                 <button
+                   onClick={handleCompleteInstallation}
+                   disabled={isSubmitting || !formData.equipment_model || !formData.serial_number || !formData.installation_notes}
+                   className="w-full bg-primary hover:bg-primary/90 text-white py-3 rounded-xl font-bold text-sm disabled:opacity-50"
+                 >
+                   {isSubmitting ? 'Completing...' : '✅ Complete Installation & Send Happiness Code'}
+                 </button>
+             </>
+            ) : (isAssignedTechnician || isAdmin || isSupervisor) ? (
+             <>
+               <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                 <div>
+                   <h3 className="font-bold text-base text-slate-900 flex items-center gap-2">
+                     <Eye className="w-5 h-5 text-slate-500" />
+                     INSTALLATION EXECUTION & COMPLETION
+                   </h3>
+                   <p className="text-xs text-muted-foreground">View-only access. Contact Lead Technician to make changes.</p>
+                 </div>
+                 <span className="text-xs font-semibold px-2.5 py-1 bg-slate-100 text-slate-600 border border-slate-200 rounded-md">
+                   Read Only
+                 </span>
+               </div>
+
+               <div className="grid sm:grid-cols-2 gap-3 text-xs">
+                 <div>
+                   <span className="text-muted-foreground font-semibold block">Equipment Model:</span>
+                   <p className="font-bold text-slate-900">{installation.equipment_model || installation.equipment_details || 'N/A'}</p>
+                 </div>
+                 <div>
+                   <span className="text-muted-foreground font-semibold block">Serial Number:</span>
+                   <p className="font-bold text-slate-900">{installation.serial_number || 'N/A'}</p>
+                 </div>
+                 <div className="sm:col-span-2">
+                   <span className="text-muted-foreground font-semibold block">Installation Notes:</span>
+                   <p className="font-medium text-slate-700 bg-slate-50 p-2.5 rounded-lg border border-slate-100 whitespace-pre-wrap">{installation.installation_notes || installation.notes || 'N/A'}</p>
+                 </div>
+                 <div className="sm:col-span-2">
+                   <span className="text-muted-foreground font-semibold block">Testing Results:</span>
+                   <p className="font-medium text-slate-700 bg-slate-50 p-2.5 rounded-lg border border-slate-100 whitespace-pre-wrap">{installation.testing_results || 'N/A'}</p>
+                 </div>
+               </div>
+
+                {installation.evidence_photos && installation.evidence_photos.length > 0 && (
+                  <div>
+                    <span className="text-xs font-semibold text-slate-700 block mb-2">Evidence Photos:</span>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5">
+                      {(Array.isArray(installation.evidence_photos) ? installation.evidence_photos : []).map((photo: any, idx: number) => {
+                        const src = typeof photo === 'string' ? photo : photo.url;
+                        const fileType = getFileType(src);
+                        return (
+                          <div key={idx} className="relative rounded-xl overflow-hidden border border-slate-200 aspect-video bg-slate-100">
+                            {fileType === 'video' ? (
+                              <video src={src} className="w-full h-full object-cover" muted playsInline />
+                            ) : (
+                              <img src={src} alt={`Evidence ${idx + 1}`} className="w-full h-full object-cover" />
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+               {installation.customer_signature && (
+                 <div>
+                   <span className="text-xs font-semibold text-slate-700 block mb-2">Customer Signature:</span>
+                   <div className="border border-slate-200 rounded-xl overflow-hidden bg-white">
+                     <img src={installation.customer_signature} alt="Customer Signature" className="w-full h-32 object-contain bg-white" />
+                   </div>
+                 </div>
+                )}
+              </>
+            ) : null}
+          </div>
         </div>
-      )}
+        )}
 
       {/* Phase 5 Completed Banner */}
       {isPhase5ReadyForVerification && (
@@ -1932,114 +2323,174 @@ export default function InstallationDetail() {
               ADMIN VERIFICATION & CUSTOMER FEEDBACK (PHASE 6)
             </h3>
             
-            {/* Happiness Code Verification */}
-            <div className="bg-amber-50/80 border border-amber-200 rounded-2xl p-6 mb-6 shadow-xs">
-              <h4 className="font-semibold text-base mb-2 flex items-center gap-2 text-amber-900">
-                🔐 Customer Satisfaction & Happiness Code Verification
-              </h4>
-              <p className="text-xs text-amber-800/90 mb-4">
-                Call the customer and verify the 5-digit Happiness Code generated upon technician sign-off before closing this ticket.
-              </p>
+            {/* Conditional Forms Based on Final Action */}
+            {finalAction === 'close' && (
+              <div className="bg-amber-50/80 border border-amber-200 rounded-2xl p-6 mb-6 shadow-xs">
+                <h4 className="font-semibold text-base mb-2 flex items-center gap-2 text-amber-900">
+                  🔐 Customer Satisfaction & Happiness Code Verification
+                </h4>
+                <p className="text-xs text-amber-800/90 mb-4">
+                  Call the customer and verify the 5-digit Happiness Code generated upon technician sign-off before closing this ticket.
+                </p>
 
-              {/* Prominent Happiness Code Display for Admin */}
-              {installation.happiness_code && (
-                <div className="bg-white border-2 border-amber-300 rounded-xl p-4 mb-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
-                  <div>
-                    <span className="text-[11px] font-bold uppercase text-amber-800 tracking-wider block">
-                      🔑 Generated Happiness Code (For Admin Reference)
-                    </span>
-                    <div className="flex items-center gap-2 mt-1">
-                      <span className="text-2xl font-mono font-black text-amber-950 tracking-widest bg-amber-100/90 px-3 py-1 rounded-lg border border-amber-300">
-                        {installation.happiness_code}
+                {/* Prominent Happiness Code Display for Admin */}
+                {installation.happiness_code && (
+                  <div className="bg-white border-2 border-amber-300 rounded-xl p-4 mb-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+                    <div>
+                      <span className="text-[11px] font-bold uppercase text-amber-800 tracking-wider block">
+                        🔑 Generated Happiness Code (For Admin Reference)
                       </span>
-                      <span className="text-[11px] text-slate-500 font-medium">
-                        (Sent to customer via WhatsApp on sign-off)
-                      </span>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-2xl font-mono font-black text-amber-950 tracking-widest bg-amber-100/90 px-3 py-1 rounded-lg border border-amber-300">
+                          {installation.happiness_code}
+                        </span>
+                        <span className="text-[11px] text-slate-500 font-medium">
+                          (Sent to customer via WhatsApp on sign-off)
+                        </span>
+                      </div>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(installation.happiness_code);
+                        setEnteredHappinessCode(installation.happiness_code);
+                        toast.success('Happiness Code copied & filled!');
+                      }}
+                      className="px-3 py-2 bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      Copy & Auto-fill
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      navigator.clipboard.writeText(installation.happiness_code);
-                      setEnteredHappinessCode(installation.happiness_code);
-                      toast.success('Happiness Code copied & filled!');
-                    }}
-                    className="px-3 py-2 bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0"
-                  >
-                    <Copy className="w-3.5 h-3.5" />
-                    Copy & Auto-fill
-                  </button>
+                )}
+                
+                <div className="grid md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">Enter Customer's Happiness Code *</label>
+                    <input
+                      type="text"
+                      maxLength={5}
+                      pattern="\d{5}"
+                      value={enteredHappinessCode}
+                      onChange={(e) => {
+                        const value = e.target.value.replace(/\D/g, '');
+                        setEnteredHappinessCode(value);
+                        setHappinessCodeError(false);
+                      }}
+                      placeholder="Enter 5-digit code"
+                      className="w-full border-2 border-amber-300 rounded-lg px-3 py-2 text-base font-mono tracking-widest bg-white text-slate-900 focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">Customer Satisfaction Level *</label>
+                    <select
+                      value={customerSatisfaction}
+                      onChange={(e) => setCustomerSatisfaction(e.target.value)}
+                      className="w-full border-2 border-amber-300 rounded-lg px-3 py-2 text-xs bg-white font-medium text-slate-800 focus:outline-none focus:border-amber-500"
+                    >
+                      <option value="">Select satisfaction level</option>
+                      <option value="Very Satisfied">😊😊 Very Satisfied</option>
+                      <option value="Satisfied">😊 Satisfied</option>
+                      <option value="Partially Satisfied">😐 Partially Satisfied</option>
+                      <option value="Unsatisfied"> Unsatisfied</option>
+                      <option value="Very Unsatisfied">😞 Very Unsatisfied</option>
+                    </select>
+                  </div>
                 </div>
-              )}
-              
-              <div className="grid md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">Enter Customer's Happiness Code *</label>
-                  <input
-                    type="text"
-                    maxLength={5}
-                    pattern="\d{5}"
-                    value={enteredHappinessCode}
-                    onChange={(e) => {
-                      const value = e.target.value.replace(/\D/g, '');
-                      setEnteredHappinessCode(value);
-                      setHappinessCodeError(false);
-                    }}
-                    placeholder="Enter 5-digit code"
-                    className="w-full border-2 border-amber-300 rounded-lg px-3 py-2 text-base font-mono tracking-widest bg-white text-slate-900 focus:outline-none focus:border-amber-500"
+                
+                <div className="mt-4">
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Customer Feedback Comments</label>
+                  <textarea
+                    rows={3}
+                    value={customerComments}
+                    onChange={(e) => setCustomerComments(e.target.value)}
+                    placeholder="Record customer's feedback, complaints, or compliments..."
+                    className="w-full border-2 border-amber-300 rounded-lg px-3 py-2 text-xs bg-white focus:outline-none focus:border-amber-500"
                   />
                 </div>
                 
+                <button
+                  type="button"
+                  onClick={verifyHappinessCode}
+                  disabled={!enteredHappinessCode || !customerSatisfaction || enteredHappinessCode.length !== 5}
+                  className="mt-4 px-6 py-2.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-semibold text-xs disabled:opacity-50 disabled:cursor-not-allowed shadow-xs cursor-pointer"
+                >
+                  ✓ Verify Code & Collect Feedback
+                </button>
+                
+                {happinessCodeVerified && (
+                  <div className="mt-4 p-3 bg-emerald-100 border border-emerald-300 rounded-xl text-emerald-800 text-xs font-semibold flex items-center gap-1.5">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                    ✓ Happiness Code Verified Successfully! Customer satisfaction recorded.
+                  </div>
+                )}
+                {happinessCodeError && (
+                  <div className="mt-4 p-3 bg-rose-100 border border-rose-300 rounded-xl text-rose-800 text-xs font-semibold flex items-center gap-1.5">
+                    <AlertTriangle className="w-4 h-4 text-rose-600" />
+                    ✗ Incorrect Happiness Code. Please verify with customer again.
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Follow-up Fields - ONLY show when finalAction === 'followup' */}
+            {finalAction === 'followup' && (
+              <div className="bg-blue-50/80 border border-blue-200 rounded-2xl p-6 mb-6 shadow-xs">
+                <h4 className="font-semibold text-base mb-2 flex items-center gap-2 text-blue-900">
+                  📅 Schedule Follow-up Visit
+                </h4>
+                <p className="text-xs text-blue-800/90 mb-4">
+                  Schedule a follow-up visit for pending parts, additional testing, or remaining work.
+                </p>
+                <div className="grid md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">Follow-up Reason *</label>
+                    <textarea
+                      required
+                      rows={3}
+                      value={followupReason}
+                      onChange={(e) => setFollowupReason(e.target.value)}
+                      placeholder="Explain why follow-up visit is needed (pending parts, additional testing, etc.)..."
+                      className="w-full border-2 border-blue-300 rounded-lg px-3 py-2 text-xs bg-white focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                  <div className="md:col-span-2">
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">Scheduled Follow-up Date & Time *</label>
+                    <DateTimePicker
+                      dateValue={followupDate}
+                      timeValue={followupTime}
+                      onDateChange={setFollowupDate}
+                      onTimeChange={setFollowupTime}
+                      placeholder="Pick follow-up date & time..."
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Rework Fields - ONLY show when finalAction === 'rework' */}
+            {finalAction === 'rework' && (
+              <div className="bg-rose-50/80 border border-rose-200 rounded-2xl p-6 mb-6 shadow-xs">
+                <h4 className="font-semibold text-base mb-2 flex items-center gap-2 text-rose-900">
+                  🔄 Return for Rework
+                </h4>
+                <p className="text-xs text-rose-800/90 mb-4">
+                  Reassign this installation for correction. Describe the quality issues found.
+                </p>
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">Customer Satisfaction Level *</label>
-                  <select
-                    value={customerSatisfaction}
-                    onChange={(e) => setCustomerSatisfaction(e.target.value)}
-                    className="w-full border-2 border-amber-300 rounded-lg px-3 py-2 text-xs bg-white font-medium text-slate-800 focus:outline-none focus:border-amber-500"
-                  >
-                    <option value="">Select satisfaction level</option>
-                    <option value="Very Satisfied">😊😊 Very Satisfied</option>
-                    <option value="Satisfied">😊 Satisfied</option>
-                    <option value="Partially Satisfied">😐 Partially Satisfied</option>
-                    <option value="Unsatisfied"> Unsatisfied</option>
-                    <option value="Very Unsatisfied">😞 Very Unsatisfied</option>
-                  </select>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Rework Reason *</label>
+                  <textarea
+                    required
+                    rows={3}
+                    value={reworkReason}
+                    onChange={(e) => setReworkReason(e.target.value)}
+                    placeholder="Describe quality issues found and what needs to be corrected..."
+                    className="w-full border-2 border-rose-300 rounded-lg px-3 py-2 text-xs bg-white focus:outline-none focus:border-rose-500"
+                  />
                 </div>
               </div>
-              
-              <div className="mt-4">
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Customer Feedback Comments</label>
-                <textarea
-                  rows={3}
-                  value={customerComments}
-                  onChange={(e) => setCustomerComments(e.target.value)}
-                  placeholder="Record customer's feedback, complaints, or compliments..."
-                  className="w-full border-2 border-amber-300 rounded-lg px-3 py-2 text-xs bg-white focus:outline-none focus:border-amber-500"
-                />
-              </div>
-              
-              <button
-                type="button"
-                onClick={verifyHappinessCode}
-                disabled={!enteredHappinessCode || !customerSatisfaction || enteredHappinessCode.length !== 5}
-                className="mt-4 px-6 py-2.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-semibold text-xs disabled:opacity-50 disabled:cursor-not-allowed shadow-xs cursor-pointer"
-              >
-                ✓ Verify Code & Collect Feedback
-              </button>
-              
-              {happinessCodeVerified && (
-                <div className="mt-4 p-3 bg-emerald-100 border border-emerald-300 rounded-xl text-emerald-800 text-xs font-semibold flex items-center gap-1.5">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                  ✓ Happiness Code Verified Successfully! Customer satisfaction recorded.
-                </div>
-              )}
-              {happinessCodeError && (
-                <div className="mt-4 p-3 bg-rose-100 border border-rose-300 rounded-xl text-rose-800 text-xs font-semibold flex items-center gap-1.5">
-                  <AlertTriangle className="w-4 h-4 text-rose-600" />
-                  ✗ Incorrect Happiness Code. Please verify with customer again.
-                </div>
-              )}
-            </div>
+            )}
 
             {/* FINAL ACTION DECISION */}
             <div className="bg-white border-2 border-slate-200 rounded-2xl p-6 shadow-sm">
@@ -2105,7 +2556,7 @@ export default function InstallationDetail() {
               </div>
 
               {/* Required Before Closing */}
-              {!happinessCodeVerified && (
+              {finalAction === 'close' && !happinessCodeVerified && (
                 <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-6 text-xs">
                   <p className="text-amber-800 font-semibold mb-1">⚠️ Required before closing ticket:</p>
                   <ul className="text-amber-700 list-disc list-inside space-y-0.5">
@@ -2123,7 +2574,10 @@ export default function InstallationDetail() {
                 <button
                   type="button"
                   onClick={handleFinalAction}
-                  disabled={!happinessCodeVerified || !finalAction}
+                  disabled={
+                    !finalAction ||
+                    (finalAction === 'close' && !happinessCodeVerified)
+                  }
                   className="flex-1 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white py-3 rounded-xl font-semibold disabled:opacity-50 disabled:cursor-not-allowed shadow-md text-xs sm:text-sm cursor-pointer"
                 >
                   {finalAction === 'close' && '✓ Finalize & Close Installation (Phase 6)'}
@@ -2147,19 +2601,11 @@ export default function InstallationDetail() {
                   <Zap className="w-4 h-4" />
                   ⚡ Force Close
                 </button>
-
-                <button
-                  type="button"
-                  onClick={() => setShowCorrectionModal(true)}
-                  className="px-5 py-3 border-2 border-amber-600 text-amber-700 hover:bg-amber-50 rounded-xl font-semibold text-xs cursor-pointer"
-                >
-                  ⚠️ Request Corrections
-                </button>
               </div>
             </div>
           </div>
         </div>
-      )}
+        )}
 
       {/* Force Close Modal Dialog */}
       <Dialog open={showForceCloseModal} onOpenChange={setShowForceCloseModal}>
@@ -2241,46 +2687,8 @@ export default function InstallationDetail() {
         </DialogContent>
       </Dialog>
 
-      {/* Correction Modal */}
-      {showCorrectionModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl p-6 max-w-lg w-full shadow-2xl border border-slate-200">
-            <h3 className="font-bold text-base text-slate-900 mb-2 flex items-center gap-2">
-              <AlertTriangle className="w-5 h-5 text-amber-500" />
-              Request Installation Corrections
-            </h3>
-            <p className="text-xs text-muted-foreground mb-4">
-              The installation will be returned to Phase 4 (Execution) for technician correction.
-            </p>
-            <textarea
-              rows={4}
-              value={correctionNotes}
-              onChange={(e) => setCorrectionNotes(e.target.value)}
-              placeholder="Specify what needs to be corrected or improved..."
-              className="w-full border border-slate-300 rounded-xl p-3 text-xs focus:ring-2 focus:ring-primary/20 focus:border-primary mb-4"
-            />
-            <div className="flex gap-3">
-              <button 
-                type="button"
-                onClick={submitCorrectionRequest} 
-                className="flex-1 bg-amber-600 hover:bg-amber-700 text-white py-2.5 rounded-xl text-xs font-semibold cursor-pointer"
-              >
-                Submit Request
-              </button>
-              <button 
-                type="button"
-                onClick={() => setShowCorrectionModal(false)} 
-                className="flex-1 border border-slate-300 hover:bg-slate-50 py-2.5 rounded-xl text-xs font-semibold text-slate-700 cursor-pointer"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* 8. 2-DAY (48-HOUR) POST-CLOSURE REASSIGN OPTION */}
-      {isAdmin && (installation.status === 'verified' || currentStatusLower === 'verified') && installation.verified_at && (
+      {(isAdmin || isSupervisor) && (currentStatusLower === 'verified' || currentStatusLower === 'force_closed' || installation?.force_closed) && installation.verified_at && (
         <div className="mt-6 p-5 bg-blue-50/80 border border-blue-200 rounded-2xl shadow-xs space-y-3">
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 border-b border-blue-100 pb-2">
             <h4 className="font-bold text-sm text-blue-900 flex items-center gap-2">
@@ -2292,14 +2700,27 @@ export default function InstallationDetail() {
             </span>
           </div>
           
-          {isWithinTwoDays(installation.verified_at) ? (
+          {canReassign() ? (
             <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between pt-1">
               <p className="text-xs text-blue-800">
-                Reassign this installation if the customer reports issues or needs follow-up work within 2 days of closure.
+                {getReassignRemainingHours() !== null ? (
+                  <><strong>{getReassignRemainingHours()} hours remaining</strong> to reassign this installation after closure. Reassign if the customer reports issues or needs follow-up work.</>
+                ) : (
+                  <>Reassign this installation if the customer reports issues or needs follow-up work within 2 days of closure.</>
+                )}
               </p>
               <button
                 type="button"
-                onClick={handleReassignInstallation}
+                onClick={() => {
+                  const initialIds = (installation.technicians && installation.technicians.length > 0)
+                    ? installation.technicians.map((t: any) => t.technician_id)
+                    : [];
+                  setReassignSelectedTechs(initialIds);
+                  const initialLead = installation.technicians?.find((t: any) => t.is_lead)?.technician_id || initialIds[0] || null;
+                  setReassignLeadTechId(initialLead);
+                  setReassignReason(installation.reassignment_reason || '');
+                  setShowReassignModal(true);
+                }}
                 className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold shadow-xs shrink-0 flex items-center gap-1.5 cursor-pointer"
               >
                 🔄 Reassign for Follow-up
@@ -2313,7 +2734,225 @@ export default function InstallationDetail() {
         </div>
       )}
 
-      {/* 9. Admin Edit Installation Details Modal */}
+      {/* Reassignment Modal */}
+      <Dialog open={showReassignModal} onOpenChange={setShowReassignModal}>
+        <DialogContent className="sm:max-w-xl max-h-[92vh] overflow-y-auto p-0">
+          <div className="p-6 border-b bg-gradient-to-r from-primary/5 via-card to-card">
+            <DialogHeader>
+              <div className="flex items-center justify-between">
+                <DialogTitle className="flex items-center gap-2.5 text-lg font-bold">
+                  <div className="p-2 rounded-lg bg-primary/10 text-primary">
+                    <RotateCcw className="w-5 h-5" />
+                  </div>
+                  Reassign Technicians & Crew
+                </DialogTitle>
+                <span className="text-xs font-mono font-bold px-2.5 py-1 rounded bg-muted text-muted-foreground border">
+                  {formatInstallationTicketId(installation)}
+                </span>
+              </div>
+              <DialogDescription className="text-xs text-muted-foreground mt-1.5">
+                Assign a new field team or update lead responsibility for this installation.
+              </DialogDescription>
+            </DialogHeader>
+
+            {/* 48h Post-Closure Notice Banner */}
+            {isClosed && (
+              <div className="mt-3 p-3 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-800 text-xs flex items-start gap-2">
+                <Clock className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
+                <div>
+                  <span className="font-semibold">48-Hour Post-Closure Reassignment Window:</span>{" "}
+                  {getReassignRemainingHours() !== null ? (
+                    <span><strong>{getReassignRemainingHours()} hours remaining</strong> to reassign this installation after closure. Once 48 hours pass, reassignment will be locked.</span>
+                  ) : (
+                    <span>Installation was previously closed. Reassignment is available within 48 hours of closure.</span>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="p-6 space-y-5">
+            {/* Selected Team Overview Strip */}
+            {reassignSelectedTechs.length > 0 && (
+              <div className="p-3.5 rounded-xl border bg-card shadow-xs space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                    <Users className="w-3.5 h-3.5 text-primary" /> Selected Team ({reassignSelectedTechs.length})
+                  </span>
+                  {!reassignLeadTechId && (
+                    <span className="text-xs font-semibold text-destructive animate-pulse flex items-center gap-1">
+                      ⚠️ Please designate 1 Lead
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap gap-2 pt-1">
+                  {reassignSelectedTechs.map((tid) => {
+                    const tech = allTechnicians.find((t: any) => t.id === tid);
+                    const isLead = reassignLeadTechId === tid;
+                    const name = tech?.full_name || tech?.email || "Technician";
+
+                    return (
+                      <div
+                        key={tid}
+                        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs border transition-all ${
+                          isLead
+                            ? "bg-amber-500 text-white font-bold border-amber-600 shadow-xs"
+                            : "bg-muted text-foreground border-border"
+                        }`}
+                      >
+                        {isLead ? (
+                          <Crown className="w-3.5 h-3.5 fill-white text-white shrink-0" />
+                        ) : (
+                          <User className="w-3 h-3 text-muted-foreground shrink-0" />
+                        )}
+                        <span className="max-w-[140px] truncate">{name}</span>
+                        {isLead && <span className="text-[10px] opacity-90">(Lead)</span>}
+                        
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const next = reassignSelectedTechs.filter((id) => id !== tid);
+                            setReassignSelectedTechs(next);
+                            if (reassignLeadTechId === tid) {
+                              setReassignLeadTechId(next[0] || null);
+                            }
+                          }}
+                          className="ml-0.5 rounded-full hover:bg-black/10 transition-colors"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Technician Search & Selection */}
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-slate-700">Select Technicians</label>
+              <Input
+                placeholder="Search technicians..."
+                value={reassignSearchTerm}
+                onChange={(e) => setReassignSearchTerm(e.target.value)}
+                className="text-xs"
+              />
+              <div className="border rounded-xl max-h-48 overflow-y-auto">
+                {allTechnicians.length === 0 ? (
+                  <p className="text-xs text-slate-500 p-3 text-center">No technicians available.</p>
+                ) : (
+                  <div className="divide-y">
+                    {allTechnicians
+                      .filter((t: any) => {
+                        if (!reassignSearchTerm.trim()) return true;
+                        const q = reassignSearchTerm.toLowerCase();
+                        const name = (t.full_name || t.email || "").toLowerCase();
+                        const empId = (t.employee_id || t.technician_id || "").toLowerCase();
+                        return name.includes(q) || empId.includes(q);
+                      })
+                      .map((tech: any) => {
+                        const isSelected = reassignSelectedTechs.includes(tech.id);
+                        const isLead = reassignLeadTechId === tech.id;
+                        const name = tech.full_name || tech.email || "Technician";
+
+                        return (
+                          <div
+                            key={tech.id}
+                            className={`flex items-center gap-2 p-2.5 cursor-pointer transition-colors hover:bg-slate-50 ${
+                              isSelected ? "bg-primary/5" : ""
+                            }`}
+                            onClick={() => {
+                              const next = isSelected
+                                ? reassignSelectedTechs.filter((id) => id !== tech.id)
+                                : [...reassignSelectedTechs, tech.id];
+                              setReassignSelectedTechs(next);
+                              if (isSelected && isLead) {
+                                setReassignLeadTechId(next[0] || null);
+                              } else if (!isSelected && !reassignLeadTechId) {
+                                setReassignLeadTechId(tech.id);
+                              }
+                            }}
+                          >
+                            <div
+                              className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${
+                                isSelected ? "bg-primary border-primary" : "border-slate-300"
+                              }`}
+                            >
+                              {isSelected && <Check className="w-3 h-3 text-white" />}
+                            </div>
+                            {isLead ? (
+                              <Crown className="w-4 h-4 text-amber-500 shrink-0" />
+                            ) : (
+                              <User className="w-4 h-4 text-slate-400 shrink-0" />
+                            )}
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs font-semibold text-slate-900 truncate">{name}</p>
+                              <p className="text-[10px] text-slate-500 truncate">
+                                {tech.employee_id || tech.technician_id || "No ID"} {tech.designation ? `• ${tech.designation}` : ""}
+                              </p>
+                            </div>
+                            {isLead && (
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-amber-100 text-amber-700 border border-amber-200">
+                                LEAD
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })}
+                  </div>
+                )}
+              </div>
+              <p className="text-[10px] text-slate-500">Click a technician to select. First selected becomes Lead automatically, or click Crown icon on any selected tech.</p>
+            </div>
+
+            {/* Reassignment Reason */}
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-slate-700">Reassignment Reason *</label>
+              <Textarea
+                rows={3}
+                value={reassignReason}
+                onChange={(e) => setReassignReason(e.target.value)}
+                placeholder="Detail why this installation is being reassigned (minimum 10 characters)..."
+                className="text-xs"
+              />
+              <span className={`text-xs font-medium ${reassignReason.trim().length >= 10 ? 'text-emerald-600' : 'text-slate-500'}`}>
+                {reassignReason.trim().length}/10 min chars
+              </span>
+            </div>
+
+            <DialogFooter className="flex sm:justify-end gap-2 pt-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setShowReassignModal(false);
+                  setReassignSearchTerm("");
+                }}
+                className="text-xs"
+                disabled={isReassigning}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                onClick={handleConfirmReassign}
+                disabled={
+                  isReassigning ||
+                  reassignReason.trim().length < 10 ||
+                  reassignSelectedTechs.length === 0 ||
+                  !reassignLeadTechId
+                }
+                className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isReassigning ? 'Reassigning...' : `Confirm Reassignment (${reassignSelectedTechs.length})`}
+              </Button>
+            </DialogFooter>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* 9. Admin Edit Installation Details — ~80% off-canvas */}
       {showAdminEditModal && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center z-50 p-4 overflow-y-auto">
           <div className="bg-white rounded-2xl p-6 max-w-2xl w-full space-y-4 shadow-2xl border border-slate-200 my-8">
@@ -2331,7 +2970,7 @@ export default function InstallationDetail() {
               </button>
             </div>
 
-            <form onSubmit={saveAdminEdit} className="space-y-4 text-xs">
+            <form id="admin-edit-installation-form" onSubmit={saveAdminEdit} className="space-y-4 text-xs">
               {/* Equipment & Model */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
@@ -2420,18 +3059,13 @@ export default function InstallationDetail() {
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">Lifecycle Status</label>
                 <select
-                  value={adminEditData.status}
+                  value={adminEditData.status || 'Assigned'}
                   onChange={(e) => setAdminEditData({ ...adminEditData, status: e.target.value })}
                   className="w-full bg-slate-50 border border-slate-300 rounded-lg p-2 text-xs font-semibold text-slate-800"
                 >
-                  <option value="Unassigned">Unassigned</option>
-                  <option value="Assigned">Assigned</option>
-                  <option value="en_route">En Route</option>
-                  <option value="arrived">Arrived</option>
-                  <option value="in_progress">In Progress</option>
-                  <option value="completed">Completed</option>
-                  <option value="verified">Verified</option>
-                  <option value="revision_requested">Revision Requested</option>
+                  {INSTALLATION_STATUSES.map((status) => (
+                    <option key={status} value={status}>{status}</option>
+                  ))}
                 </select>
               </div>
 
@@ -2456,24 +3090,6 @@ export default function InstallationDetail() {
                   placeholder="Testing & commissioning observations..."
                   className="text-xs bg-slate-50 resize-none"
                 />
-              </div>
-
-              <div className="flex gap-3 pt-3 border-t border-slate-100">
-                <Button
-                  type="submit"
-                  disabled={isSavingAdminEdit}
-                  className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs"
-                >
-                  {isSavingAdminEdit ? 'Saving Changes...' : 'Save Changes'}
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setShowAdminEditModal(false)}
-                  className="flex-1 text-xs"
-                >
-                  Cancel
-                </Button>
               </div>
             </form>
           </div>

@@ -44,6 +44,7 @@ export const TechnicianMissionControl: React.FC<TechnicianMissionControlProps> =
       ? { lat: arrivalLat, lng: arrivalLng, time: arrivalTimestamp }
       : null
   );
+  const [arrivedWithoutGps, setArrivedWithoutGps] = useState(false);
 
   // Robust Fallback: Pull from complaint object if Walk-in / non-linked
   const rawPhone = 
@@ -131,7 +132,8 @@ export const TechnicianMissionControl: React.FC<TechnicianMissionControlProps> =
           if (error) throw error;
         }
 
-        setLoggedArrival({ lat: lat || 0, lng: lng || 0, time: nowIso });
+        setLoggedArrival(lat && lng ? { lat, lng, time: nowIso } : null);
+        setArrivedWithoutGps(!(lat && lng));
         if (onArrivalLogged) {
           onArrivalLogged(lat || 0, lng || 0, nowIso);
         }
@@ -274,6 +276,13 @@ export const TechnicianMissionControl: React.FC<TechnicianMissionControlProps> =
             <span className="text-[10px] text-slate-400 font-mono">
               {loggedArrival.lat.toFixed(4)}, {loggedArrival.lng.toFixed(4)}
             </span>
+          </div>
+        ) : arrivedWithoutGps ? (
+          <div className="flex flex-col items-center justify-center py-2 px-3 rounded-xl bg-slate-800 border border-slate-500/40 text-center">
+            <span className="text-[11px] font-bold text-slate-300 flex items-center gap-1">
+              <CheckCircle2 className="w-3.5 h-3.5" /> Arrived
+            </span>
+            <span className="text-[10px] text-slate-500 font-mono">No GPS coordinates</span>
           </div>
         ) : (
           <Button

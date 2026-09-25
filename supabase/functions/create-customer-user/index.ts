@@ -82,7 +82,12 @@ serve(async (req: Request): Promise<Response> => {
         role, 
         phone: phone || null,
         avatar_url: fullName.charAt(0).toUpperCase(), 
-        branch_id: customerData.branch_id || null,
+        branch_id: (() => {
+          const ids = Array.isArray(customerData.branch_ids)
+            ? customerData.branch_ids.filter(Boolean)
+            : [];
+          return customerData.branch_id || ids[0] || null;
+        })(),
         customer_type: role === "customer" ? customerData.customer_type || "Retail" : null,
       }, { onConflict: "id" });
       
@@ -90,23 +95,43 @@ serve(async (req: Request): Promise<Response> => {
 
       // FIX 2: Upsert customer record instead of insert. 
       // This prevents "duplicate key" errors if the database trigger also creates the record.
+      let customerId = null;
       if (createCustomerRecord || role === "customer") {
-        const { error: customerError } = await admin.from("customers").upsert({
+        const branchIds = Array.isArray(customerData.branch_ids)
+          ? [...new Set(customerData.branch_ids.filter(Boolean))]
+          : (customerData.branch_id ? [customerData.branch_id] : []);
+        const primaryBranchId = customerData.branch_id || branchIds[0] || null;
+
+        const { data: customerRow, error: customerError } = await admin.from("customers").upsert({
           user_id: userId, 
           full_name: fullName, 
           phone: phone || null, 
           email,
           address: customerData.address || null, 
           customer_type: customerData.customer_type || "Retail",
-          branch_id: customerData.branch_id || null,
-        }, { onConflict: "user_id" });
+          entity_type: customerData.entity_type === "Company" ? "Company" : "Individual",
+          branch_id: primaryBranchId,
+        }, { onConflict: "user_id" }).select("id").single();
         
         if (customerError) throw new Error(`Failed to create/update customer record: ${customerError.message}`);
+        customerId = customerRow?.id || null;
+
+        // Multi-branch links (Hyderabad + Secunderabad, etc.)
+        if (customerId) {
+          await admin.from("customer_branches").delete().eq("customer_id", customerId);
+          if (branchIds.length > 0) {
+            const { error: linkError } = await admin.from("customer_branches").insert(
+              branchIds.map((branch_id) => ({ customer_id: customerId, branch_id }))
+            );
+            if (linkError) throw new Error(`Failed to link customer branches: ${linkError.message}`);
+          }
+        }
       }
       
       return json({ 
         success: true, 
         userId, 
+        customer: customerId ? { id: customerId } : undefined,
         user: { id: userId, email, full_name: fullName, role },
         defaultPasswordUsed: body.password ? false : true
       });

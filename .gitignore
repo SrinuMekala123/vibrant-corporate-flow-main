@@ -23,3 +23,6 @@ dist-ssr
 *.sln
 *.sw?
 local_backup.dump
+
+# Supabase CLI link/cache (can point at unrelated cloud projects)
+supabase/.temp/

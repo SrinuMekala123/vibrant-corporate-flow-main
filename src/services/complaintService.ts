@@ -423,6 +423,17 @@ export const complaintService = {
             full_name,
             email,
             phone
+          ),
+          complaint_technicians (
+            id,
+            technician_id,
+            is_lead,
+            technician:profiles!complaint_technicians_technician_id_fkey (
+              id,
+              full_name,
+              email,
+              phone
+            )
           )
         `)
         .order("created_at", { ascending: false });
@@ -1203,12 +1214,6 @@ export const complaintService = {
       happiness_code_sent_at: null,
       happiness_code_verified: false,
       feedback_collected: false,
-      // Preserve customer_satisfaction, feedback_comments, resolution, resolution_notes for technician reference
-      technician_evidence: null,
-      signature_url: null,
-      signoff_timestamp: null,
-      closed_at: null,
-      closure_timestamp: null,
       updated_at: new Date().toISOString(),
     };
 
@@ -1271,6 +1276,40 @@ export const complaintService = {
       .delete()
       .eq("id", id);
 
-    if (error) throw error;
+    if (error) {
+      throw new Error(error.message || "Failed to delete complaint from database.");
+    }
+
+    const { data: stillExists } = await supabase
+      .from("complaints")
+      .select("id")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (stillExists) {
+      throw new Error("DELETE_BLOCKED");
+    }
+  },
+
+  deleteMany: async (ids: string[]): Promise<{ deleted: string[]; blocked: string[]; failed: string[] }> => {
+    const deleted: string[] = [];
+    const blocked: string[] = [];
+    const failed: string[] = [];
+
+    for (const id of ids) {
+      try {
+        await complaintService.delete(id);
+        deleted.push(id);
+      } catch (err: any) {
+        console.error(`Delete issue for complaint ${id}:`, err);
+        if (err?.message === "DELETE_BLOCKED") {
+          blocked.push(id);
+        } else {
+          failed.push(id);
+        }
+      }
+    }
+
+    return { deleted, blocked, failed };
   },
 };

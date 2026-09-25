@@ -83,8 +83,8 @@ const SupervisorDashboard = () => {
   // Filter Logic using Real Data
   const myTickets = allComplaints?.filter((t) => t.assigned_supervisor === supervisorName) || [];
   const pendingVerification = myTickets.filter((t) => t.status === "completed");
-  const activeTickets = myTickets.filter((t) => !["completed", "closed"].includes(t.status));
-  const urgentTickets = myTickets.filter((t) => t.severity === "major" && t.status !== "closed");
+  const activeTickets = myTickets.filter((t) => !["completed", "verified"].includes(t.status));
+  const urgentTickets = myTickets.filter((t) => t.severity === "major" && t.status !== "verified");
 
   // Filter technicians based on expertise overlap or general category
   const myTechnicians = (allTechnicians || []).filter((tech: any) => {

@@ -256,7 +256,7 @@ const Assignments = () => {
               }
               return t.assigned_technician === member.full_name;
             }) || [];
-            const activeTickets = tickets.filter(t => t.status !== 'closed' && t.status !== 'completed');
+            const activeTickets = tickets.filter(t => t.status !== 'verified' && t.status !== 'completed');
             const isExpanded = !!expandedCards[member.id];
             const isTech = member.role === 'technician';
 

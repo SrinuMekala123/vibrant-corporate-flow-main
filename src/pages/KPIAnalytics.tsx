@@ -104,7 +104,7 @@ const KPIAnalytics = () => {
   }
 
   // Derived KPI Calculations
-  const completedComplaints = complaints.filter((t: Complaint) => ["completed", "closed"].includes(t.status));
+  const completedComplaints = complaints.filter((t: Complaint) => ["completed", "verified"].includes(t.status));
   const totalCompletedComplaints = completedComplaints.length;
 
   const completedInstallations = installations.filter((i: Installation) =>
@@ -242,7 +242,7 @@ const KPIAnalytics = () => {
         monthlyMap[key].totalOperations++;
       }
     }
-    if (["completed", "closed"].includes(ticket.status)) {
+    if (["completed", "verified"].includes(ticket.status)) {
       const d = new Date(ticket.updated_at || ticket.created_at);
       const key = months[d.getMonth()];
       if (monthlyMap[key]) {

@@ -96,12 +96,12 @@ export function ManualWhatsAppButton({
   const resolveDefaultStage = (): WhatsAppStage => {
     if (stage) return stage;
     if (ticketType === "installation") {
-      if (ticket?.status === "verified" || ticket?.status === "force_closed" || ticket?.force_closed) return "closed";
+      if (ticket?.status === "closed" || ticket?.status === "force_closed" || ticket?.force_closed) return "closed";
       if (ticket?.status === "completed" || ticket?.current_phase >= 5) return "technician_signoff";
       if (ticket?.status === "Assigned" || ticket?.current_phase >= 2 || ticket?.scheduled_date) return "field_visit_scheduled";
       return "creation";
     } else {
-      if (ticket?.status === "closed" || ticket?.status === "verified" || ticket?.current_phase >= 6) return "closed";
+      if (ticket?.status === "closed" || ticket?.status === "completed" || ticket?.current_phase >= 6) return "closed";
       if (ticket?.status === "completed" || ticket?.current_phase >= 5 || ticket?.resolution_type === "on_site") return "technician_signoff";
       if (ticket?.resolution_type === "remote_fixed" || ticket?.happiness_code || ticket?.status === "resolved_remotely") return "remote_resolution";
       if (ticket?.current_phase >= 3 || ticket?.status === "assigned" || ticket?.scheduled_date) return "field_visit_scheduled";

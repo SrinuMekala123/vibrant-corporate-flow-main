@@ -26,7 +26,9 @@ import {
   Phone,
   FileText,
   Copy,
-  ChevronDown
+  ChevronDown,
+  List,
+  LayoutGrid
 } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -79,8 +81,9 @@ const TechnicianDashboard = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [activeTab, setActiveTab] = useState<"all" | "active" | "completed" | "closed">("active");
+  const [activeTab, setActiveTab] = useState<"all" | "active" | "completed" | "verified" | "reassigned">("active");
   const [taskCategory, setTaskCategory] = useState<"all" | "complaints" | "installations">("all");
+  const [viewMode, setViewMode] = useState<"list" | "card">("list");
   const [updatingInstStatusId, setUpdatingInstStatusId] = useState<string | null>(null);
   const [viewInstallationModal, setViewInstallationModal] = useState<Installation | null>(null);
 
@@ -212,7 +215,7 @@ const TechnicianDashboard = () => {
   // Filter complaints based on status
   const filteredComplaints = useMemo(() => {
     return (allComplaints || []).filter((c) => {
-      if (activeTab === "active") return c.status !== "completed" && c.status !== "closed";
+      if (activeTab === "active") return c.status !== "completed" && c.status !== "verified";
       if (activeTab === "completed") return c.status === "completed";
       if (activeTab === "closed") return c.status === "closed";
       return true;
@@ -224,13 +227,13 @@ const TechnicianDashboard = () => {
     return (allInstallations || []).filter((inst) => {
       const s = (inst.status || "").toLowerCase();
       if (activeTab === "active") {
-        return !s.includes("completed") && !s.includes("handed over") && !s.includes("closed");
+        return !s.includes("completed") && !s.includes("handed over") && !s.includes("verified");
       }
       if (activeTab === "completed") {
         return s.includes("completed") || s.includes("handed over");
       }
-      if (activeTab === "closed") {
-        return s.includes("closed");
+      if (activeTab === "verified") {
+        return s.includes("verified");
       }
       return true;
     });
@@ -251,7 +254,7 @@ const TechnicianDashboard = () => {
     }
   };
 
-  // ⚡ Real-time Sync for Installations (BUG 5 Fix)
+  // Real-time Sync for Installations
   useEffect(() => {
     if (!user) return;
 
@@ -279,21 +282,21 @@ const TechnicianDashboard = () => {
   }, [user, queryClient]);
 
   // Calculate Unified Stats
-  const activeComplaintsCount = (allComplaints || []).filter(c => c.status !== "completed" && c.status !== "closed").length;
+  const activeComplaintsCount = (allComplaints || []).filter(c => c.status !== "completed" && c.status !== "verified").length;
   const activeInstallationsCount = (allInstallations || []).filter(i => {
     const s = (i.status || "").toLowerCase();
-    return !s.includes("completed") && !s.includes("handed over") && !s.includes("closed");
+    return !s.includes("completed") && !s.includes("handed over") && !s.includes("verified");
   }).length;
   const totalActiveJobs = activeComplaintsCount + activeInstallationsCount;
 
-  const urgentComplaintsCount = (allComplaints || []).filter(c => (c.priority === "high" || c.priority === "urgent" || c.severity === "major") && c.status !== "completed" && c.status !== "closed").length;
+  const urgentComplaintsCount = (allComplaints || []).filter(c => (c.priority === "high" || c.priority === "urgent" || c.severity === "major") && c.status !== "completed" && c.status !== "verified").length;
   const criticalInstallationsCount = (allInstallations || []).filter(i => i.priority === "Critical" || i.priority === "High").length;
   const totalUrgentTasks = urgentComplaintsCount + criticalInstallationsCount;
 
   const completedComplaintsCount = (allComplaints || []).filter(c => c.status === "completed" || c.status === "closed").length;
   const completedInstallationsCount = (allInstallations || []).filter(i => {
     const s = (i.status || "").toLowerCase();
-    return s.includes("completed") || s.includes("handed over") || s.includes("closed");
+    return s.includes("completed") || s.includes("handed over") || s.includes("verified");
   }).length;
   const totalCompletedJobs = completedComplaintsCount + completedInstallationsCount;
 
@@ -437,7 +440,7 @@ const TechnicianDashboard = () => {
 
         {/* Status Horizon Filter (Active, Completed, Closed, All) */}
         <div className="flex items-center gap-1.5 p-1 rounded-xl bg-muted/65 max-w-md border border-border/40">
-          {(["active", "completed", "closed", "all"] as const).map((tab) => (
+          {(["active", "completed", "verified", "reassigned", "all"] as const).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -450,6 +453,34 @@ const TechnicianDashboard = () => {
               {tab}
             </button>
           ))}
+        </div>
+      </div>
+
+      {/* View Toggle */}
+      <div className="flex items-center justify-end gap-1.5 relative z-10">
+        <div className="flex items-center gap-1 p-0.5 rounded-lg bg-muted/60 border border-border/60">
+          <button
+            type="button"
+            onClick={() => setViewMode("list")}
+            className={`flex items-center gap-1.5 py-1.5 px-2.5 text-[11px] font-bold rounded-md transition-all ${
+              viewMode === "list"
+                ? "bg-white text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <List className="w-3.5 h-3.5" /> List
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode("card")}
+            className={`flex items-center gap-1.5 py-1.5 px-2.5 text-[11px] font-bold rounded-md transition-all ${
+              viewMode === "card"
+                ? "bg-white text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <LayoutGrid className="w-3.5 h-3.5" /> Card
+          </button>
         </div>
       </div>
 
@@ -467,9 +498,101 @@ const TechnicianDashboard = () => {
               <p className="font-bold text-foreground">All Clear!</p>
               <p className="text-xs text-muted-foreground mt-1">No assigned field work orders match your active filter.</p>
             </motion.div>
+          ) : viewMode === "list" ? (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="glass-card rounded-2xl border border-border/60 overflow-hidden"
+            >
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="bg-muted/40">
+                    <tr>
+                      <th className="py-2.5 px-3 text-left font-bold text-slate-600 dark:text-slate-400">Type</th>
+                      <th className="py-2.5 px-3 text-left font-bold text-slate-600 dark:text-slate-400">Ticket</th>
+                      <th className="py-2.5 px-3 text-left font-bold text-slate-600 dark:text-slate-400">Customer</th>
+                      <th className="py-2.5 px-3 text-left font-bold text-slate-600 dark:text-slate-400">Status</th>
+                      <th className="py-2.5 px-3 text-left font-bold text-slate-600 dark:text-slate-400">Priority</th>
+                      <th className="py-2.5 px-3 text-right font-bold text-slate-600 dark:text-slate-400">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/40">
+                    {(taskCategory === "all" || taskCategory === "installations") && filteredInstallations.map((inst) => {
+                      const custName = inst.customer?.full_name || inst.non_btl_customer_name || "Client";
+                      const isNonBtl = inst.customer_type === "New / Non-BTL Customer" || inst.customer_type === "Non-BTL" || inst.customer_type === "Walk-in" || (!inst.customer_id && !inst.customer?.full_name && inst.customer_type !== "BTL" && inst.customer_type !== "Existing BTL Customer");
+                      return (
+                        <tr key={inst.id} className="hover:bg-muted/30">
+                          <td className="py-2.5 px-3">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-500/15 text-blue-700 dark:text-blue-400 border border-blue-300">
+                              <Package className="w-3 h-3" /> Installation
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono font-bold text-primary">{formatInstallationTicketId(inst)}</span>
+                              {isNonBtl && <span className="text-[10px] font-bold text-amber-700">Non-BTL</span>}
+                            </div>
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <span className="font-medium">{custName}</span>
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-700 border">
+                              {inst.status}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <span className="text-xs font-bold px-2 py-0.5 rounded border uppercase text-indigo-700 bg-indigo-50 border-indigo-200">
+                              {inst.priority || "Normal"}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3 text-right">
+                            <Button size="sm" className="h-7 px-3 text-[10px] font-bold" onClick={() => navigate(`/installations/${inst.id}`)}>View Job Specs</Button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {(taskCategory === "all" || taskCategory === "complaints") && filteredComplaints.map((ticket) => {
+                      const isNonBtl = ticket.customer_type === "New / Non-BTL Customer" || ticket.customer_type === "Non-BTL" || ticket.customer_type === "Walk-in" || (!ticket.customer_id && !ticket.customer_name && ticket.customer_type !== "Existing BTL Customer");
+                      const custName = ticket.customer_name || ticket.profiles?.full_name || "Customer";
+                      return (
+                        <tr key={ticket.id} className="hover:bg-muted/30">
+                          <td className="py-2.5 px-3">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-orange-500/15 text-orange-700 dark:text-orange-400 border border-orange-300">
+                              <Wrench className="w-3 h-3" /> Complaint
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono font-bold text-primary">{formatComplaintTicketId(ticket)}</span>
+                              {isNonBtl && <span className="text-[10px] font-bold text-amber-700">Non-BTL</span>}
+                            </div>
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <span className="font-medium">{custName}</span>
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <StatusBadge status={ticket.status} />
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <SeverityBadge severity={ticket.severity as any} />
+                          </td>
+                          <td className="py-2.5 px-3 text-right">
+                            <Button size="sm" className="h-7 px-3 text-[10px] font-bold" onClick={() => navigate(`/complaints/${ticket.id}`)}>Open Workflow</Button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </motion.div>
           ) : (
-            <div className="space-y-4">
-              {/* SECTION: INSTALLATIONS */}
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="space-y-4"
+            >
               {(taskCategory === "all" || taskCategory === "installations") && filteredInstallations.map((inst, i) => {
                 const isLead = inst.lead_technician_id === user?.id;
                 const custName = inst.customer?.full_name || inst.non_btl_customer_name || "Client";
@@ -480,6 +603,7 @@ const TechnicianDashboard = () => {
                 const siteAddress = inst.location?.address || inst.non_btl_address || "";
                 const locName = inst.location?.location_name || "";
                 const fullAddressDisplay = [locName, siteAddress].filter(Boolean).join(" — ") || "Site address not specified";
+                const custPhone = inst.customer?.phone || inst.non_btl_contact_number || "N/A";
 
                 return (
                   <motion.div
@@ -493,7 +617,6 @@ const TechnicianDashboard = () => {
                     <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-blue-500 opacity-90" />
 
                     <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
-                      {/* Left Info */}
                       <div className="flex-1 space-y-2.5 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-mono font-bold bg-blue-50 text-blue-700 border border-blue-200">
@@ -519,7 +642,6 @@ const TechnicianDashboard = () => {
                             {inst.status}
                           </span>
 
-                          {/* Team Leadership Badge (BUG 5 Fix) */}
                           {isLead ? (
                             <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-800 dark:text-amber-300 border border-amber-400/50">
                               <Crown className="w-3 h-3 text-amber-600 fill-amber-500" />
@@ -540,8 +662,8 @@ const TechnicianDashboard = () => {
                         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                           <span>
                             Client: <strong className="text-foreground">{custName}</strong>
-                            {(inst.customer?.phone || inst.non_btl_contact_number) && (
-                              <span className="text-slate-500 ml-1">({inst.customer?.phone || inst.non_btl_contact_number})</span>
+                            {custPhone && (
+                              <span className="text-slate-500 ml-1">({custPhone})</span>
                             )}
                           </span>
 
@@ -556,7 +678,6 @@ const TechnicianDashboard = () => {
                           )}
                         </div>
 
-                        {/* Location and Live Route */}
                         <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground pt-1.5 border-t border-border/20">
                           <span className="flex items-center gap-1.5">
                             <MapPin className="w-3.5 h-3.5 text-primary shrink-0" />
@@ -581,12 +702,8 @@ const TechnicianDashboard = () => {
                         </div>
                       </div>
 
-                      {/* Right Action Box */}
-                      <div 
-                        className="flex flex-col items-stretch lg:items-end justify-between gap-3 shrink-0 lg:min-w-[240px] p-4 rounded-xl bg-blue-50/40 dark:bg-slate-900/40 border border-blue-100 dark:border-slate-800"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <div className="w-full space-y-1 text-left lg:text-right">
+                      <div className="flex flex-col items-stretch lg:items-end justify-between gap-3 shrink-0 lg:min-w-[220px] p-4 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-border/60">
+                        <div className="w-full space-y-1">
                           <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">
                             Job Progress & Control
                           </span>
@@ -595,7 +712,6 @@ const TechnicianDashboard = () => {
                           </span>
                         </div>
 
-                        {/* Status Update Dropdown (Enabled for Lead Technician) */}
                         {isLead ? (
                           <div className="w-full space-y-1">
                             <label className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase">
@@ -655,8 +771,6 @@ const TechnicianDashboard = () => {
                   </motion.div>
                 );
               })}
-
-              {/* SECTION: COMPLAINTS */}
               {(taskCategory === "all" || taskCategory === "complaints") && filteredComplaints.map((ticket, i) => {
                 const userAssignment = ticket.complaint_technicians?.find((ct: any) => ct.technician_id === user?.id);
                 const isLead = ticket.complaint_technicians && ticket.complaint_technicians.length > 0
@@ -681,7 +795,6 @@ const TechnicianDashboard = () => {
                     <div className="absolute left-0 top-0 bottom-0 w-1 bg-primary opacity-0 group-hover:opacity-100 transition-opacity" />
 
                     <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
-                      {/* Left Info */}
                       <div className="flex-1 space-y-2.5 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-xs font-mono font-bold text-primary">{displayTicketId}</span>
@@ -748,7 +861,7 @@ const TechnicianDashboard = () => {
                               {ticket.status === "completed" || ticket.status === "closed" ? 100 : Math.round((ticket.current_phase || 1) * (100 / 6))}%
                             </span>
                           </div>
-                          <Progress value={ticket.status === "completed" || ticket.status === "closed" ? 100 : (ticket.current_phase || 1) * (100 / 6)} className="h-2 bg-muted/65" />
+                            <Progress value={ticket.status === "completed" || ticket.status === "closed" ? 100 : (ticket.current_phase || 1) * (100 / 6)} className="h-2 bg-muted/65" />
                           <p className="text-[11px] text-muted-foreground text-right pt-0.5">
                             {ticket.status === "completed" || ticket.status === "closed" ? "Ticket Signed-off" : (phaseLabels[ticket.current_phase || 1] || "Phase Active")}
                           </p>
@@ -782,7 +895,7 @@ const TechnicianDashboard = () => {
                   </motion.div>
                 );
               })}
-            </div>
+            </motion.div>
           )}
         </AnimatePresence>
       </div>
@@ -829,7 +942,7 @@ const TechnicianDashboard = () => {
                   </div>
                 </DialogHeader>
 
-                {/* 🚀 Mobile Mission Control */}
+                {/* Mobile Mission Control */}
                 <TechnicianMissionControl
                   ticketType="installation"
                   ticketId={inst.id}
@@ -920,7 +1033,7 @@ const TechnicianDashboard = () => {
                   </div>
                 ) : (
                   <div className="p-3 bg-slate-100 dark:bg-slate-800 rounded-lg text-xs text-muted-foreground italic text-center">
-                    🔒 Status progression is managed by the Lead Technician
+                    Status progression is managed by the Lead Technician
                   </div>
                 )}
               </div>

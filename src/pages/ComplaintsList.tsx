@@ -1,11 +1,19 @@
 import { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Search, Plus, MapPin, Clock, Loader2, X, Calendar, Upload, Download, FileText } from "lucide-react";
+import { Search, Plus, MapPin, Clock, Loader2, X, Calendar, Upload, Download, FileText, Trash2, CheckSquare, Square, Eye, Wrench, UserPlus, Navigation, Edit2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { StatusBadge, SeverityBadge } from "@/components/Badges";
-import { useQuery } from "@tanstack/react-query";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { complaintService, formatComplaintTicketId } from "@/services/complaintService";
 import { useAuth } from "@/contexts/AuthContext";
 import { useDebounce } from "@/hooks/useDebounce";
@@ -14,6 +22,11 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import ExportButton from "@/components/ExportButton";
 import ComplaintImportModal from "@/components/ComplaintImportModal";
 import { generateSampleCSV, downloadCSV } from "@/utils/csvHelpers";
+import { toast } from "sonner";
+import {
+  ToggleGroup,
+  ToggleGroupItem,
+} from "@/components/ui/toggle-group";
 
 const statusFilters = [
   "all",
@@ -53,16 +66,105 @@ const formatIndianDateTime = (dateString?: string) => {
 
 const ComplaintsList = () => {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [currentPage, setCurrentPage] = useState(1);
   const [isComplaintImportOpen, setIsComplaintImportOpen] = useState(false);
+  const [viewMode, setViewMode] = useState<"table" | "card">("table");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [isDeletingId, setIsDeletingId] = useState<string | null>(null);
+  const [bulkDeleteConfirmOpen, setBulkDeleteConfirmOpen] = useState(false);
 
   const downloadSample = () => {
     const csv = generateSampleCSV("complaint");
     downloadCSV(csv, "complaint_sample.csv");
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === filtered.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(filtered.map(t => t.id)));
+    }
+  };
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const handleBulkDelete = async () => {
+    const selectedCount = selectedIds.size;
+    if (selectedCount === 0) return;
+
+    setBulkDeleteConfirmOpen(false);
+    setIsBulkDeleting(true);
+    try {
+      const { deleted, blocked, failed } = await complaintService.deleteMany(Array.from(selectedIds));
+
+      if (deleted.length > 0) {
+        const currentData = queryClient.getQueryData(["complaints", statusFilter, user?.id, user?.role]);
+        if (currentData && Array.isArray(currentData)) {
+          const updatedData = currentData.filter((item: any) => deleted.includes(item.id));
+          queryClient.setQueryData(["complaints", statusFilter, user?.id, user?.role], updatedData);
+        }
+        await queryClient.invalidateQueries({ queryKey: ["complaints", statusFilter, user?.id, user?.role].filter(Boolean) });
+      }
+
+      if (deleted.length > 0 && blocked.length === 0 && failed.length === 0) {
+        toast.success(`Successfully deleted ${deleted.length} complaint(s)`);
+      } else if (deleted.length > 0 && blocked.length > 0) {
+        toast.warning(`${deleted.length} deleted, ${blocked.length} blocked by database permissions. Removed from current view.`);
+      } else if (blocked.length > 0) {
+        toast.error(`Delete blocked by database permissions for ${blocked.length} complaint(s). Contact administrator.`);
+      } else {
+        toast.error(`Failed to delete ${failed.length} complaint(s).`);
+      }
+
+      setSelectedIds(new Set());
+    } catch (e: any) {
+      console.error("Bulk delete error:", e);
+      toast.error(e.message || "Failed to delete complaints.");
+    } finally {
+      setIsBulkDeleting(false);
+    }
+  };
+
+  const handleDeleteComplaint = async (id: string) => {
+    setIsDeletingId(id);
+    try {
+      await complaintService.delete(id);
+
+      const currentData = queryClient.getQueryData(["complaints", statusFilter, user?.id, user?.role]);
+      if (currentData && Array.isArray(currentData)) {
+        const updatedData = currentData.filter((item: any) => item.id !== id);
+        queryClient.setQueryData(["complaints", statusFilter, user?.id, user?.role], updatedData);
+      }
+
+      toast.success("Complaint deleted successfully.");
+      setDeleteConfirmId(null);
+    } catch (e: any) {
+      console.error(`Failed to delete complaint ${id}:`, e);
+      if (e?.message === "DELETE_BLOCKED") {
+        toast.error("Delete blocked by database permissions. Contact administrator.");
+      } else {
+        toast.error(e.message || "Failed to delete complaint.");
+      }
+    } finally {
+      setIsDeletingId(null);
+    }
   };
 
   const { user, isRole } = useAuth();
@@ -451,11 +553,23 @@ const ComplaintsList = () => {
                     : "bg-muted text-muted-foreground border-border/40 hover:bg-muted/80"
                 }`}
               >
-                {s === "all" ? "All Tickets" : s.replace("-", " ")}
-              </button>
-            ))}
-          </div>
+              {s === "all" ? "All Tickets" : s.replace("-", " ")}
+            </button>
+          ))}
         </div>
+
+        {/* View Toggle */}
+        <div className="flex justify-end">
+          <ToggleGroup type="single" value={viewMode} onValueChange={(v) => v && setViewMode(v as "table" | "card")} className="bg-muted/60 p-0.5 rounded-lg border border-border/60">
+            <ToggleGroupItem value="table" size="sm" className="text-[11px] font-semibold h-8 px-2.5 rounded-md data-[state=on]:bg-white data-[state=on]:shadow-sm">
+              List View
+            </ToggleGroupItem>
+            <ToggleGroupItem value="card" size="sm" className="text-[11px] font-semibold h-8 px-2.5 rounded-md data-[state=on]:bg-white data-[state=on]:shadow-sm">
+              Card View
+            </ToggleGroupItem>
+          </ToggleGroup>
+        </div>
+      </div>
       )}
 
       {/* Filters (Customer / Technician Only) */}
@@ -562,87 +676,373 @@ const ComplaintsList = () => {
                     : "bg-muted text-muted-foreground border-border/40 hover:bg-muted/80"
                 }`}
               >
-                {tab.label}
-              </button>
-            ))}
-          </div>
+              {tab.label}
+            </button>
+          ))}
         </div>
+
+        {/* View Toggle */}
+        <div className="flex justify-end">
+          <ToggleGroup type="single" value={viewMode} onValueChange={(v) => v && setViewMode(v as "table" | "card")} className="bg-muted/60 p-0.5 rounded-lg border border-border/60">
+            <ToggleGroupItem value="table" size="sm" className="text-[11px] font-semibold h-8 px-2.5 rounded-md data-[state=on]:bg-white data-[state=on]:shadow-sm">
+              List View
+            </ToggleGroupItem>
+            <ToggleGroupItem value="card" size="sm" className="text-[11px] font-semibold h-8 px-2.5 rounded-md data-[state=on]:bg-white data-[state=on]:shadow-sm">
+              Card View
+            </ToggleGroupItem>
+          </ToggleGroup>
+        </div>
+      </div>
       )}
 
       {/* Tickets Content */}
       <div className="relative z-10">
         <div className="space-y-4">
-          {paginatedItems.map((ticket, i) => (
-            <motion.div
-              key={ticket.id}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: i * 0.04 }}
-            >
-              <Link
-                to={`/complaints/${ticket.id}`}
-                className="glass-card rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:border-primary/25 hover:shadow-glow transition-all duration-300 block group relative overflow-hidden"
+        {/* Selection Bar */}
+        {isRole("admin", "supervisor") && selectedIds.size > 0 && (
+          <div className="sticky top-2 z-20 flex items-center justify-between p-3 bg-blue-50/90 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 rounded-xl mb-4 shadow-md">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={toggleSelectAll}
+                className="text-slate-600 hover:text-slate-800"
               >
-                <div className="absolute left-0 top-0 bottom-0 w-1 bg-primary opacity-0 group-hover:opacity-100 transition-opacity" />
-                
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                    <span className="text-xs font-mono text-primary font-bold">
-                      {formatComplaintTicketId(ticket)}
-                    </span>
-                    {ticket.customer_type === 'New / Non-BTL Customer' || ticket.customer_type === 'Non-BTL' || ticket.customer_type === 'Walk-in' || (!ticket.customer_id && !ticket.customer_name) ? (
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
-                        Walk-in / Non-BTL
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
-                        Existing Customer
-                      </span>
+                {selectedIds.size === filtered.length ? (
+                  <CheckSquare className="w-5 h-5 text-blue-600" />
+                ) : (
+                  <Square className="w-5 h-5" />
+                )}
+              </button>
+              <span className="text-sm font-medium text-slate-700">
+                {selectedIds.size} of {filtered.length} selected
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setSelectedIds(new Set())}
+                className="text-xs text-slate-600 hover:text-slate-800"
+              >
+                Clear
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => setBulkDeleteConfirmOpen(true)}
+                disabled={isBulkDeleting}
+                className="bg-red-600 hover:bg-red-700 text-white text-xs font-bold h-9 px-4 shadow-sm"
+              >
+                {isBulkDeleting ? (
+                  <Loader2 className="w-4 h-4 animate-spin mr-1.5" />
+                ) : (
+                  <Trash2 className="w-4 h-4 mr-1.5" />
+                )}
+                Delete {selectedIds.size} rows
+              </Button>
+            </div>
+          </div>
+        )}
+          
+          {viewMode === "table" && (
+            <div>
+              <div className="relative overflow-x-auto rounded-lg border border-border/60">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-muted/50 text-foreground font-semibold border-b border-border/60 uppercase tracking-wider text-[11px]">
+                    <tr>
+                      <th className="py-3 px-4 w-10">
+                        <button
+                          type="button"
+                          onClick={toggleSelectAll}
+                          className="text-slate-600 hover:text-slate-800"
+                        >
+                          {selectedIds.size === filtered.length ? (
+                            <CheckSquare className="w-4 h-4 text-blue-600" />
+                          ) : (
+                            <Square className="w-4 h-4" />
+                          )}
+                        </button>
+                      </th>
+                      <th className="py-3 px-4">Ticket ID</th>
+                      <th className="py-3 px-4">Customer</th>
+                      <th className="py-3 px-4">Status</th>
+                      <th className="py-3 px-4">Date</th>
+                      <th className="py-3 px-4 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/40">
+                    {paginatedItems.map((ticket) => (
+                      <tr key={ticket.id} className={`hover:bg-muted/30 transition-colors ${selectedIds.has(ticket.id) ? 'bg-blue-50/60' : ''}`}>
+                        <td className="py-3 px-4">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleSelect(ticket.id);
+                            }}
+                            className="text-slate-600 hover:text-slate-800"
+                          >
+                            {selectedIds.has(ticket.id) ? (
+                              <CheckSquare className="w-4 h-4 text-blue-600" />
+                            ) : (
+                              <Square className="w-4 h-4" />
+                            )}
+                          </button>
+                        </td>
+                        <td className="py-3 px-4 whitespace-nowrap">
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); navigate(`/complaints/${ticket.id}`); }}
+                            className="font-mono font-bold text-primary hover:underline"
+                          >
+                            {formatComplaintTicketId(ticket)}
+                          </button>
+                        </td>
+                        <td className="py-3 px-4 min-w-[180px]">
+                          <span
+                            onClick={(e) => { e.stopPropagation(); navigate(`/complaints/${ticket.id}`); }}
+                            className="font-semibold text-foreground hover:text-primary transition-colors cursor-pointer"
+                          >
+                            {ticket.customer_name || ticket.profiles?.full_name || ticket.created_by_name || 'Customer'}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 whitespace-nowrap">
+                          {ticket.status && <StatusBadge status={ticket.status} />}
+                        </td>
+                        <td className="py-3 px-4 whitespace-nowrap text-foreground">
+                          {formatIndianDateTime(ticket.created_at)}
+                        </td>
+                        <td className="py-3 px-4 text-right whitespace-nowrap">
+                          <div className="flex items-center justify-end gap-1.5">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                navigate(`/complaints/${ticket.id}`);
+                              }}
+                              className="h-8 w-8 p-0 text-slate-600 hover:text-primary"
+                              title="View details"
+                            >
+                              <Eye className="w-4 h-4" />
+                            </Button>
+                            {isRole("admin", "supervisor") && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  navigate(`/complaints/${ticket.id}/edit`);
+                                }}
+                                className="h-8 w-8 p-0 text-slate-600 hover:text-blue-600 hover:bg-blue-50"
+                                title="Edit complaint"
+                              >
+                                <Edit2 className="w-4 h-4" />
+                              </Button>
+                            )}
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                navigate(`/complaints/${ticket.id}`);
+                              }}
+                              className="h-8 px-2.5 text-xs text-primary border-primary/30 bg-primary/5 hover:bg-primary/10 font-semibold"
+                              title="Open workflow"
+                            >
+                              <Wrench className="w-3.5 h-3.5 mr-1" /> Workflow
+                            </Button>
+                            {(ticket.customer_lat && ticket.customer_lng) || (ticket.location && ticket.location.trim() !== "") ? (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const dest = ticket.customer_lat && ticket.customer_lng
+                                    ? `${ticket.customer_lat},${ticket.customer_lng}`
+                                    : encodeURIComponent(ticket.location?.trim() || '');
+                                  if (dest) {
+                                    window.open(`https://www.google.com/maps/dir/?api=1&destination=${dest}&travelmode=driving`, '_blank');
+                                  }
+                                }}
+                                className="h-8 w-8 p-0 text-slate-600 hover:text-blue-600 hover:bg-blue-50"
+                                title="Navigate to site"
+                              >
+                                <Navigation className="w-4 h-4" />
+                              </Button>
+                            ) : null}
+                            {isRole("admin", "supervisor") && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setDeleteConfirmId(ticket.id);
+                                }}
+                                className="h-8 w-8 p-0 text-slate-600 hover:text-rose-600 hover:bg-rose-50"
+                                title="Delete complaint"
+                              >
+                                {isDeletingId === ticket.id ? (
+                                  <Loader2 className="w-4 h-4 animate-spin" />
+                                ) : (
+                                  <Trash2 className="w-4 h-4" />
+                                )}
+                              </Button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {filtered.length === 0 && (
+                  <div className="text-center py-12 text-muted-foreground text-sm">
+                    No records match filters
+                  </div>
+                )}
+              </div>
+              <p className="text-[10px] text-muted-foreground mt-1.5 text-center md:hidden">
+                Swipe horizontally to see more columns →
+              </p>
+            </div>
+          )}
+          
+          {viewMode === "card" && (
+            <div className="space-y-4">
+              {paginatedItems.map((ticket, i) => (
+                <Link
+                  key={ticket.id}
+                  to={`/complaints/${ticket.id}`}
+                  className="glass-card rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:border-primary/25 hover:shadow-glow transition-all duration-300 block group relative overflow-hidden"
+                >
+                    <div className="absolute left-0 top-0 bottom-0 w-1 bg-primary opacity-0 group-hover:opacity-100 transition-opacity" />
+                    {(isRole("admin", "supervisor")) && (
+                      <div className="absolute right-3 top-3">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleSelect(ticket.id);
+                          }}
+                          className={`shrink-0 ${selectedIds.has(ticket.id) ? 'text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
+                        >
+                          {selectedIds.has(ticket.id) ? (
+                            <CheckSquare className="w-5 h-5" />
+                          ) : (
+                            <Square className="w-5 h-5" />
+                          )}
+                        </button>
+                      </div>
                     )}
-                    <span className="text-xs text-muted-foreground">•</span>
-                    {ticket.severity && <SeverityBadge severity={ticket.severity as any} />}
-                    {ticket.status && <StatusBadge status={ticket.status} />}
-                  </div>
-                  
-                  <h3 className="font-bold text-base text-foreground group-hover:text-primary transition-colors truncate" title={ticket.title}>{ticket.title}</h3>
-                  <p className="text-sm text-muted-foreground truncate mt-1 leading-relaxed">
-                    {ticket.description}
-                  </p>
-                  
-                  <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground mt-2.5">
-                    <span>Customer: <span className="font-semibold text-primary">{ticket.customer_name || ticket.profiles?.full_name || ticket.created_by_name || 'Customer'}</span></span>
-                    <span>•</span>
-                    <span>Raised on {formatIndianDateTime(ticket.created_at)}</span>
-                  </div>
+                    
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                        <span className="text-xs font-mono text-primary font-bold">
+                          {formatComplaintTicketId(ticket)}
+                        </span>
+                        {ticket.customer_type === 'New / Non-BTL Customer' || ticket.customer_type === 'Non-BTL' || ticket.customer_type === 'Walk-in' || (!ticket.customer_id && !ticket.customer_name) ? (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                            Walk-in / Non-BTL
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
+                            Existing Customer
+                          </span>
+                        )}
+                        <span className="text-xs text-muted-foreground">•</span>
+                        {ticket.severity && <SeverityBadge severity={ticket.severity as any} />}
+                        {ticket.status && <StatusBadge status={ticket.status} />}
+                      </div>
+                      
+                      <h3 className="font-bold text-base text-foreground group-hover:text-primary transition-colors truncate" title={ticket.title}>{ticket.title}</h3>
+                      <p className="text-sm text-muted-foreground truncate mt-1 leading-relaxed">
+                        {ticket.description}
+                      </p>
+                      
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground mt-2.5">
+                        <span>Customer: <span className="font-semibold text-primary">{ticket.customer_name || ticket.profiles?.full_name || ticket.created_by_name || 'Customer'}</span></span>
+                        <span>•</span>
+                        <span>Raised on {formatIndianDateTime(ticket.created_at)}</span>
+                      </div>
 
-                  {(ticket.assigned_supervisor || ticket.assigned_technician) && (
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground mt-1 border-t border-border/20 pt-1.5 max-w-fit">
-                      {ticket.assigned_supervisor && (
-                        <span>Supervisor: <span className="font-semibold text-foreground">{ticket.assigned_supervisor}</span></span>
-                      )}
-                      {ticket.assigned_supervisor && ticket.assigned_technician && <span>•</span>}
-                      {ticket.assigned_technician && (
-                        <span>Technician: <span className="font-semibold text-foreground">{ticket.assigned_technician}</span></span>
+                      {(ticket.assigned_supervisor || ticket.assigned_technician) && (
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground mt-1 border-t border-border/20 pt-1.5 max-w-fit">
+                          {ticket.assigned_supervisor && (
+                            <span>Supervisor: <span className="font-semibold text-foreground">{ticket.assigned_supervisor}</span></span>
+                          )}
+                          {ticket.assigned_supervisor && ticket.assigned_technician && <span>•</span>}
+                          {ticket.assigned_technician && (
+                            <span>Technician: <span className="font-semibold text-foreground">{ticket.assigned_technician}</span></span>
+                          )}
+                        </div>
                       )}
                     </div>
-                  )}
-                </div>
 
-                <div className="flex sm:flex-col items-start sm:items-end justify-between sm:justify-center gap-2 text-xs text-muted-foreground shrink-0 border-t sm:border-t-0 sm:border-l border-border/30 pt-3 sm:pt-0 sm:pl-4 min-w-[140px]">
-                  {ticket.location && (
-                    <span className="flex items-center gap-1.5 font-semibold text-foreground/80 truncate max-w-[160px]">
-                      <MapPin className="w-3.5 h-3.5 text-primary shrink-0" />
-                      {ticket.location.split(",")[0]}
-                    </span>
-                  )}
-                  <span className="flex items-center gap-1.5">
-                    <Clock className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-                    Updated {formatIndianDateTime(ticket.updated_at)}
-                  </span>
-                </div>
-              </Link>
-            </motion.div>
-          ))}
+                     <div className="flex sm:flex-col items-start sm:items-end justify-between sm:justify-center gap-2 text-xs text-muted-foreground shrink-0 border-t sm:border-t-0 sm:border-l border-border/30 pt-3 sm:pt-0 sm:pl-4 min-w-[140px]">
+                       {ticket.location && (
+                         <span className="flex items-center gap-1.5 font-semibold text-foreground/80 truncate max-w-[160px]">
+                           <MapPin className="w-3.5 h-3.5 text-primary shrink-0" />
+                           {ticket.location.split(",")[0]}
+                         </span>
+                       )}
+                       <span className="flex items-center gap-1.5">
+                         <Clock className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                         Updated {formatIndianDateTime(ticket.updated_at)}
+                       </span>
+                       <div className="flex items-center gap-1">
+                         {(ticket.customer_lat && ticket.customer_lng) || (ticket.location && ticket.location.trim() !== "") ? (
+                           <button
+                             type="button"
+                             onClick={(e) => {
+                               e.stopPropagation();
+                               const dest = ticket.customer_lat && ticket.customer_lng
+                                 ? `${ticket.customer_lat},${ticket.customer_lng}`
+                                 : encodeURIComponent(ticket.location?.trim() || '');
+                               if (dest) {
+                                 window.open(`https://www.google.com/maps/dir/?api=1&destination=${dest}&travelmode=driving`, '_blank');
+                               }
+                             }}
+                             className="shrink-0 text-slate-400 hover:text-blue-600 transition-colors"
+                             title="Navigate to site"
+                           >
+                             <Navigation className="w-4 h-4" />
+                           </button>
+                         ) : null}
+                         {isRole("admin", "supervisor") && (
+                           <button
+                             type="button"
+                             onClick={(e) => {
+                               e.stopPropagation();
+                               navigate(`/complaints/${ticket.id}/edit`);
+                             }}
+                             className="shrink-0 text-slate-400 hover:text-blue-600 transition-colors"
+                             title="Edit complaint"
+                           >
+                             <Edit2 className="w-4 h-4" />
+                           </button>
+                         )}
+                         {isRole("admin", "supervisor") && (
+                           <button
+                             type="button"
+                             onClick={(e) => {
+                               e.stopPropagation();
+                               setDeleteConfirmId(ticket.id);
+                             }}
+                             className="shrink-0 text-slate-400 hover:text-rose-600 transition-colors"
+                             title="Delete complaint"
+                           >
+                             {isDeletingId === ticket.id ? (
+                               <Loader2 className="w-4 h-4 animate-spin" />
+                             ) : (
+                               <Trash2 className="w-4 h-4" />
+                             )}
+                           </button>
+                         )}
+                       </div>
+                     </div>
+                  </Link>
+                ))}
+              </div>
+            )}
 
           {/* Pagination Controls */}
           {totalPages > 1 && (
@@ -716,6 +1116,72 @@ const ComplaintsList = () => {
           )}
         </div>
       </div>
+      <Dialog open={!!deleteConfirmId} onOpenChange={(open) => !open && setDeleteConfirmId(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Complaint</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete this complaint? This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteConfirmId(null)} disabled={isDeletingId === deleteConfirmId}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => deleteConfirmId && handleDeleteComplaint(deleteConfirmId)}
+              disabled={isDeletingId === deleteConfirmId}
+            >
+              {isDeletingId === deleteConfirmId ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin mr-1.5" />
+                  Deleting...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="w-4 h-4 mr-1.5" />
+                  Delete
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={bulkDeleteConfirmOpen} onOpenChange={(open) => !open && setBulkDeleteConfirmOpen(false)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Selected Complaints</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete {selectedIds.size} selected complaint(s)? This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBulkDeleteConfirmOpen(false)} disabled={isBulkDeleting}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleBulkDelete}
+              disabled={isBulkDeleting}
+            >
+              {isBulkDeleting ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin mr-1.5" />
+                  Deleting...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="w-4 h-4 mr-1.5" />
+                  Delete {selectedIds.size} rows
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <ComplaintImportModal
         open={isComplaintImportOpen}
         onOpenChange={setIsComplaintImportOpen}

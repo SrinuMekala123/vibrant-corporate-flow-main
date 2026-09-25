@@ -548,13 +548,94 @@ function NativePermissionHandler() {
   return null; // Renders absolutely nothing on the screen
 }
 
-const App = () => (
+// Suppress non-critical Supabase realtime WebSocket errors in environments where realtime is unavailable
+function RealtimeErrorSuppressor() {
+  useEffect(() => {
+    const realtimeMessages = [
+      'realtime',
+      'websocket',
+      'transportconnect',
+      'wss://supportapi.brihaspathi.in/realtime',
+      'realtime/v1/websocket'
+    ];
+
+    const originalConsoleError = console.error;
+    const originalConsoleWarn = console.warn;
+    const filteredConsoleError = (...args: any[]) => {
+      const message = args
+        .map(arg => (typeof arg === 'string' ? arg : arg?.message || arg?.toString?.() || ''))
+        .join(' ')
+        .toLowerCase();
+
+      const shouldSuppress = realtimeMessages.some(keyword => message.includes(keyword));
+      if (shouldSuppress) {
+        return;
+      }
+
+      originalConsoleError.apply(console, args);
+    };
+
+    const filteredConsoleWarn = (...args: any[]) => {
+      const message = args
+        .map(arg => (typeof arg === 'string' ? arg : arg?.message || arg?.toString?.() || ''))
+        .join(' ')
+        .toLowerCase();
+
+      const shouldSuppress = realtimeMessages.some(keyword => message.includes(keyword));
+      if (shouldSuppress) {
+        return;
+      }
+
+      originalConsoleWarn.apply(console, args);
+    };
+
+    console.error = filteredConsoleError;
+    console.warn = filteredConsoleWarn;
+
+    const suppressRealtimeError = (event: ErrorEvent | PromiseRejectionEvent) => {
+      const message = event.message || (event as any)?.reason?.message || '';
+      const lower = message.toLowerCase();
+      if (
+        lower.includes('realtime') ||
+        lower.includes('websocket') ||
+        lower.includes('transportconnect') ||
+        lower.includes('wss://supportapi.brihaspathi.in/realtime')
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+
+    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      suppressRealtimeError(event);
+    };
+
+    const handleError = (event: ErrorEvent) => {
+      suppressRealtimeError(event);
+    };
+
+    window.addEventListener('unhandledrejection', handleUnhandledRejection);
+    window.addEventListener('error', handleError);
+
+    return () => {
+      console.error = originalConsoleError;
+      console.warn = originalConsoleWarn;
+      window.removeEventListener('unhandledrejection', handleUnhandledRejection);
+      window.removeEventListener('error', handleError);
+    };
+  }, []);
+
+  return null;
+}
+
+  const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
       <Toaster />
       <Sonner />
       <AuthProvider>
         <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <RealtimeErrorSuppressor />
           <NativePermissionHandler />
           <AppRoutes />
         </BrowserRouter>

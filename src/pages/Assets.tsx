@@ -20,6 +20,7 @@ import {
   PaginationPrevious,
 } from "@/components/ui/pagination";
 import AssetImportModal from "@/components/AssetImportModal";
+import OffCanvasPanel from "@/components/OffCanvasPanel";
 import {
   Loader2,
   Search,
@@ -27,7 +28,6 @@ import {
   Edit,
   Trash2,
   Eye,
-  X,
   Upload,
   Package,
   Calendar,
@@ -42,7 +42,6 @@ import {
   CheckSquare,
   Square
 } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
 import { downloadCSV, generateSampleCSV } from "@/utils/csvHelpers";
 import ExportButton from "@/components/ExportButton";
 import DatePicker from "react-datepicker";
@@ -74,7 +73,7 @@ export default function Assets() {
   const [customerId, setCustomerId] = useState("");
   const [branchId, setBranchId] = useState("");
   const [isAssetImportOpen, setIsAssetImportOpen] = useState(false);
-  const [category, setCategory] = useState("Solar PV");
+  const [category, setCategory] = useState("");
   const [productName, setProductName] = useState("");
   const [modelNumber, setModelNumber] = useState("");
   const [brand, setBrand] = useState("");
@@ -84,8 +83,9 @@ export default function Assets() {
   const [installationDate, setInstallationDate] = useState("");
   const [installationDatePickerOpen, setInstallationDatePickerOpen] = useState(false);
   const [warrantyMonths, setWarrantyMonths] = useState(0);
+  const [warrantyType, setWarrantyType] = useState("");
   const [customWarrantyMonths, setCustomWarrantyMonths] = useState("");
-  const [status, setStatus] = useState("Active");
+  const [status, setStatus] = useState("");
   const [notes, setNotes] = useState("");
   const [selectedAssetIds, setSelectedAssetIds] = useState<Set<string>>(new Set());
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
@@ -350,7 +350,7 @@ export default function Assets() {
       setSelectedAsset({});
       setCustomerId("");
       setBranchId("");
-      setCategory("Solar PV");
+      setCategory("");
       setProductName("");
       setBrand("");
       setModelNumber("");
@@ -358,10 +358,11 @@ export default function Assets() {
       setPurchaseDate("");
       setPurchaseDatePickerOpen(false);
       setWarrantyMonths(0);
+      setWarrantyType("");
       setCustomWarrantyMonths("");
       setInstallationDate("");
       setInstallationDatePickerOpen(false);
-      setStatus("Active");
+      setStatus("");
       setNotes("");
       setSelectedLocationId("");
       // Restore draft after resetting form
@@ -370,7 +371,7 @@ export default function Assets() {
       setSelectedAsset(asset);
       setCustomerId(asset.customer_id || "");
       setBranchId(asset.branch_id || "");
-      setCategory(asset.category || "Solar PV");
+      setCategory(asset.category || "");
       setProductName(asset.product_name || "");
       setBrand(asset.brand || "");
       setModelNumber(asset.model_number || "");
@@ -381,7 +382,7 @@ export default function Assets() {
       setCustomWarrantyMonths([0, 6, 12, 24, 36].includes(asset.warranty_months || 12) ? "" : String(asset.warranty_months || ""));
       setInstallationDate(asset.installation_date || "");
       setInstallationDatePickerOpen(false);
-      setStatus(asset.status || "Active");
+      setStatus(asset.status || "");
       setNotes(asset.notes || "");
       setSelectedLocationId(asset.location_id || "");
 
@@ -418,6 +419,26 @@ export default function Assets() {
     }
     if (dateFromInput(purchaseDate)! > today || (installationDate && dateFromInput(installationDate)! > today)) {
       toast.error("Purchase and installation dates cannot be in the future.");
+      return;
+    }
+
+    if (!status || status.trim() === "") {
+      toast.error("Please select a Status.");
+      return;
+    }
+
+    if (!category || category.trim() === "") {
+      toast.error("Please select a Category.");
+      return;
+    }
+
+    if (!branchId) {
+      toast.error("Please select a Deployment Branch.");
+      return;
+    }
+
+    if (serialNumber && !/^[a-zA-Z0-9\s-]+$/.test(serialNumber.trim())) {
+      toast.error("Serial Number must be alphanumeric (letters, numbers, hyphens only).");
       return;
     }
 
@@ -662,6 +683,22 @@ export default function Assets() {
                 <Plus className="w-4 h-4 shrink-0" />
                 <span>Add Asset</span>
               </Button>
+              
+              {isAdmin && selectedAssetIds.size > 0 && (
+                <Button
+                  size="sm"
+                  onClick={handleBulkDelete}
+                  disabled={isBulkDeleting}
+                  className="bg-red-600 hover:bg-red-700 text-white rounded-xl h-10 px-4 gap-2 font-bold shadow-sm text-xs"
+                >
+                  {isBulkDeleting ? (
+                    <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                  ) : (
+                    <Trash2 className="w-4 h-4 shrink-0" />
+                  )}
+                  <span>Delete {selectedAssetIds.size} rows</span>
+                </Button>
+              )}
             </div>
           )}
           
@@ -927,31 +964,6 @@ export default function Assets() {
             </table>
           </div>
 
-          {/* Bulk Action Bar */}
-          {isAdmin && selectedAssetIds.size > 0 && (
-            <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-4">
-              <span className="text-sm font-medium">{selectedAssetIds.size} selected</span>
-              <button
-                onClick={clearSelection}
-                className="text-xs font-semibold text-slate-300 hover:text-white uppercase tracking-wider"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleBulkDelete}
-                disabled={isBulkDeleting}
-                className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 text-white px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider disabled:opacity-50"
-              >
-                {isBulkDeleting ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Trash2 className="w-3.5 h-3.5" />
-                )}
-                Delete
-              </button>
-            </div>
-          )}
-
           {/* Mobile Card List View */}
           <div className="grid grid-cols-1 gap-4 md:hidden">
             {paginatedAssets.map((a: any) => {
@@ -1097,532 +1109,529 @@ export default function Assets() {
         </div>
       )}
 
-      {/* View & Add/Edit Overlay Modal */}
-      <AnimatePresence>
-        {selectedAsset && (
-          <div className="fixed inset-0 bg-black/30 backdrop-blur-sm z-50 flex justify-end">
-            <motion.div
-              initial={{ x: "100%" }}
-              animate={{ x: 0 }}
-              exit={{ x: "100%" }}
-              transition={{ type: "spring", damping: 26, stiffness: 220 }}
-              className="bg-white w-full max-w-xl h-full rounded-lg p-4 sm:p-6 md:p-8 relative flex flex-col gap-6 overflow-y-auto shadow-xl border border-gray-200"
-            >
-              {/* Close Button */}
-              <button
+      {/* View & Add/Edit Overlay Modal — ~80% off-canvas */}
+      <OffCanvasPanel
+        open={!!selectedAsset}
+        onClose={() => setSelectedAsset(null)}
+        header={
+          <>
+            <div className="w-14 h-14 rounded-2xl flex items-center justify-center text-xl font-bold text-white uppercase gradient-warm shrink-0">
+              {(modalMode === 'add' ? 'N' : productName)?.charAt(0) || 'A'}
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-xl font-display font-bold text-slate-800">
+                {modalMode === 'view' ? "Asset Inventory Details" : modalMode === 'add' ? "Register New Equipment" : "Edit Equipment Details"}
+              </h3>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {modalMode === 'view' ? `Serial No: ${selectedAsset?.serial_number || "N/A"}` : "Input asset parameters."}
+              </p>
+            </div>
+          </>
+        }
+        footer={
+          modalMode === 'view' ? (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                className="flex-1 rounded-xl h-11 font-bold text-sm"
                 onClick={() => setSelectedAsset(null)}
-                aria-label="Close modal"
-                className="absolute top-5 right-5 text-slate-400 hover:text-slate-600 hover:bg-slate-100/50 p-1.5 rounded-lg transition-colors z-20"
               >
-                <X className="w-5 h-5" />
-              </button>
-
-              {/* Modal Header */}
-              <div className="flex items-center gap-4 border-b pb-4">
-                <div className="w-14 h-14 rounded-2xl flex items-center justify-center text-xl font-bold text-white uppercase gradient-warm">
-                  {(modalMode === 'add' ? 'N' : productName)?.charAt(0) || 'A'}
+                Close Details
+              </Button>
+              {canModify && (
+                <Button
+                  type="button"
+                  className="flex-1 gradient-primary text-primary-foreground shadow-glow rounded-xl h-11 font-bold text-sm"
+                  onClick={() => handleOpenModal(selectedAsset, "edit")}
+                >
+                  <Edit className="w-4 h-4 mr-2" /> Edit Asset
+                </Button>
+              )}
+            </>
+          ) : (
+            <>
+              {modalMode === "add" && assetDraft.hasDraft() && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    assetDraft.clear();
+                    setCustomerId("");
+                    setBranchId("");
+                    setCategory("");
+                    setProductName("");
+                    setModelNumber("");
+                    setSerialNumber("");
+                    setPurchaseDate(new Date().toISOString().split('T')[0]);
+                    setWarrantyMonths(0);
+                    setWarrantyType("");
+                    setInstallationDate("");
+                    setStatus("");
+                    setNotes("");
+                    toast.success("Draft cleared");
+                  }}
+                  className="text-xs text-slate-500 hover:text-destructive"
+                >
+                  Clear Draft
+                </Button>
+              )}
+              <Button
+                type="button"
+                variant="outline"
+                className="flex-1 rounded-xl h-11 font-bold text-sm"
+                onClick={() => setSelectedAsset(null)}
+                disabled={loading}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                form="asset-save-form"
+                className="flex-1 gradient-primary text-primary-foreground shadow-glow rounded-xl h-11 font-bold text-sm"
+                disabled={loading}
+              >
+                {loading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Saving...
+                  </>
+                ) : (
+                  "Save Asset"
+                )}
+              </Button>
+            </>
+          )
+        }
+      >
+        {modalMode === 'view' && selectedAsset ? (
+          <div className="space-y-6">
+            <div className="space-y-4 bg-muted/40 p-4 rounded-xl border border-slate-100">
+              <h4 className="text-xs font-bold text-primary uppercase tracking-wider font-display">Client & Location Information</h4>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Customer</span>
+                  <span className="text-sm font-semibold text-slate-800">{selectedAsset.customers?.full_name || "Unknown"}</span>
                 </div>
                 <div>
-                  <h3 className="text-xl font-display font-bold text-slate-800">
-                    {modalMode === 'view' ? "Asset Inventory Details" : modalMode === 'add' ? "Register New Equipment" : "Edit Equipment Details"}
-                  </h3>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    {modalMode === 'view' ? `Serial No: ${selectedAsset.serial_number || "N/A"}` : "Input asset parameters."}
-                  </p>
+                  <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Branch deployed</span>
+                  <span className="text-sm font-semibold text-slate-800 flex items-center gap-1 truncate">
+                    <Building className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                    <span className="truncate">{selectedAsset.branches?.branch_name || "None"}</span>
+                  </span>
                 </div>
               </div>
+            </div>
 
-              {modalMode === 'view' ? (
-                /* View Mode */
-                <div className="space-y-6 flex-1">
-                  <div className="space-y-4 bg-muted/40 p-4 rounded-xl border border-slate-100">
-                    <h4 className="text-xs font-bold text-primary uppercase tracking-wider font-display">Client & Location Information</h4>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Customer</span>
-                        <span className="text-sm font-semibold text-slate-800">{selectedAsset.customers?.full_name || "Unknown"}</span>
-                      </div>
-                      <div>
-                        <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Branch deployed</span>
-                        <span className="text-sm font-semibold text-slate-800 flex items-center gap-1 truncate">
-                          <Building className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                          <span className="truncate">{selectedAsset.branches?.branch_name || "None"}</span>
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="space-y-4 bg-muted/40 p-4 rounded-xl border border-slate-100">
-                    <h4 className="text-xs font-bold text-primary uppercase tracking-wider font-display">Equipment Parameters</h4>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="col-span-2">
-                        <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Product Name</span>
-                        <span className="text-sm font-bold text-slate-800">{selectedAsset.product_name}</span>
-                      </div>
-                      <div>
-                        <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Category</span>
-                        <span className="text-xs font-semibold text-slate-700">{selectedAsset.category}</span>
-                      </div>
-                      <div>
-                        <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Device Status</span>
-                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider inline-block mt-0.5 ${selectedAsset.status === 'Active' ? 'bg-emerald-50 border border-emerald-200 text-emerald-600' :
-                            selectedAsset.status === 'Under Repair' ? 'bg-amber-50 border border-amber-200 text-amber-600' :
-                              'bg-slate-50 border border-slate-200 text-slate-600'
-                          }`}>
-                          {selectedAsset.status || 'Active'}
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Model Number</span>
-                        <span className="text-xs font-semibold text-slate-700">{selectedAsset.model_number || "N/A"}</span>
-                      </div>
-                      <div>
-                        <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Serial Number</span>
-                        <span className="text-xs font-semibold text-slate-700">{selectedAsset.serial_number || "N/A"}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="space-y-4 bg-muted/40 p-4 rounded-xl border border-slate-100">
-                    <h4 className="text-xs font-bold text-primary uppercase tracking-wider font-display font-semibold">Warranty Timeline</h4>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Purchase Date</span>
-                        <span className="text-xs font-semibold text-slate-700 flex items-center gap-1.5 mt-0.5">
-                          <Calendar className="w-3.5 h-3.5 text-slate-400" />
-                          {selectedAsset.purchase_date ? new Date(selectedAsset.purchase_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : "N/A"}
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Warranty Span</span>
-                        <span className="text-xs font-semibold text-slate-700">{selectedAsset.warranty_months} Months</span>
-                      </div>
-                      <div>
-                        <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Installation Date</span>
-                        <span className="text-xs font-semibold text-slate-700 flex items-center gap-1.5 mt-0.5">
-                          <Calendar className="w-3.5 h-3.5 text-slate-400" />
-                          {selectedAsset.installation_date ? new Date(selectedAsset.installation_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : "N/A"}
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Warranty Status</span>
-                        {(() => {
-                          const wInfo = getWarrantyInfo(selectedAsset.purchase_date, selectedAsset.warranty_months);
-                          return (
-                            <div className="flex items-center gap-1.5 mt-0.5">
-                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-wider flex items-center gap-1 ${wInfo.isExpired ? 'bg-rose-50 border-rose-200 text-rose-600' : 'bg-emerald-50 border-emerald-200 text-emerald-600'
-                                }`}>
-                                {wInfo.status}
-                              </span>
-                              <span className="text-[10px] text-slate-400 font-light">({wInfo.expiryDateStr})</span>
-                            </div>
-                          );
-                        })()}
-                      </div>
-                    </div>
-                  </div>
-
-                  {selectedAsset.notes && (
-                    <div className="space-y-2 bg-muted/40 p-4 rounded-xl border border-slate-100">
-                      <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Technical Notes</span>
-                      <p className="text-xs text-slate-600 leading-relaxed whitespace-pre-wrap max-h-24 overflow-y-auto">{selectedAsset.notes}</p>
-                    </div>
-                  )}
-
-                  <div className="flex items-center gap-3 pt-4 border-t border-slate-100">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="flex-1 rounded-xl h-11 font-bold text-sm"
-                      onClick={() => setSelectedAsset(null)}
-                    >
-                      Close Details
-                    </Button>
-                    {canModify && (
-                      <Button
-                        type="button"
-                        className="flex-1 gradient-primary text-primary-foreground shadow-glow rounded-xl h-11 font-bold text-sm"
-                        onClick={() => handleOpenModal(selectedAsset, "edit")}
-                      >
-                        <Edit className="w-4 h-4 mr-2" /> Edit Asset
-                      </Button>
-                    )}
-                  </div>
+            <div className="space-y-4 bg-muted/40 p-4 rounded-xl border border-slate-100">
+              <h4 className="text-xs font-bold text-primary uppercase tracking-wider font-display">Equipment Parameters</h4>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="sm:col-span-2">
+                  <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Product Name</span>
+                  <span className="text-sm font-bold text-slate-800">{selectedAsset.product_name}</span>
                 </div>
-              ) : (
-                /* Add / Edit Form Mode */
-                <form onSubmit={handleSaveAsset} className="space-y-4 flex flex-col flex-1 justify-between">
-                  <div className="space-y-4">
-                    {/* Searchable Customer Dropdown */}
-                    <div className="space-y-1.5 relative">
-                      <label className="text-xs font-semibold text-slate-600">Select Customer <span className="text-destructive">*</span></label>
-                      <Popover open={isCustomerPopoverOpen} onOpenChange={setIsCustomerPopoverOpen}>
-                        <PopoverTrigger asChild>
-                          <Button
-                            variant="outline"
-                            role="combobox"
-                            className="h-10 w-full justify-between font-normal disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
-                            disabled={loading}
-                          >
-                            {customerSearch ? (
-                              <span className="truncate font-medium">{customerSearch}</span>
-                            ) : (
-                              <span className="text-muted-foreground">Search customer by name, phone, or email...</span>
-                            )}
-                            <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                          </Button>
-                        </PopoverTrigger>
-                        <PopoverContent className="w-full p-0" align="start">
-                          <Command>
-                            <CommandInput placeholder="Search customer by name, phone, or email..." />
-                            <CommandList>
-                              <CommandEmpty>No customer found.</CommandEmpty>
-                              {customers?.map((c: any) => (
-                                <CommandItem
-                                  key={c.id}
-                                  value={`${c.full_name} ${c.phone || ''} ${c.email || ''}`}
-                                  onSelect={() => {
-                                    setCustomerId(c.id);
-                                    setCustomerSearch(c.full_name);
-                                    setIsCustomerPopoverOpen(false);
-                                  }}
-                                >
-                                  <div className="flex flex-col">
-                                    <span className="font-medium">{c.full_name}</span>
-                                    <span className="text-xs text-muted-foreground">{c.phone} {c.email ? `• ${c.email}` : ''}</span>
-                                  </div>
-                                </CommandItem>
-                              ))}
-                            </CommandList>
-                          </Command>
-                        </PopoverContent>
-                      </Popover>
-                     </div>
+                <div>
+                  <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Category</span>
+                  <span className="text-xs font-semibold text-slate-700">{selectedAsset.category}</span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Device Status</span>
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider inline-block mt-0.5 ${selectedAsset.status === 'Active' ? 'bg-emerald-50 border border-emerald-200 text-emerald-600' :
+                      selectedAsset.status === 'Under Repair' ? 'bg-amber-50 border border-amber-200 text-amber-600' :
+                        'bg-slate-50 border border-slate-200 text-slate-600'
+                    }`}>
+                    {selectedAsset.status || 'Active'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Model Number</span>
+                  <span className="text-xs font-semibold text-slate-700">{selectedAsset.model_number || "N/A"}</span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Serial Number</span>
+                  <span className="text-xs font-semibold text-slate-700">{selectedAsset.serial_number || "N/A"}</span>
+                </div>
+              </div>
+            </div>
 
-                     {/* Installation Location Dropdown */}
-                     {customerId && (
-                       <div className="space-y-1.5">
-                         <label className="text-xs font-semibold text-slate-600">Installation Location</label>
-                         {isLocationsLoading ? (
-                           <div className="flex items-center gap-2 text-muted-foreground">
-                             <Loader2 className="w-4 h-4 animate-spin" /> Loading locations...
-                           </div>
-                         ) : customerLocations.length === 0 ? (
-                           <p className="text-xs text-muted-foreground">No locations found for this customer.</p>
-                         ) : (
-                           <Select
-                             value={selectedLocationId}
-                             onValueChange={(v) => {
-                               setSelectedLocationId(v);
-                             }}
-                             disabled={loading}
-                           >
-                             <SelectTrigger className="w-full h-10 rounded-lg border-slate-200 bg-white">
-                               <SelectValue placeholder="Select installation location" />
-                             </SelectTrigger>
-                             <SelectContent>
-                               {customerLocations.map((loc: any) => (
-                                 <SelectItem key={loc.id} value={loc.id}>
-                                   <div className="flex flex-col text-left py-0.5">
-                                     <span className="font-medium">{loc.location_name}</span>
-                                     <span className="text-[10px] text-muted-foreground">
-                                       {[loc.address, loc.city, loc.state, loc.pincode].filter(Boolean).join(", ")}
-                                       {loc.is_primary && " • Primary"}
-                                     </span>
-                                   </div>
-                                 </SelectItem>
-                               ))}
-                             </SelectContent>
-                           </Select>
-                         )}
-                       </div>
-                     )}
-
-                     {/* Searchable Branch Dropdown */}
-                    <div className="space-y-1.5 relative">
-                      <label className="text-xs font-semibold text-slate-600">Deployment Branch Location</label>
-                      <div className="relative">
-                        <Input
-                          value={branchSearch}
-                          onChange={(e) => {
-                            setBranchSearch(e.target.value);
-                            setBranchDropdownOpen(true);
-                          }}
-                          onFocus={() => setBranchDropdownOpen(true)}
-                          placeholder="Type branch name to filter..."
-                          disabled={loading}
-                          className="rounded-lg border-slate-200 h-10 pr-10"
-                        />
-                        <ChevronDown className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2 cursor-pointer" onClick={() => setBranchDropdownOpen(!branchDropdownOpen)} />
+            <div className="space-y-4 bg-muted/40 p-4 rounded-xl border border-slate-100">
+              <h4 className="text-xs font-bold text-primary uppercase tracking-wider font-display font-semibold">Warranty Timeline</h4>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Purchase Date</span>
+                  <span className="text-xs font-semibold text-slate-700 flex items-center gap-1.5 mt-0.5">
+                    <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                    {selectedAsset.purchase_date ? new Date(selectedAsset.purchase_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : "N/A"}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Warranty Span</span>
+                  <span className="text-xs font-semibold text-slate-700">{selectedAsset.warranty_months} Months</span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Installation Date</span>
+                  <span className="text-xs font-semibold text-slate-700 flex items-center gap-1.5 mt-0.5">
+                    <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                    {selectedAsset.installation_date ? new Date(selectedAsset.installation_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : "N/A"}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Warranty Status</span>
+                  {(() => {
+                    const wInfo = getWarrantyInfo(selectedAsset.purchase_date, selectedAsset.warranty_months);
+                    return (
+                      <div className="flex items-center gap-1.5 mt-0.5">
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-wider flex items-center gap-1 ${wInfo.isExpired ? 'bg-rose-50 border-rose-200 text-rose-600' : 'bg-emerald-50 border-emerald-200 text-emerald-600'
+                          }`}>
+                          {wInfo.status}
+                        </span>
+                        <span className="text-[10px] text-slate-400 font-light">({wInfo.expiryDateStr})</span>
                       </div>
+                    );
+                  })()}
+                </div>
+              </div>
+            </div>
 
-                      {branchDropdownOpen && (
-                        <div className="absolute left-0 right-0 z-50 mt-1 max-h-40 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-lg divide-y divide-slate-100">
-                          <button
-                            type="button"
-                            className="w-full text-left px-4 py-2 text-xs hover:bg-slate-50 text-rose-500 font-semibold"
-                            onClick={() => {
-                              setBranchId("");
-                              setBranchSearch("");
-                              setBranchDropdownOpen(false);
+            {selectedAsset.notes && (
+              <div className="space-y-2 bg-muted/40 p-4 rounded-xl border border-slate-100">
+                <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider block">Technical Notes</span>
+                <p className="text-xs text-slate-600 leading-relaxed whitespace-pre-wrap max-h-24 overflow-y-auto">{selectedAsset.notes}</p>
+              </div>
+            )}
+          </div>
+        ) : (
+          <form id="asset-save-form" onSubmit={handleSaveAsset} className="grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-8">
+            <div className="space-y-4">
+              <h4 className="text-xs font-bold text-primary uppercase tracking-wider">Client &amp; Deployment</h4>
+              <div className="space-y-1.5 relative">
+                <label className="text-xs font-semibold text-slate-600">Select Customer <span className="text-destructive">*</span></label>
+                <Popover open={isCustomerPopoverOpen} onOpenChange={setIsCustomerPopoverOpen}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      role="combobox"
+                      className="h-10 w-full justify-between font-normal disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
+                      disabled={loading}
+                    >
+                      {customerSearch ? (
+                        <span className="truncate font-medium">{customerSearch}</span>
+                      ) : (
+                        <span className="text-muted-foreground">Search customer by name, phone, or email...</span>
+                      )}
+                      <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-full p-0" align="start">
+                    <Command>
+                      <CommandInput placeholder="Search customer by name, phone, or email..." />
+                      <CommandList>
+                        <CommandEmpty>No customer found.</CommandEmpty>
+                        {customers?.map((c: any) => (
+                          <CommandItem
+                            key={c.id}
+                            value={`${c.full_name} ${c.phone || ''} ${c.email || ''}`}
+                            onSelect={() => {
+                              setCustomerId(c.id);
+                              setCustomerSearch(c.full_name);
+                              setIsCustomerPopoverOpen(false);
                             }}
                           >
-                            -- Clear / No Branch --
-                          </button>
-                          {filteredFormBranches.length === 0 ? (
-                            <div className="p-3 text-xs text-muted-foreground text-center">No branches match filter</div>
-                          ) : (
-                            filteredFormBranches.map((b: any) => (
-                              <button
-                                type="button"
-                                key={b.id}
-                                className="w-full text-left px-4 py-2 text-xs hover:bg-slate-50 transition-colors font-medium text-slate-700"
-                                onClick={() => {
-                                  setBranchId(b.id);
-                                  setBranchSearch(b.branch_name);
-                                  setBranchDropdownOpen(false);
-                                }}
-                              >
-                                {b.branch_name}
-                              </button>
-                            ))
-                          )}
-                        </div>
-                      )}
+                            <div className="flex flex-col">
+                              <span className="font-medium">{c.full_name}</span>
+                              <span className="text-xs text-muted-foreground">{c.phone} {c.email ? `• ${c.email}` : ''}</span>
+                            </div>
+                          </CommandItem>
+                        ))}
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
+              </div>
+
+              {customerId && (
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-600">Installation Location</label>
+                  {isLocationsLoading ? (
+                    <div className="flex items-center gap-2 text-muted-foreground">
+                      <Loader2 className="w-4 h-4 animate-spin" /> Loading locations...
                     </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div className="space-y-1.5">
-                        <label className="text-xs font-semibold text-slate-600">Product Name <span className="text-destructive">*</span></label>
-                        <Input
-                          value={productName}
-                          onChange={(e) => setProductName(e.target.value)}
-                          placeholder="e.g. 5kW Solar Inverter"
-                          maxLength={100}
-                          disabled={loading}
-                          required
-                          className="w-full rounded-lg border-slate-200 h-10"
-                        />
-                      </div>
-
-                      <div className="space-y-1.5">
-                        <label className="text-xs font-semibold text-slate-600">Brand</label>
-                        <Input
-                          value={brand}
-                          onChange={(e) => setBrand(e.target.value)}
-                          placeholder="e.g. Luminous, Hikvision, Exide"
-                          maxLength={50}
-                          disabled={loading}
-                          className="w-full rounded-lg border-slate-200 h-10"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div className="space-y-1.5">
-                        <label className="text-xs font-semibold text-slate-600">Category</label>
-                        <Select value={category} onValueChange={setCategory} disabled={loading}>
-                          <SelectTrigger className="w-full h-10 rounded-lg border-slate-200 bg-white">
-                            <SelectValue placeholder="Category" />
-                          </SelectTrigger>
-                           <SelectContent>
-                             <SelectItem value="Solar PV">Solar PV</SelectItem>
-                             <SelectItem value="CCTV & Video Surveillance">CCTV & Video Surveillance</SelectItem>
-                             <SelectItem value="Access Control & Biometrics">Access Control & Biometrics</SelectItem>
-                             <SelectItem value="Networking">Networking</SelectItem>
-                             <SelectItem value="Fire & Life Safety">Fire & Life Safety</SelectItem>
-                             <SelectItem value="Power Systems">Power Systems</SelectItem>
-                             <SelectItem value="UPS & Battery">UPS & Battery</SelectItem>
-                             <SelectItem value="Others">Others</SelectItem>
-                           </SelectContent>
-                        </Select>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div className="space-y-1.5">
-                        <label className="text-xs font-semibold text-slate-600">Model Number</label>
-                        <Input
-                          value={modelNumber}
-                          onChange={(e) => setModelNumber(e.target.value)}
-                          placeholder="e.g. SP-400-X"
-                          maxLength={50}
-                          disabled={loading}
-                          className="w-full rounded-lg border-slate-200 h-10"
-                        />
-                      </div>
-
-                      <div className="space-y-1.5">
-                        <label className="text-xs font-semibold text-slate-600">Serial Number</label>
-                        <Input
-                          value={serialNumber}
-                          onChange={(e) => setSerialNumber(e.target.value)}
-                          placeholder="e.g. SN1234567890"
-                          maxLength={50}
-                          disabled={loading}
-                          className="w-full rounded-lg border-slate-200 h-10"
-                        />
-                      </div>
-                    </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                        <div className="space-y-1.5">
-                          <label className="text-xs font-semibold text-slate-600">Purchase Date <span className="text-destructive">*</span></label>
-                          <DatePicker
-                            selected={purchaseDate ? new Date(`${purchaseDate}T00:00:00`) : null}
-                            onChange={(date) => setPurchaseDate(date ? dateToInput(date) : "")}
-                            dateFormat="dd/MM/yyyy"
-                            placeholderText="dd/mm/yyyy"
-                            showMonthDropdown
-                            showYearDropdown
-                            disabled={loading}
-                            customInput={<CustomDateInput placeholder="dd/mm/yyyy" />}
-                            calendarClassName="shadow-lg border border-slate-200 rounded-xl overflow-hidden"
-                          />
-                          <input type="hidden" value={purchaseDate} required readOnly />
-                        </div>
-
-                        <div className="space-y-1.5">
-                          <label className="text-xs font-semibold text-slate-600">Warranty</label>
-                          <Select value={[0, 6, 12, 24, 36].includes(warrantyMonths) ? String(warrantyMonths) : "custom"} onValueChange={(val) => {
-                            if (val === "custom") {
-                              setCustomWarrantyMonths("");
-                              setWarrantyMonths(0);
-                            } else {
-                              setWarrantyMonths(Number(val));
-                              setCustomWarrantyMonths("");
-                            }
-                          }} disabled={loading}>
-                            <SelectTrigger className="w-full h-10 rounded-lg border-slate-200 bg-white">
-                              <SelectValue placeholder="Select warranty" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="0">No Warranty</SelectItem>
-                              <SelectItem value="6">6 Months Warranty</SelectItem>
-                              <SelectItem value="12">1 Year Warranty</SelectItem>
-                              <SelectItem value="24">2 Years Warranty</SelectItem>
-                              <SelectItem value="36">3 Years Warranty</SelectItem>
-                              <SelectItem value="custom">Custom (Enter Months)</SelectItem>
-                            </SelectContent>
-                          </Select>
-                          {![0, 6, 12, 24, 36].includes(warrantyMonths) || (warrantyMonths === 0 && customWarrantyMonths === "") ? (
-                            <Input
-                              type="number"
-                              value={customWarrantyMonths}
-                              onChange={(e) => {
-                                const val = Number(e.target.value);
-                                setCustomWarrantyMonths(e.target.value);
-                                if (val > 0) setWarrantyMonths(val);
-                              }}
-                              placeholder="Enter custom months"
-                              min={1}
-                              disabled={loading}
-                              className="w-full rounded-lg border-slate-200 h-10"
-                            />
-                          ) : null}
-                        </div>
-
-                        <div className="space-y-1.5">
-                          <label className="text-xs font-semibold text-slate-600">Installation Date</label>
-                          <DatePicker
-                            selected={installationDate ? new Date(`${installationDate}T00:00:00`) : null}
-                            onChange={(date) => setInstallationDate(date ? dateToInput(date) : "")}
-                            dateFormat="dd/MM/yyyy"
-                            placeholderText="dd/mm/yyyy"
-                            showMonthDropdown
-                            showYearDropdown
-                            disabled={loading}
-                            customInput={<CustomDateInput placeholder="dd/mm/yyyy" />}
-                            calendarClassName="shadow-lg border border-slate-200 rounded-xl overflow-hidden"
-                          />
-                        </div>
-                      </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div className="space-y-1.5">
-                        <label className="text-xs font-semibold text-slate-600">Status</label>
-                        <Select value={status} onValueChange={setStatus} disabled={loading}>
-                          <SelectTrigger className="w-full h-10 rounded-lg border-slate-200 bg-white">
-                            <SelectValue placeholder="Status" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="Active">Active</SelectItem>
-                            <SelectItem value="Under Repair">Under Repair</SelectItem>
-                            <SelectItem value="Inactive">Inactive</SelectItem>
-                            <SelectItem value="Scrapped">Scrapped</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <label className="text-xs font-semibold text-slate-600">Additional Notes</label>
-                      <textarea
-                        value={notes}
-                        onChange={(e) => setNotes(e.target.value)}
-                        placeholder="Technical comments, repair history, warranty terms..."
-                        disabled={loading}
-                        rows={2}
-                        className="w-full p-3 border border-slate-200 rounded-lg text-sm bg-transparent focus:ring-2 focus:ring-primary focus:border-transparent outline-none resize-none transition-all"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-3 pt-6 border-t border-slate-100 mt-6">
-                    {modalMode === "add" && assetDraft.hasDraft() && (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => {
-                          assetDraft.clear();
-                          setCustomerId("");
-                          setBranchId("");
-                          setCategory("Solar PV");
-                          setProductName("");
-                          setModelNumber("");
-                          setSerialNumber("");
-                          setPurchaseDate(new Date().toISOString().split('T')[0]);
-                          setWarrantyMonths(6);
-                          setInstallationDate("");
-                          setStatus("Active");
-                          setNotes("");
-                          toast.success("Draft cleared");
-                        }}
-                        className="text-xs text-slate-500 hover:text-destructive"
-                      >
-                        Clear Draft
-                      </Button>
-                    )}
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="flex-1 rounded-xl h-11 font-bold text-sm"
-                      onClick={() => setSelectedAsset(null)}
+                  ) : customerLocations.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No locations found for this customer.</p>
+                  ) : (
+                    <Select
+                      value={selectedLocationId}
+                      onValueChange={(v) => {
+                        setSelectedLocationId(v);
+                      }}
                       disabled={loading}
                     >
-                      Cancel
-                    </Button>
-                    <Button
-                      type="submit"
-                      className="flex-1 gradient-primary text-primary-foreground shadow-glow rounded-xl h-11 font-bold text-sm"
-                      disabled={loading}
-                    >
-                      {loading ? (
-                        <>
-                          <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Saving...
-                        </>
-                      ) : (
-                        "Save Asset"
-                      )}
-                    </Button>
-                  </div>
-                </form>
+                      <SelectTrigger className="w-full h-10 rounded-lg border-slate-200 bg-white">
+                        <SelectValue placeholder="Select installation location" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {customerLocations.map((loc: any) => (
+                          <SelectItem key={loc.id} value={loc.id}>
+                            <div className="flex flex-col text-left py-0.5">
+                              <span className="font-medium">{loc.location_name}</span>
+                              <span className="text-[10px] text-muted-foreground">
+                                {[loc.address, loc.city, loc.state, loc.pincode].filter(Boolean).join(", ")}
+                                {loc.is_primary && " • Primary"}
+                              </span>
+                            </div>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                </div>
               )}
-            </motion.div>
-          </div>
+
+              <div className="space-y-1.5 relative">
+                <label className="text-xs font-semibold text-slate-600">Deployment Branch Location</label>
+                <div className="relative">
+                  <Input
+                    value={branchSearch}
+                    onChange={(e) => {
+                      setBranchSearch(e.target.value);
+                      setBranchDropdownOpen(true);
+                    }}
+                    onFocus={() => setBranchDropdownOpen(true)}
+                    placeholder="Type branch name to filter..."
+                    disabled={loading}
+                    className="rounded-lg border-slate-200 h-10 pr-10"
+                  />
+                  <ChevronDown className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2 cursor-pointer" onClick={() => setBranchDropdownOpen(!branchDropdownOpen)} />
+                </div>
+
+                {branchDropdownOpen && (
+                  <div className="absolute left-0 right-0 z-50 mt-1 max-h-40 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-lg divide-y divide-slate-100">
+                    <button
+                      type="button"
+                      className="w-full text-left px-4 py-2 text-xs hover:bg-slate-50 text-rose-500 font-semibold"
+                      onClick={() => {
+                        setBranchId("");
+                        setBranchSearch("");
+                        setBranchDropdownOpen(false);
+                      }}
+                    >
+                      -- Clear / No Branch --
+                    </button>
+                    {filteredFormBranches.length === 0 ? (
+                      <div className="p-3 text-xs text-muted-foreground text-center">No branches match filter</div>
+                    ) : (
+                      filteredFormBranches.map((b: any) => (
+                        <button
+                          type="button"
+                          key={b.id}
+                          className="w-full text-left px-4 py-2 text-xs hover:bg-slate-50 transition-colors font-medium text-slate-700"
+                          onClick={() => {
+                            setBranchId(b.id);
+                            setBranchSearch(b.branch_name);
+                            setBranchDropdownOpen(false);
+                          }}
+                        >
+                          {b.branch_name}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-600">Status <span className="text-destructive">*</span></label>
+                <Select value={status} onValueChange={setStatus} disabled={loading}>
+                  <SelectTrigger className="w-full h-10 rounded-lg border-slate-200 bg-white">
+                    <SelectValue placeholder="Select Status" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Active">Active</SelectItem>
+                    <SelectItem value="Inactive">Inactive</SelectItem>
+                    <SelectItem value="Under Maintenance">Under Maintenance</SelectItem>
+                    <SelectItem value="Decommissioned">Decommissioned</SelectItem>
+                    <SelectItem value="In Stock">In Stock</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-600">Additional Notes</label>
+                <textarea
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  placeholder="Technical comments, repair history, warranty terms..."
+                  disabled={loading}
+                  rows={4}
+                  className="w-full p-3 border border-slate-200 rounded-lg text-sm bg-transparent focus:ring-2 focus:ring-primary focus:border-transparent outline-none resize-none transition-all"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <h4 className="text-xs font-bold text-primary uppercase tracking-wider">Equipment Details</h4>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-1.5 sm:col-span-2">
+                  <label className="text-xs font-semibold text-slate-600">Product Name <span className="text-destructive">*</span></label>
+                  <Input
+                    value={productName}
+                    onChange={(e) => setProductName(e.target.value)}
+                    placeholder="e.g. 5kW Solar Inverter"
+                    maxLength={100}
+                    disabled={loading}
+                    required
+                    className="w-full rounded-lg border-slate-200 h-10"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-600">Brand</label>
+                  <Input
+                    value={brand}
+                    onChange={(e) => setBrand(e.target.value)}
+                    placeholder="e.g. Luminous, Hikvision, Exide"
+                    maxLength={50}
+                    disabled={loading}
+                    className="w-full rounded-lg border-slate-200 h-10"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-600">Category <span className="text-destructive">*</span></label>
+                  <Select value={category} onValueChange={setCategory} disabled={loading}>
+                    <SelectTrigger className="w-full h-10 rounded-lg border-slate-200 bg-white">
+                       <SelectValue placeholder="Select the category" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="Solar PV & Inverters">Solar PV & Inverters</SelectItem>
+                      <SelectItem value="CCTV & Video Surveillance">CCTV & Video Surveillance</SelectItem>
+                      <SelectItem value="Networking & IT Infrastructure">Networking & IT Infrastructure</SelectItem>
+                      <SelectItem value="HVAC & Cooling">HVAC & Cooling</SelectItem>
+                      <SelectItem value="Security Systems">Security Systems</SelectItem>
+                      <SelectItem value="Access Control">Access Control</SelectItem>
+                      <SelectItem value="Fire Safety Systems">Fire Safety Systems</SelectItem>
+                      <SelectItem value="Biometric Systems">Biometric Systems</SelectItem>
+                      <SelectItem value="Other">Other</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-600">Model Number</label>
+                  <Input
+                    value={modelNumber}
+                    onChange={(e) => setModelNumber(e.target.value)}
+                    placeholder="e.g. SP-400-X"
+                    maxLength={50}
+                    disabled={loading}
+                    className="w-full rounded-lg border-slate-200 h-10"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-600">Serial Number</label>
+                  <Input
+                    value={serialNumber}
+                    onChange={(e) => setSerialNumber(e.target.value)}
+                    placeholder="e.g. SN1234567890"
+                    maxLength={50}
+                    disabled={loading}
+                    className="w-full rounded-lg border-slate-200 h-10"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-600">Purchase Date <span className="text-destructive">*</span></label>
+                  <DatePicker
+                    selected={purchaseDate ? new Date(`${purchaseDate}T00:00:00`) : null}
+                    onChange={(date) => setPurchaseDate(date ? dateToInput(date) : "")}
+                    dateFormat="dd/MM/yyyy"
+                    placeholderText="dd/mm/yyyy"
+                    showMonthDropdown
+                    showYearDropdown
+                    disabled={loading}
+                    customInput={<CustomDateInput placeholder="dd/mm/yyyy" />}
+                    calendarClassName="shadow-lg border border-slate-200 rounded-xl overflow-hidden"
+                  />
+                  <input type="hidden" value={purchaseDate} required readOnly />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-600">Installation Date</label>
+                  <DatePicker
+                    selected={installationDate ? new Date(`${installationDate}T00:00:00`) : null}
+                    onChange={(date) => setInstallationDate(date ? dateToInput(date) : "")}
+                    dateFormat="dd/MM/yyyy"
+                    placeholderText="dd/mm/yyyy"
+                    showMonthDropdown
+                    showYearDropdown
+                    disabled={loading}
+                    customInput={<CustomDateInput placeholder="dd/mm/yyyy" />}
+                    calendarClassName="shadow-lg border border-slate-200 rounded-xl overflow-hidden"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-600">Warranty Type <span className="text-destructive">*</span></label>
+                  <Select value={warrantyType} onValueChange={setWarrantyType} disabled={loading}>
+                    <SelectTrigger className="w-full h-10 rounded-lg border-slate-200 bg-white">
+                      <SelectValue placeholder="Select Warranty Type" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="Manufacturer Warranty">Manufacturer Warranty</SelectItem>
+                      <SelectItem value="Extended Warranty">Extended Warranty</SelectItem>
+                      <SelectItem value="AMC Warranty">AMC Warranty</SelectItem>
+                      <SelectItem value="No Warranty">No Warranty</SelectItem>
+                      <SelectItem value="On-site Warranty">On-site Warranty</SelectItem>
+                      <SelectItem value="Carry-in Warranty">Carry-in Warranty</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-600">Warranty</label>
+                  <Select value={[0, 6, 12, 24, 36].includes(warrantyMonths) ? String(warrantyMonths) : "custom"} onValueChange={(val) => {
+                    if (val === "custom") {
+                      setCustomWarrantyMonths("");
+                      setWarrantyMonths(0);
+                    } else {
+                      setWarrantyMonths(Number(val));
+                      setCustomWarrantyMonths("");
+                    }
+                  }} disabled={loading}>
+                    <SelectTrigger className="w-full h-10 rounded-lg border-slate-200 bg-white">
+                      <SelectValue placeholder="Select warranty" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="0">No Warranty</SelectItem>
+                      <SelectItem value="6">6 Months Warranty</SelectItem>
+                      <SelectItem value="12">1 Year Warranty</SelectItem>
+                      <SelectItem value="24">2 Years Warranty</SelectItem>
+                      <SelectItem value="36">3 Years Warranty</SelectItem>
+                      <SelectItem value="custom">Custom (Enter Months)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {![0, 6, 12, 24, 36].includes(warrantyMonths) || (warrantyMonths === 0 && customWarrantyMonths === "") ? (
+                    <Input
+                      type="number"
+                      value={customWarrantyMonths}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        setCustomWarrantyMonths(e.target.value);
+                        if (val > 0) setWarrantyMonths(val);
+                      }}
+                      placeholder="Enter custom months"
+                      min={1}
+                      disabled={loading}
+                      className="w-full rounded-lg border-slate-200 h-10"
+                    />
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          </form>
         )}
-      </AnimatePresence>
+      </OffCanvasPanel>
 
       <AssetImportModal
         open={isAssetImportOpen}

@@ -674,6 +674,74 @@ export const installationService = {
     }
   },
 
+  // Reassign Technicians (with mandatory reason)
+  reassignTechnicians: async (
+    installationId: string,
+    technicianInput: Array<string | { technician_id: string; is_lead?: boolean }>,
+    reason: string
+  ): Promise<void> => {
+    if (!reason.trim() || reason.trim().length < 10) {
+      throw new Error("Reassignment reason must be at least 10 characters");
+    }
+
+    const techObjs = technicianInput.map((t, idx) => {
+      if (typeof t === "string") return { technician_id: t, is_lead: idx === 0 };
+      return { technician_id: t.technician_id, is_lead: Boolean(t.is_lead) };
+    });
+
+    const leadTech = techObjs.find((t) => t.is_lead) || techObjs[0];
+    const leadTechId = leadTech ? leadTech.technician_id : null;
+
+    const updates: any = {
+      reassignment_reason: reason.trim(),
+      lead_technician_id: leadTechId,
+      status: "Assigned",
+      current_phase: 2,
+      happiness_code: null,
+      happiness_code_sent_at: null,
+      happiness_code_verified: false,
+      updated_at: new Date().toISOString(),
+    };
+
+    try {
+      const { error: updateError } = await supabase.from("installations").update(updates).eq("id", installationId);
+      if (updateError) throw updateError;
+    } catch (err: any) {
+      if (err?.message?.includes("column") || err?.code === "42703" || err?.code === "PGRST204") {
+        const stripped = { ...updates };
+        delete stripped.reassignment_reason;
+        delete stripped.happiness_code;
+        delete stripped.happiness_code_sent_at;
+        delete stripped.happiness_code_verified;
+        const { error: retryErr } = await supabase.from("installations").update(stripped).eq("id", installationId);
+        if (retryErr) throw retryErr;
+      } else {
+        throw err;
+      }
+    }
+
+    try {
+      await supabase.from("installation_technicians").delete().eq("installation_id", installationId);
+      if (techObjs.length > 0) {
+        const rows = techObjs.map((t) => ({
+          installation_id: installationId,
+          technician_id: t.technician_id,
+          is_lead: t.is_lead,
+        }));
+        const { error: insErr } = await supabase.from("installation_technicians").insert(rows);
+        if (insErr) {
+          const fallbackRows = techObjs.map((t) => ({
+            installation_id: installationId,
+            technician_id: t.technician_id,
+          }));
+          await supabase.from("installation_technicians").insert(fallbackRows);
+        }
+      }
+    } catch (juncErr) {
+      console.warn("Could not sync installation_technicians on reassign:", juncErr);
+    }
+  },
+
   // Delete an installation
   delete: async (id: string): Promise<void> => {
     // Delete junction records first

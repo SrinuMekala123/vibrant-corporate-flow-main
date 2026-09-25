@@ -1,4 +1,4 @@
-full_name,email,phone,customer_type,branch,password,location_name,location_address,location_city,location_state,location_pincode,location_contact_person,location_contact_phone
-John Doe,john@test.com,9876543210,Retail,Hyderabad,Welcome@123!,Head Office,"123 Main St, Hyderabad","Hyderabad","Telangana",500081,Ravi Kumar,9876543210
-Jane Smith,jane2@test.com,9876543211,Corporate,Patna,,"Branch Office","456 Park Rd, Patna","Patna","Bihar",800001,Sita Devi,9876543211
-Bob Johnson,bob@test.com,9876543212,Retail,Hyderabad,MyCustomPass99!,,,,,,,
+full_name,email,phone,customer_type,address
+John Doe,john@test.com,9876543210,BTL Corporate,"123 Main St, Hyderabad"
+Jane Smith,jane@test.com,9876543211,AMC Client,"456 Park Rd, Patna"
+Bob Johnson,bob@test.com,9876543212,Retail,

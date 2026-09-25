@@ -454,7 +454,7 @@ const ComplaintEdit = () => {
     }
 
     const phase = existingComplaint?.current_phase || 1;
-    if (form.assignedTechnician) return "dispatched";
+    if (form.assignedTechnician || selectedTechnicianId || (selectedTechnicianIds && selectedTechnicianIds.length > 0)) return "dispatched";
     if (form.assignedSupervisor || selectedSupervisorId) return "assigned";
     if (phase >= 6) return "closed";
     if (phase >= 5) return "completed";
@@ -1109,6 +1109,11 @@ const ComplaintEdit = () => {
         toast.error("Please enter the customer contact phone number");
         return;
       }
+      const phoneDigits = form.customerPhone.replace(/\D/g, "");
+      if (!/^[6-9]\d{9}$/.test(phoneDigits)) {
+        toast.error("Please enter a valid 10-digit Indian mobile number (e.g., +91 9876543210)");
+        return;
+      }
       if (!form.location || form.location.trim() === "") {
         toast.error("Please provide the service site address / location");
         return;
@@ -1248,40 +1253,63 @@ const ComplaintEdit = () => {
                 form.customerName = matchedCustomer.full_name;
               }
             } else {
-              // Create in customers table so they become an Existing Customer for next time
-              const { data: newCust, error: newCustErr } = await supabase
-                .from("customers")
-                .insert([{
-                  full_name: form.customerName || "Walk-in Customer",
-                  phone: form.customerPhone || null,
-                  email: form.customerEmail || null,
-                  address: form.location || null,
-                  customer_type: "Walk-in",
-                  branch: "Default Branch"
-                }])
-                .select("id")
-                .maybeSingle();
+              let newProfileId: string | null = null;
 
-              if (!newCustErr && newCust?.id) {
-                linkedCustomerId = newCust.id;
+              if (form.customerEmail && /^\S+@\S+\.\S+$/.test(form.customerEmail)) {
+                try {
+                  const { data: edgeData, error: edgeError } = await supabase.functions.invoke("create-customer-user", {
+                    body: {
+                      email: form.customerEmail.trim().toLowerCase(),
+                      full_name: form.customerName || "Walk-in Customer",
+                      phone: form.customerPhone,
+                      role: "customer"
+                    }
+                  });
+
+                  if (!edgeError) {
+                    newProfileId = edgeData?.user?.id || edgeData?.userId || null;
+                  }
+                } catch (edgeErr) {
+                  console.warn("Edge function customer creation failed:", edgeErr);
+                }
               }
 
-              // Non-blocking background account creation if valid email is provided
-              if (form.customerEmail && /^\S+@\S+\.\S+$/.test(form.customerEmail)) {
-                void (async () => {
-                  try {
-                    await supabase.functions.invoke("create-customer-user", {
-                      body: {
-                        email: form.customerEmail.trim().toLowerCase(),
-                        full_name: form.customerName || "Walk-in Customer",
-                        phone: form.customerPhone,
-                        role: "customer"
-                      }
-                    });
-                  } catch (authErr) {
-                    console.warn("Background customer user creation:", authErr);
-                  }
-                })();
+              if (newProfileId) {
+                linkedCustomerId = newProfileId;
+              } else {
+                const { data: newCust, error: newCustErr } = await supabase
+                  .from("customers")
+                  .insert([{
+                    full_name: form.customerName || "Walk-in Customer",
+                    phone: form.customerPhone || null,
+                    email: form.customerEmail || null,
+                    address: form.location || null,
+                    customer_type: "Walk-in",
+                    branch: "Default Branch"
+                  }])
+                  .select("id")
+                  .maybeSingle();
+
+                if (!newCustErr && newCust?.id) {
+                  linkedCustomerId = newCust.id;
+                }
+
+                if (form.customerEmail && /^\S+@\S+\.\S+$/.test(form.customerEmail) && !newProfileId) {
+                  void (async () => {
+                    try {
+                      await supabase.functions.invoke("create-customer-user", {
+                        body: {
+                          email: form.customerEmail.trim().toLowerCase(),
+                          full_name: form.customerName || "Walk-in Customer",
+                          phone: form.customerPhone,
+                          role: "customer"
+                        }
+                      });
+                    } catch (authErr) {
+                      console.warn("Background customer user creation:", authErr);
+                    }
+                  })();
+                }
               }
             }
           } catch (custErr) {
@@ -1599,7 +1627,7 @@ const ComplaintEdit = () => {
               onChange={(e) => setForm(prev => ({ ...prev, title: e.target.value }))} 
               placeholder="Brief description of the problem..." 
               required 
-              disabled={isSaving || !isNew} 
+              disabled={isSaving || (!isNew && !isAdminOrSupervisor)} 
               maxLength={250} 
               className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
             />
@@ -1618,7 +1646,7 @@ const ComplaintEdit = () => {
                   onChange={(e) => setForm(prev => ({ ...prev, customerPhone: e.target.value }))} 
                   placeholder="+91 9876543210" 
                   required 
-                  disabled={isSaving || !isNew} 
+                  disabled={isSaving || (!isNew && !isAdminOrSupervisor)} 
                   className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
                 />
               </div>
@@ -1641,7 +1669,7 @@ const ComplaintEdit = () => {
                         setCustomerType("Existing BTL Customer");
                         setForm(prev => ({ ...prev, customerId: "", customerName: "", customerPhone: "", customerEmail: "", coverage: "Under Warranty", chargeableService: "No" }));
                       }}
-                      disabled={isSaving || !isNew}
+                      disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
                       className="text-primary focus:ring-primary h-4 w-4"
                     />
                     <span className="text-slate-800 font-bold">🔘 Registered BTL Customer</span>
@@ -1667,7 +1695,7 @@ const ComplaintEdit = () => {
                           chargeableService: "Yes"
                         }));
                       }}
-                      disabled={isSaving || !isNew}
+                      disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
                       className="text-amber-600 focus:ring-amber-500 h-4 w-4"
                     />
                     <span className="text-amber-900 font-bold">🔘 Direct Call / Walk-in / Non-BTL</span>
@@ -1694,7 +1722,7 @@ const ComplaintEdit = () => {
                               variant="outline"
                               role="combobox"
                               className="h-10 w-full justify-between font-normal disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
-                              disabled={isSaving || !customers || !isNew}
+                               disabled={isSaving || !customers || (!isNew && !isAdminOrSupervisor)}
                             >
                               {form.customerName ? (
                                 <span className="truncate font-medium">{form.customerName}</span>
@@ -1766,7 +1794,7 @@ const ComplaintEdit = () => {
                           value={form.customerPhone} 
                           onChange={(e) => setForm(prev => ({ ...prev, customerPhone: e.target.value }))} 
                           placeholder="+91 ..." 
-                          disabled={isSaving || !isNew} 
+                          disabled={isSaving || (!isNew && !isAdminOrSupervisor)} 
                           className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
                         />
                       </div>
@@ -1795,7 +1823,7 @@ const ComplaintEdit = () => {
                               location: loc ? [loc.address, loc.city, loc.state, loc.pincode].filter(Boolean).join(", ") : prev.location,
                             }));
                           }}
-                          disabled={isSaving || !isNew}
+                          disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
                         >
                           <SelectTrigger className="h-10">
                             <SelectValue placeholder="Select location" />
@@ -1872,7 +1900,7 @@ const ComplaintEdit = () => {
                       onChange={(e) => setForm(prev => ({ ...prev, customerName: e.target.value }))} 
                       placeholder="e.g. Ramesh Kumar / Direct Client" 
                       required 
-                      disabled={isSaving || !isNew} 
+                      disabled={isSaving || (!isNew && !isAdminOrSupervisor)} 
                       className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
                     />
                   </div>
@@ -1897,7 +1925,7 @@ const ComplaintEdit = () => {
                       onBlur={(e) => checkExistingCustomerPhone(e.target.value)}
                       placeholder="+91 9876543210" 
                       required 
-                      disabled={isSaving || !isNew} 
+                      disabled={isSaving || (!isNew && !isAdminOrSupervisor)} 
                       className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
                     />
                   </div>
@@ -1908,7 +1936,7 @@ const ComplaintEdit = () => {
                       value={form.customerEmail} 
                       onChange={(e) => setForm(prev => ({ ...prev, customerEmail: e.target.value }))} 
                       placeholder="client@example.com" 
-                      disabled={isSaving || !isNew} 
+                      disabled={isSaving || (!isNew && !isAdminOrSupervisor)} 
                       className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
                     />
                   </div>
@@ -1968,7 +1996,7 @@ const ComplaintEdit = () => {
                   }}
                   placeholder={isCustomer ? "Or enter address manually" : "Enter complete address"} 
                   required 
-                  disabled={isSaving || !isNew} 
+                  disabled={isSaving || (!isNew && !isAdminOrSupervisor)} 
                   className="w-full h-11 sm:h-9 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100" 
                 />
                 
@@ -2020,7 +2048,7 @@ const ComplaintEdit = () => {
               <Select
                 value={selectedAssetId}
                 onValueChange={handleAssetSelection}
-                disabled={isSaving || !isNew}
+                disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
               >
                 <SelectTrigger className="bg-white dark:bg-slate-900 border-blue-200 text-xs h-10">
                   <SelectValue placeholder="Click to select customer's asset (Brand, Category, Serial No)..." />
@@ -2148,7 +2176,7 @@ const ComplaintEdit = () => {
                 key={form.fieldOfWork || 'empty'}
                 value={form.fieldOfWork}
                 onValueChange={(v) => setForm(prev => ({ ...prev, fieldOfWork: v }))}
-                disabled={isSaving || isAssetsLoading || (isCustomer && availableCategories.length === 0) || !isNew}
+                 disabled={isSaving || isAssetsLoading || (isCustomer && availableCategories.length === 0) || (!isNew && !isAdminOrSupervisor)}
               >
                 <SelectTrigger className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100">
                   <SelectValue placeholder={isAssetsLoading ? "Loading..." : "Select field"} />
@@ -2167,14 +2195,15 @@ const ComplaintEdit = () => {
 
           <div className="space-y-2">
             <label className="text-sm font-medium">Severity Level <span className="text-destructive">*</span></label>
-            <Select value={form.severity} onValueChange={(v) => setForm(prev => ({ ...prev, severity: v as SeverityTier }))} disabled={isSaving || !isNew}>
+            <Select value={form.severity} onValueChange={(v) => setForm(prev => ({ ...prev, severity: v as SeverityTier }))} disabled={isSaving || (!isNew && !isAdminOrSupervisor)}>
               <SelectTrigger className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100">
-                <SelectValue />
+                <SelectValue placeholder="Select Severity" />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="minor">Minor - Low priority</SelectItem>
                 <SelectItem value="moderate">Moderate - Needs attention</SelectItem>
                 <SelectItem value="major">Major - Urgent</SelectItem>
+                <SelectItem value="critical">Critical - Emergency</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -2284,19 +2313,6 @@ const ComplaintEdit = () => {
                 }}
                 disabled={isSaving}
                 className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
-              />
-            </div>
-          )}
-
-          {!isNew && isAdminOrSupervisor && (
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Target Time / SLA</label>
-              <Input 
-                type="datetime-local" 
-                value={form.targetEndTime} 
-                onChange={(e) => setForm(prev => ({ ...prev, targetEndTime: e.target.value }))} 
-                disabled={isSaving}
-                className="h-10"
               />
             </div>
           )}
@@ -2497,9 +2513,10 @@ const ComplaintEdit = () => {
               value={form.description} 
               onChange={(e) => setForm(prev => ({ ...prev, description: e.target.value }))} 
               rows={4} 
+              maxLength={2000}
               placeholder={isCustomer ? "Describe the issue in detail. What happened? When did it start?" : "Describe the issue..."} 
               required 
-              disabled={isSaving || !isNew} 
+              disabled={isSaving || (!isNew && !isAdminOrSupervisor)} 
               className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100" 
             />
           </div>
@@ -2547,7 +2564,7 @@ const ComplaintEdit = () => {
                 setUploadProgressText("");
                 e.target.value = '';
               }
-            }} className="text-sm file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary/10 file:text-primary hover:file:bg-primary/20" disabled={isSaving || isUploading || (!isNew && isRole("supervisor"))} />
+            }} className="text-sm file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary/10 file:text-primary hover:file:bg-primary/20" disabled={isSaving || isUploading || (!isNew && !isAdminOrSupervisor)} />
             {isUploading && (
               <div className="flex items-center gap-2 text-xs font-semibold text-primary bg-primary/10 px-3 py-2 rounded-xl border border-primary/20 animate-pulse mt-1">
                 <Loader2 className="w-4 h-4 animate-spin shrink-0" />

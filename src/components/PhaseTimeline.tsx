@@ -11,13 +11,15 @@ interface PhaseTimelineProps {
 
 export function PhaseTimeline({ currentPhase, status, activePhase, onPhaseClick }: PhaseTimelineProps) {
   const phases: Phase[] = [1, 2, 3, 4, 5, 6];
-  const isClosed = status === "closed";
+  const normalizedStatus = (status || "").toLowerCase();
+  const isClosed = normalizedStatus === "closed" || normalizedStatus === "completed" || normalizedStatus === "resolved" || normalizedStatus === "verified";
+  const isVerified = normalizedStatus === "verified";
 
   return (
     <div className="grid grid-cols-3 gap-y-5 gap-x-2 md:flex md:items-center md:gap-1 w-full select-none">
       {phases.map((phase, i) => {
-        const isCompleted = phase < currentPhase || (phase === 6 && isClosed);
-        const isCurrent = phase === currentPhase && !isClosed;
+        const isCompleted = phase < currentPhase || (phase === 6 && isVerified);
+        const isCurrent = phase === currentPhase && !isVerified;
         const isFinalPhase = phase === 6;
         const isSelected = activePhase === phase;
         

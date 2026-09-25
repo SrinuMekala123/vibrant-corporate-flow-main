@@ -27,7 +27,9 @@ import {
   Crown,
   Edit2,
   Trash2,
-  UserPlus
+  UserPlus,
+  CheckSquare,
+  Square
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -36,8 +38,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Card } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import OffCanvasPanel from "@/components/OffCanvasPanel";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { supabase } from "@/lib/supabase";
 import { installationService, formatInstallationTicketId, type Installation } from "@/services/installationService";
 import { toast } from "sonner";
@@ -52,38 +56,31 @@ import {
   getInstallationCreatedMessage,
   getInstallationScheduledMessage,
 } from "@/utils/whatsappService";
+import { notificationService } from "@/services/notificationService";
+import {
+  INSTALLATION_STATUSES,
+  getInstallationStatusLabel,
+} from "@/constants/installationStatuses";
 
-const STATUS_OPTIONS = [
-  "All statuses",
-  "Unassigned",
-  "Assigned",
-  "Work in Progress",
-  "Configuration Pending",
-  "Pending due to material shortage",
-  "Signature pending due to client unavailability",
-  "Site Completed and Handed Over",
-  "Closed",
-];
+const STATUS_OPTIONS = ["All statuses", ...INSTALLATION_STATUSES];
 
 const getStatusBadgeStyle = (status: string) => {
-  const s = (status || "").toLowerCase().trim();
+  const s = getInstallationStatusLabel(status).toLowerCase().trim();
   switch (s) {
     case "unassigned":
       return "bg-slate-100 text-slate-700 border-slate-300";
     case "assigned":
       return "bg-blue-50 text-blue-700 border-blue-200";
-    case "work in progress":
+    case "dispatched":
+      return "bg-orange-50 text-orange-700 border-orange-200";
+    case "in progress":
       return "bg-amber-50 text-amber-700 border-amber-200";
-    case "configuration pending":
-      return "bg-purple-50 text-purple-700 border-purple-200";
     case "pending due to material shortage":
       return "bg-rose-50 text-rose-700 border-rose-200";
-    case "signature pending due to client unavailability":
-      return "bg-orange-50 text-orange-700 border-orange-200";
     case "site completed and handed over":
       return "bg-emerald-50 text-emerald-700 border-emerald-200";
-    case "closed":
-      return "bg-gray-200 text-gray-800 border-gray-300";
+    case "verified":
+      return "bg-sky-50 text-sky-700 border-sky-200";
     default:
       return "bg-slate-50 text-slate-700 border-slate-200";
   }
@@ -242,6 +239,12 @@ export default function Installations() {
   // Delete Installation State (Admin)
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  const [isLogNewOpen, setIsLogNewOpen] = useState(false);
+
+  const [selectedInstallationIds, setSelectedInstallationIds] = useState<Set<string>>(new Set());
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+  const [viewMode, setViewMode] = useState<"table" | "card">("table");
 
   // ----------------------------------------------------
   // Queries
@@ -481,6 +484,11 @@ export default function Installations() {
         toast.error("Please enter the contact number");
         return;
       }
+      const contactDigits = nonBtlContact.replace(/\D/g, "");
+      if (!/^[6-9]\d{9}$/.test(contactDigits)) {
+        toast.error("Please enter a valid 10-digit Indian mobile number for the contact");
+        return;
+      }
       if (!nonBtlAddress.trim()) {
         toast.error("Please enter the installation site address");
         return;
@@ -490,6 +498,14 @@ export default function Installations() {
     if (!equipmentDetails.trim()) {
       toast.error("Please specify the equipment to install (models, quantity, scope)");
       return;
+    }
+
+    if (isChargeable === "Yes") {
+      const chargeVal = Number(serviceCharge);
+      if (isNaN(chargeVal) || chargeVal <= 0) {
+        toast.error("Service Charge must be greater than 0 when chargeable");
+        return;
+      }
     }
 
     setIsSubmitting(true);
@@ -563,6 +579,40 @@ export default function Installations() {
       const created = await installationService.create(payload);
       toast.success(`Installation ${created.ticket_id} logged successfully!`);
 
+      // 🔔 Stage 1 App Notification on Installation Creation
+      try {
+        const custObj = customers.find((c: any) => c.id === selectedCustomerId);
+        const recipientId = customerType === "Existing BTL Customer" ? custObj?.id : null;
+        const instTicketId = created.ticket_id || formatInstallationTicketId(created) || "Installation";
+        const adminIds = await notificationService.getAdminUserIds();
+
+        if (recipientId) {
+          await notificationService.insertNotification(
+            recipientId,
+            created.id,
+            "info",
+            "Installation Created",
+            `Installation ${instTicketId} has been logged for equipment installation.`,
+            1,
+            `/installations/${created.id}`,
+            user?.id
+          );
+        }
+
+        await notificationService.insertNotification(
+          adminIds,
+          created.id,
+          "info",
+          "New Installation Logged",
+          `Installation ${instTicketId} has been created.`,
+          1,
+          `/installations/${created.id}`,
+          user?.id
+        );
+      } catch (notifErr) {
+        console.warn("Installation creation app notification warning:", notifErr);
+      }
+
       // 🔔 Stage 1 Automated WhatsApp Notification on Installation Creation
       try {
         const custObj = customers.find((c: any) => c.id === selectedCustomerId);
@@ -600,6 +650,7 @@ export default function Installations() {
       setIsChargeable("Yes");
       setServiceCharge("");
       setNotes("");
+      setIsLogNewOpen(false);
 
       // Refresh lists
       await queryClient.invalidateQueries({ queryKey: ["installations-list"] });
@@ -631,6 +682,15 @@ export default function Installations() {
 
     if (!scheduledDate) {
       toast.error("Scheduled Date is required to assign technicians");
+      return;
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const scheduled = new Date(scheduledDate);
+    scheduled.setHours(0, 0, 0, 0);
+    if (scheduled < today) {
+      toast.error("Scheduled Date must be today or in the future");
       return;
     }
 
@@ -692,6 +752,47 @@ export default function Installations() {
       }
 
       toast.success("Technicians assigned successfully!");
+
+      // 🔔 Stage 2 App Notification on Installation Assignment & Scheduling
+      try {
+        const instObj = installations.find(i => i.id === assignInstallationId);
+        const instTicketId = instObj ? formatInstallationTicketId(instObj) : "Installation";
+        const assignedTechObj = technicians.find(t => t.id === effectiveLeadId) || technicians.find(t => t.id === selectedTechnicianIds[0]);
+        const techName = assignedTechObj?.full_name || "Field Technician";
+        const sDate = formattedDate
+          ? new Date(`${formattedDate}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+          : "the scheduled date";
+        const sTime = scheduledTime || "10:00 AM";
+
+        for (const techId of selectedTechnicianIds) {
+          await notificationService.insertNotification(
+            techId,
+            assignInstallationId,
+            "assignment",
+            "Installation Assigned",
+            `You have been assigned to installation ${instTicketId} with ${techName}. Scheduled: ${sDate} ${sTime}.`,
+            2,
+            `/installations/${assignInstallationId}`,
+            user?.id
+          );
+        }
+
+        if (instObj?.customer_id) {
+          await notificationService.insertNotification(
+            instObj.customer_id,
+            assignInstallationId,
+            "assignment",
+            "Technician Assigned",
+            `Technician ${techName} has been assigned to your installation ${instTicketId}. Scheduled: ${sDate} ${sTime}.`,
+            2,
+            `/installations/${assignInstallationId}`,
+            user?.id
+          );
+        }
+      } catch (notifErr) {
+        console.warn("Installation assignment app notification warning:", notifErr);
+      }
+
       setAssignInstallationId("");
       setSelectedTechnicianIds([]);
       setScheduledDate(null);
@@ -713,7 +814,7 @@ export default function Installations() {
   const filteredInstallations = useMemo(() => {
     return installations.filter((item) => {
       // Status filter
-      if (statusFilter !== "All statuses" && item.status !== statusFilter) {
+      if (statusFilter !== "All statuses" && getInstallationStatusLabel(item.status) !== statusFilter) {
         return false;
       }
 
@@ -910,6 +1011,47 @@ export default function Installations() {
     toast.success("Selected installation for assignment. Scrolled to assignment panel.");
   };
 
+  const toggleSelectInstallation = (id: string) => {
+    setSelectedInstallationIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectAllInstallations = () => {
+    if (selectedInstallationIds.size === filteredInstallations.length) {
+      setSelectedInstallationIds(new Set());
+    } else {
+      setSelectedInstallationIds(new Set(filteredInstallations.map((i) => i.id)));
+    }
+  };
+
+  const handleBulkDeleteInstallations = async () => {
+    const selectedCount = selectedInstallationIds.size;
+    if (selectedCount === 0) return;
+
+    if (!confirm(`Are you sure you want to delete ${selectedCount} selected installation(s)? This action cannot be undone.`)) {
+      return;
+    }
+
+    setIsBulkDeleting(true);
+    try {
+      await Promise.all(Array.from(selectedInstallationIds).map((id) => installationService.delete(id)));
+      toast.success(`${selectedCount} installation(s) deleted successfully.`);
+      setSelectedInstallationIds(new Set());
+      await queryClient.invalidateQueries({ queryKey: ["installations-list"] });
+    } catch (e: any) {
+      toast.error(e.message || "Failed to delete installations.");
+    } finally {
+      setIsBulkDeleting(false);
+    }
+  };
+
   const instStats = {
     total: installations.length,
     completed: installations.filter(i => i.status?.toLowerCase().includes("completed") || i.status?.toLowerCase().includes("handed over")).length,
@@ -936,9 +1078,19 @@ export default function Installations() {
           <h1 className="text-2xl sm:text-3xl font-display font-black tracking-tight text-foreground">
             Equipment Installations & Site Commissioning
           </h1>
-          <p className="text-sm text-muted-foreground max-w-2xl leading-relaxed">
-            Schedule on-site hardware setups, dispatch multi-technician teams, configure equipment, and record customer handovers.
-          </p>
+          <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+            <p className="text-sm text-muted-foreground max-w-2xl leading-relaxed">
+              Schedule on-site hardware setups, dispatch multi-technician teams, configure equipment, and record customer handovers.
+            </p>
+            <Button
+              size="sm"
+              onClick={() => setIsLogNewOpen(true)}
+              className="gradient-primary text-white hover:opacity-95 rounded-xl h-10 px-4 gap-2 font-bold shadow-glow text-xs shrink-0"
+            >
+              <Plus className="w-4 h-4" />
+              Log New Installation
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -986,326 +1138,8 @@ export default function Installations() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start relative z-10">
-        {/* ==================================================== */}
-        {/* SECTION A: Log New Installation Form                */}
-        {/* ==================================================== */}
-        <Card className="p-6 lg:col-span-6 shadow-sm border border-border/60 bg-card glass-card rounded-3xl">
-          <div className="flex items-center gap-2.5 pb-4 mb-4 border-b border-slate-100">
-            <div className="w-9 h-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center font-bold">
-              <Plus className="w-5 h-5" />
-            </div>
-            <div>
-              <h2 className="text-base font-bold text-slate-800">Log New Installation</h2>
-              <p className="text-xs text-muted-foreground">
-                Create an installation request for BTL or Non-BTL clients
-              </p>
-            </div>
-          </div>
-
-          <form onSubmit={handleLogInstallation} className="space-y-4 text-sm">
-            {/* 1. Customer Type Dropdown */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-slate-700 block">
-                Customer Type <span className="text-destructive">*</span>
-              </label>
-              <Select
-                value={customerType}
-                onValueChange={(val: any) => {
-                  setCustomerType(val);
-                }}
-              >
-                <SelectTrigger className="w-full bg-slate-50 border-slate-200">
-                  <SelectValue placeholder="Select Customer Type" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="Existing BTL Customer">Existing BTL Customer</SelectItem>
-                  <SelectItem value="New / Non-BTL Customer">New / Non-BTL Customer</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            {/* CONDITIONAL: Existing BTL Customer */}
-            {customerType === "Existing BTL Customer" ? (
-              <div className="space-y-4 p-3.5 rounded-lg bg-slate-50/70 border border-slate-200/80">
-                <div className="space-y-1.5">
-                  <label className="text-xs font-semibold text-slate-700 block">
-                    Customer <span className="text-destructive">*</span>
-                  </label>
-                  <Popover open={isCustomerPopoverOpen && !isLoadingCustomers} onOpenChange={setIsCustomerPopoverOpen}>
-                    <PopoverTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        role="combobox"
-                        className="h-10 w-full justify-between font-normal bg-white border-slate-200 text-slate-800 disabled:bg-slate-100 disabled:cursor-not-allowed hover:bg-slate-50"
-                        disabled={isLoadingCustomers}
-                      >
-                        {selectedCustomerId ? (
-                          <span className="truncate font-medium text-slate-900">
-                            {customers.find((c: any) => c.id === selectedCustomerId)?.full_name || "Selected Customer"}
-                          </span>
-                        ) : (
-                          <span className="text-muted-foreground text-xs sm:text-sm">Search customer by name, phone, or email...</span>
-                        )}
-                        <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                      </Button>
-                    </PopoverTrigger>
-                    <PopoverContent className="w-[92vw] sm:w-[420px] max-w-[420px] p-0" align="start">
-                      <Command>
-                        <CommandInput placeholder="Search customer by name, phone, or email..." />
-                        <CommandList>
-                          <CommandEmpty>No customer found.</CommandEmpty>
-                          {customers.map((c: any) => (
-                            <CommandItem
-                              key={c.id}
-                              value={`${c.full_name} ${c.phone || ''} ${c.email || ''}`}
-                              onSelect={() => {
-                                handleCustomerSelect(c.id);
-                                setIsCustomerPopoverOpen(false);
-                              }}
-                            >
-                              <div className="flex flex-col py-0.5">
-                                <span className="font-semibold text-sm text-foreground">{c.full_name}</span>
-                                <span className="text-xs text-muted-foreground">
-                                  {c.phone ? `📞 ${c.phone}` : ''} {c.email ? `• ${c.email}` : ''} {c.customer_type ? `(${c.customer_type})` : ''}
-                                </span>
-                              </div>
-                            </CommandItem>
-                          ))}
-                        </CommandList>
-                      </Command>
-                    </PopoverContent>
-                  </Popover>
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-xs font-semibold text-slate-700 block">
-                    Site / Location
-                  </label>
-                  <select
-                    value={selectedLocationId}
-                    onChange={(e) => setSelectedLocationId(e.target.value)}
-                    disabled={!selectedCustomerId || isLoadingLocations}
-                    className="w-full h-10 px-3 py-2 text-sm bg-white border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary text-slate-800 disabled:bg-slate-100 disabled:cursor-not-allowed"
-                  >
-                    <option value="">-- Select Location --</option>
-                    {locations.map((l: any) => (
-                      <option key={l.id} value={l.id}>
-                        {l.location_name}{l.city ? ` - ${l.city}` : ""}
-                      </option>
-                    ))}
-                  </select>
-                  {selectedCustomerId && locations.length === 0 && !isLoadingLocations && (
-                    <p className="text-[11px] text-muted-foreground">
-                      Note: Using primary customer registered address as no branch locations were found.
-                    </p>
-                  )}
-                </div>
-              </div>
-            ) : (
-              /* CONDITIONAL: New / Non-BTL Customer */
-              <div className="space-y-3.5 p-3.5 rounded-xl bg-amber-50/50 border border-amber-200/80">
-                {/* Smart Walk-in Alert Banner */}
-                {showMatchAlert && matchedCustomer && (
-                  <motion.div
-                    initial={{ opacity: 0, y: -6 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="p-3.5 rounded-xl bg-amber-500/15 border-2 border-amber-500/40 text-amber-950 dark:text-amber-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-md"
-                  >
-                    <div className="flex items-start gap-2.5">
-                      <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-                      <div>
-                        <p className="font-bold text-xs">
-                          ⚠️ Existing Customer Profile Detected!
-                        </p>
-                        <p className="text-[11px] text-amber-900/80 dark:text-amber-300/80 mt-0.5">
-                          Phone number matches registered customer: <strong>{matchedCustomer.full_name}</strong> ({matchedCustomer.phone}). Do you want to link this installation to their registered account instead?
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto">
-                      <Button
-                        type="button"
-                        size="sm"
-                        onClick={() => handleConvertToRegistered(matchedCustomer)}
-                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs h-7 px-3 shadow-sm rounded-lg flex-1 sm:flex-none"
-                      >
-                        <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> Yes, Switch to Registered
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => setShowMatchAlert(false)}
-                        className="text-xs h-7 px-2 text-slate-600 hover:text-slate-900 rounded-lg"
-                      >
-                        No, Keep as Walk-in
-                      </Button>
-                    </div>
-                  </motion.div>
-                )}
-
-                <div className="space-y-1.5">
-                  <label className="text-xs font-semibold text-slate-700 block">
-                    Customer Name <span className="text-destructive">*</span>
-                  </label>
-                  <Input
-                    value={nonBtlName}
-                    onChange={(e) => setNonBtlName(e.target.value)}
-                    placeholder="Customer / Site Contact Name"
-                    className="bg-white border-slate-200"
-                    required
-                  />
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-xs font-semibold text-slate-700 flex items-center justify-between">
-                    <span>Contact Number <span className="text-destructive">*</span></span>
-                    {isCheckingPhone && (
-                      <span className="text-[10px] text-primary flex items-center gap-1 font-semibold">
-                        <Loader2 className="w-3 h-3 animate-spin" /> Checking customer database...
-                      </span>
-                    )}
-                  </label>
-                  <Input
-                    type="tel"
-                    value={nonBtlContact}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      setNonBtlContact(val);
-                      if (val.replace(/\D/g, '').length >= 10) {
-                        checkExistingCustomerPhone(val);
-                      }
-                    }}
-                    onBlur={(e) => checkExistingCustomerPhone(e.target.value)}
-                    placeholder="Contact Number (e.g., +91 9876543210)"
-                    className="bg-white border-slate-200"
-                    required
-                  />
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-xs font-semibold text-slate-700 block">
-                    Installation Site / Address <span className="text-destructive">*</span>
-                  </label>
-                  <Input
-                    value={nonBtlAddress}
-                    onChange={(e) => setNonBtlAddress(e.target.value)}
-                    placeholder="Full site address"
-                    className="bg-white border-slate-200"
-                    required
-                  />
-                </div>
-              </div>
-            )}
-
-            {/* Equipment to Install and Brand / Make */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-700 block">
-                  Equipment to Install <span className="text-destructive">*</span>
-                </label>
-                <Input
-                  value={equipmentDetails}
-                  onChange={(e) => setEquipmentDetails(e.target.value)}
-                  placeholder="Models, quantity, scope (e.g., 4x CCTV Cameras)"
-                  required
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-700 block">
-                  Brand / Make
-                </label>
-                <Input
-                  value={brand}
-                  onChange={(e) => setBrand(e.target.value)}
-                  placeholder="e.g., Hikvision, Schneider, Luminous"
-                />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-700 block">Priority</label>
-                <Select value={priority} onValueChange={(val: any) => setPriority(val)}>
-                  <SelectTrigger className="w-full bg-white border-slate-200">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="Critical">Critical</SelectItem>
-                    <SelectItem value="High">High</SelectItem>
-                    <SelectItem value="Medium">Medium</SelectItem>
-                    <SelectItem value="Low">Low</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-700 block">Chargeable</label>
-                <Select value={isChargeable} onValueChange={(val: any) => setIsChargeable(val)}>
-                  <SelectTrigger className="w-full bg-white border-slate-200">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="No">No (Included in Scope)</SelectItem>
-                    <SelectItem value="Yes">Yes (Billable)</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-
-            {/* Conditional Service Charge Amount Field */}
-            {isChargeable === "Yes" && (
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-700 block">
-                  Service Charge Amount (₹) <span className="text-destructive">*</span>
-                </label>
-                <Input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  placeholder="Enter amount (e.g. 500)"
-                  value={serviceCharge}
-                  onChange={(e) => setServiceCharge(e.target.value === "" ? "" : parseFloat(e.target.value) || 0)}
-                  className="bg-white border-slate-200 font-medium"
-                  required
-                />
-              </div>
-            )}
-
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-slate-700 block">Installation Notes</label>
-              <Textarea
-                rows={3}
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                placeholder="Add any specific site requirements, gate pass details, electrical arrangements..."
-              />
-            </div>
-
-            <Button
-              type="submit"
-              disabled={isSubmitting}
-              className="w-full gradient-primary text-white font-semibold shadow-sm h-10"
-            >
-              {isSubmitting ? (
-                <>
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Logging Installation...
-                </>
-              ) : (
-                <>
-                  <Package className="w-4 h-4 mr-2" /> Log Installation
-                </>
-              )}
-            </Button>
-          </form>
-        </Card>
-
-        {/* ==================================================== */}
-        {/* SECTION B: Assign Technicians to Installation       */}
-        {/* ==================================================== */}
-        <Card id="technician-assignment-section" className="p-6 lg:col-span-6 shadow-sm border border-slate-200 bg-white">
+        {/* SECTION B: Assign Technicians to Installation */}
+        <Card id="technician-assignment-section" className="p-6 lg:col-span-12 shadow-sm border border-slate-200 bg-white">
           <div className="flex items-center gap-2.5 pb-4 mb-4 border-b border-slate-100">
             <div className="w-9 h-9 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold">
               <Users className="w-5 h-5" />
@@ -1710,6 +1544,15 @@ export default function Installations() {
 
           {/* Filters */}
           <div className="flex flex-wrap items-center gap-2.5 w-full sm:w-auto">
+            <ToggleGroup type="single" value={viewMode} onValueChange={(v) => v && setViewMode(v as "table" | "card")} className="bg-muted/60 p-0.5 rounded-lg border border-border/60 shrink-0">
+              <ToggleGroupItem value="table" size="sm" className="text-[11px] font-semibold h-8 px-2.5 rounded-md data-[state=on]:bg-white data-[state=on]:shadow-sm">
+                List View
+              </ToggleGroupItem>
+              <ToggleGroupItem value="card" size="sm" className="text-[11px] font-semibold h-8 px-2.5 rounded-md data-[state=on]:bg-white data-[state=on]:shadow-sm">
+                Card View
+              </ToggleGroupItem>
+            </ToggleGroup>
+
             <div className="relative flex-1 sm:w-64">
               <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
               <Input
@@ -1743,8 +1586,54 @@ export default function Installations() {
                 <RotateCcw className="w-3.5 h-3.5 mr-1" /> Clear
               </Button>
             )}
+
+            {(isRole("admin", "supervisor")) && selectedInstallationIds.size > 0 && (
+              <Button
+                size="sm"
+                onClick={handleBulkDeleteInstallations}
+                disabled={isBulkDeleting}
+                className="bg-red-600 hover:bg-red-700 text-white rounded-lg h-9 px-3 gap-1.5 font-bold shadow-sm text-xs shrink-0"
+              >
+                {isBulkDeleting ? (
+                  <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                ) : (
+                  <Trash2 className="w-4 h-4 shrink-0" />
+                )}
+                <span>Delete {selectedInstallationIds.size} rows</span>
+              </Button>
+            )}
           </div>
         </div>
+
+        {/* Selection Bar */}
+        {(isRole("admin", "supervisor")) && selectedInstallationIds.size > 0 && (
+          <div className="flex items-center justify-between p-3 bg-blue-50/80 border border-blue-200 rounded-xl">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={toggleSelectAllInstallations}
+                className="text-slate-600 hover:text-slate-800"
+              >
+                {selectedInstallationIds.size === filteredInstallations.length ? (
+                  <CheckSquare className="w-5 h-5 text-blue-600" />
+                ) : (
+                  <Square className="w-5 h-5" />
+                )}
+              </button>
+              <span className="text-sm font-medium text-slate-700">
+                {selectedInstallationIds.size} of {filteredInstallations.length} selected
+              </span>
+            </div>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setSelectedInstallationIds(new Set())}
+              className="text-xs text-slate-600 hover:text-slate-800"
+            >
+              Clear Selection
+            </Button>
+          </div>
+        )}
 
         {/* Table Content */}
         {isLoadingInstallations ? (
@@ -1760,372 +1649,420 @@ export default function Installations() {
           </div>
         ) : (
           <div className="space-y-3">
-            {/* Desktop Table View */}
-            <div className="hidden md:block overflow-x-auto rounded-lg border border-slate-200">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 text-slate-700 font-semibold border-b border-slate-200 uppercase tracking-wider text-[11px]">
-                  <tr>
-                    <th className="py-3 px-4">Ticket ID</th>
-                    <th className="py-3 px-4">Customer & Site</th>
-                    <th className="py-3 px-4">Technician(s)</th>
-                    <th className="py-3 px-4">Scheduled Visit</th>
-                    <th className="py-3 px-4">Status</th>
-                    <th className="py-3 px-4 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {filteredInstallations.map((item) => {
-                    const custName = item.customer?.full_name || item.non_btl_customer_name || "N/A";
-                    const siteAddress =
-                      item.location?.location_name ||
-                      item.location?.address ||
-                      item.non_btl_address ||
-                      "Site address not specified";
+            {viewMode === "table" && (
+              <div>
+                <div className="overflow-x-auto rounded-lg border border-slate-200">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-50 text-slate-700 font-semibold border-b border-slate-200 uppercase tracking-wider text-[11px]">
+                      <tr>
+                        {(isAdmin || isTechnician) && <th className="py-3 px-4 w-10"></th>}
+                        <th className="py-3 px-4">Ticket ID</th>
+                        <th className="py-3 px-4">Customer & Site</th>
+                        <th className="py-3 px-4">Technician(s)</th>
+                        <th className="py-3 px-4">Scheduled Visit</th>
+                        <th className="py-3 px-4">Status</th>
+                        <th className="py-3 px-4 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {filteredInstallations.map((item) => {
+                        const custName = item.customer?.full_name || item.non_btl_customer_name || "N/A";
+                        const siteAddress =
+                          item.location?.location_name ||
+                          item.location?.address ||
+                          item.non_btl_address ||
+                          "Site address not specified";
 
-                    const assignedTechs = (item.installation_technicians || []).map((it: any) => {
-                      const t = it.technician || technicians.find((tech: any) => tech.id === it.technician_id);
-                      return t?.full_name || t?.email || "Technician";
-                    });
+                        const assignedTechs = (item.installation_technicians || []).map((it: any) => {
+                          const t = it.technician || technicians.find((tech: any) => tech.id === it.technician_id);
+                          return t?.full_name || t?.email || "Technician";
+                        });
 
-                    return (
-                      <tr key={item.id} className="hover:bg-slate-50/70 transition-colors">
-                        {/* Ticket ID */}
-                        <td className="py-3 px-4 whitespace-nowrap">
+                        return (
+                          <tr key={item.id} className={`hover:bg-slate-50/70 transition-colors ${selectedInstallationIds.has(item.id) ? 'bg-blue-50/60' : ''}`}>
+                            {(isRole("admin", "supervisor")) && (
+                              <td className="py-3 px-4">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    toggleSelectInstallation(item.id);
+                                  }}
+                                  className={`shrink-0 ${selectedInstallationIds.has(item.id) ? 'text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
+                                >
+                                  {selectedInstallationIds.has(item.id) ? (
+                                    <CheckSquare className="w-4 h-4" />
+                                  ) : (
+                                    <Square className="w-4 h-4" />
+                                  )}
+                                </button>
+                              </td>
+                            )}
+                            {/* Ticket ID */}
+                            <td className="py-3 px-4 whitespace-nowrap">
+                              <span
+                                onClick={() => navigate(`/installations/${item.id}`)}
+                                className="font-mono font-bold text-primary hover:underline cursor-pointer"
+                              >
+                                {formatInstallationTicketId(item)}
+                              </span>
+                              <div className="mt-0.5">
+                                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase ${getPriorityBadgeStyle(item.priority)}`}>
+                                  {item.priority}
+                                </span>
+                                {item.is_chargeable && (
+                                  <span className="ml-1 text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                    Chargeable
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+
+                            {/* Customer & Site */}
+                            <td className="py-3 px-4 min-w-[180px]">
+                              <div
+                                className="flex items-center gap-1.5 flex-wrap cursor-pointer"
+                                onClick={() => navigate(`/installations/${item.id}`)}
+                              >
+                                <span className="font-semibold text-slate-800 hover:text-primary transition-colors">{custName}</span>
+                                {(!item.customer_id || item.customer_type !== "BTL") ? (
+                                  <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-300">
+                                    Walk-in / Non-BTL
+                                  </span>
+                                ) : (
+                                  <span className="text-[9px] font-bold px-1.5 py-0.2 rounded-full bg-slate-100 text-slate-600 border">
+                                    BTL Customer
+                                  </span>
+                                )}
+                              </div>
+                               <p className="text-slate-500 text-[11px] break-words mt-0.5" title={siteAddress}>
+                                 <MapPin className="w-3 h-3 inline mr-1 text-slate-400 shrink-0" />
+                                 {siteAddress}
+                               </p>
+                            </td>
+
+                            {/* Technicians */}
+                            <td className="py-3 px-4">
+                              {assignedTechs.length > 0 ? (
+                                <div className="flex flex-wrap gap-1 max-w-xs">
+                                  {assignedTechs.map((name: string, i: number) => (
+                                    <span
+                                      key={i}
+                                      className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200"
+                                    >
+                                      <Wrench className="w-2.5 h-2.5" /> {name}
+                                    </span>
+                                  ))}
+                                </div>
+                              ) : (
+                                <span className="text-slate-400 italic text-xs">Unassigned</span>
+                              )}
+                            </td>
+
+                            {/* Scheduled Visit */}
+                            <td className="py-3 px-4 whitespace-nowrap text-slate-700">
+                              {item.scheduled_date ? (
+                                <div>
+                                  <p className="font-medium flex items-center gap-1">
+                                    <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                                    {new Date(`${item.scheduled_date}T00:00:00`).toLocaleDateString("en-IN", {
+                                      day: "2-digit",
+                                      month: "short",
+                                      year: "numeric",
+                                    })}
+                                  </p>
+                                  {item.scheduled_time && (
+                                    <p className="text-slate-500 text-xs flex items-center gap-1">
+                                      <Clock className="w-3 h-3 text-slate-400" />
+                                      {item.scheduled_time}
+                                    </p>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="text-slate-400 italic text-xs">Not scheduled</span>
+                              )}
+                            </td>
+
+                            {/* Status */}
+                            <td className="py-3 px-4 whitespace-nowrap">
+                              <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold border ${getStatusBadgeStyle(item.status)}`}>
+                                {item.status}
+                              </span>
+                            </td>
+
+                            {/* Actions */}
+                            <td className="py-3 px-4 text-right whitespace-nowrap">
+                              <div className="flex items-center justify-end gap-1.5">
+                                {/* View Quick Modal */}
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => setViewInstallation(item)}
+                                  title="View Quick Details"
+                                  className="h-8 w-8 p-0 text-slate-600 hover:text-primary hover:bg-slate-100"
+                                >
+                                  <Eye className="w-4 h-4" />
+                                </Button>
+
+                                {/* Full Workflow Page */}
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => navigate(`/installations/${item.id}`)}
+                                  title="Open Full Execution & Verification Workflow"
+                                  className="h-8 px-2.5 text-xs text-primary border-primary/30 bg-primary/5 hover:bg-primary/10 font-semibold gap-1"
+                                >
+                                  <Wrench className="w-3.5 h-3.5" /> Workflow
+                                </Button>
+
+                                {/* Edit Installation (Admin) */}
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => handleOpenEdit(item)}
+                                  title="Edit Installation Details"
+                                  className="h-8 w-8 p-0 text-slate-600 hover:text-amber-600 hover:bg-amber-50"
+                                >
+                                  <Edit2 className="w-3.5 h-3.5" />
+                                </Button>
+
+                                {/* Quick Assign */}
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => handleQuickAssign(item)}
+                                  title="Assign Technicians & Schedule"
+                                  className="h-8 w-8 p-0 text-slate-600 hover:text-indigo-600 hover:bg-indigo-50"
+                                >
+                                  <UserPlus className="w-3.5 h-3.5" />
+                                </Button>
+
+                                {/* Navigate with Google Maps */}
+                                {siteAddress && siteAddress !== "Site address not specified" && (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(siteAddress)}`, '_blank')}
+                                    title="Navigate with Google Maps"
+                                    className="h-8 px-2 text-xs text-emerald-700 border-emerald-200 bg-emerald-50/50 hover:bg-emerald-100/70 gap-1 font-semibold"
+                                  >
+                                    <Navigation className="w-3 h-3 text-emerald-600" />
+                                  </Button>
+                                )}
+
+                                {/* Delete Installation */}
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => setDeleteConfirmId(item.id)}
+                                  title="Delete Installation"
+                                  className="h-8 w-8 p-0 text-slate-600 hover:text-rose-600 hover:bg-rose-50"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </Button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-[10px] text-muted-foreground mt-1.5 text-center md:hidden">
+                  Swipe horizontally to see more columns →
+                </p>
+              </div>
+            )}
+
+            {viewMode === "card" && (
+              <div className="space-y-3">
+                {filteredInstallations.map((item) => {
+                  const custName = item.customer?.full_name || item.non_btl_customer_name || "N/A";
+                  const siteAddress =
+                    item.location?.location_name ||
+                    item.location?.address ||
+                    item.non_btl_address ||
+                    "Site address not specified";
+
+                  const assignedTechs = (item.installation_technicians || []).map((it: any) => {
+                    const t = it.technician || technicians.find((tech: any) => tech.id === it.technician_id);
+                    return t?.full_name || t?.email || "Technician";
+                  });
+
+                  return (
+                    <div
+                      key={item.id}
+                      className={`p-3.5 rounded-xl border shadow-sm space-y-2.5 transition-all ${
+                        selectedInstallationIds.has(item.id)
+                          ? 'bg-blue-50/60 border-blue-200'
+                          : 'border-slate-200 bg-white hover:shadow'
+                      }`}
+                    >
+                      {(isRole("admin", "supervisor")) && (
+                        <div className="flex justify-end">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleSelectInstallation(item.id);
+                            }}
+                            className={`shrink-0 ${selectedInstallationIds.has(item.id) ? 'text-blue-600' : 'text-slate-400 hover:text-slate-600'}`}
+                          >
+                            {selectedInstallationIds.has(item.id) ? (
+                              <CheckSquare className="w-5 h-5" />
+                            ) : (
+                              <Square className="w-5 h-5" />
+                            )}
+                          </button>
+                        </div>
+                      )}
+                      {/* Header: ID + Status */}
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
                           <span
                             onClick={() => navigate(`/installations/${item.id}`)}
-                            className="font-mono font-bold text-primary hover:underline cursor-pointer"
+                            className="font-mono font-bold text-sm text-primary hover:underline cursor-pointer"
                           >
                             {formatInstallationTicketId(item)}
                           </span>
-                          <div className="mt-0.5">
+                          <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                             <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase ${getPriorityBadgeStyle(item.priority)}`}>
                               {item.priority}
                             </span>
                             {item.is_chargeable && (
-                              <span className="ml-1 text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
+                              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
                                 Chargeable
                               </span>
                             )}
-                          </div>
-                        </td>
-
-                        {/* Customer & Site */}
-                        <td className="py-3 px-4 min-w-[180px]">
-                          <div
-                            className="flex items-center gap-1.5 flex-wrap cursor-pointer"
-                            onClick={() => navigate(`/installations/${item.id}`)}
-                          >
-                            <span className="font-semibold text-slate-800 hover:text-primary transition-colors">{custName}</span>
                             {(!item.customer_id || item.customer_type !== "BTL") ? (
-                              <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-300">
-                                Walk-in / Non-BTL
+                              <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-700 border border-amber-300">
+                                Walk-in
                               </span>
                             ) : (
-                              <span className="text-[9px] font-bold px-1.5 py-0.2 rounded-full bg-slate-100 text-slate-600 border">
-                                BTL Customer
+                              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600 border">
+                                BTL
                               </span>
                             )}
                           </div>
-                          <p className="text-slate-500 text-[11px] truncate max-w-xs mt-0.5" title={siteAddress}>
-                            <MapPin className="w-3 h-3 inline mr-1 text-slate-400" />
-                            {siteAddress}
-                          </p>
-                        </td>
+                        </div>
+                         <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold border truncate max-w-[140px] sm:max-w-none shrink-0 ${getStatusBadgeStyle(item.status)}`}>
+                          {item.status}
+                        </span>
+                      </div>
 
-                        {/* Technicians */}
-                        <td className="py-3 px-4">
+                      {/* Customer & Address */}
+                      <div
+                        className="text-xs cursor-pointer"
+                        onClick={() => navigate(`/installations/${item.id}`)}
+                      >
+                        <p className="font-semibold text-slate-900 hover:text-primary transition-colors">{custName}</p>
+                         <p className="text-slate-500 text-[11px] mt-0.5 flex items-start gap-1">
+                           <MapPin className="w-3 h-3 text-slate-400 shrink-0 mt-0.5" />
+                           <span className="break-words whitespace-normal">{siteAddress}</span>
+                         </p>
+                      </div>
+
+                      {/* Technicians & Schedule */}
+                      <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                        {item.scheduled_date ? (
+                          <div className="flex items-center gap-1 text-slate-700 font-medium">
+                            <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                            <span>
+                              {new Date(`${item.scheduled_date}T00:00:00`).toLocaleDateString("en-IN", {
+                                day: "2-digit",
+                                month: "short",
+                              })}
+                            </span>
+                            {item.scheduled_time && (
+                              <span className="text-slate-500 text-[10px]">({item.scheduled_time})</span>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-slate-400 italic">Not scheduled</span>
+                        )}
+
+                        <div className="flex items-center gap-1 flex-wrap">
                           {assignedTechs.length > 0 ? (
-                            <div className="flex flex-wrap gap-1 max-w-xs">
-                              {assignedTechs.map((name: string, i: number) => (
-                                <span
-                                  key={i}
-                                  className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200"
-                                >
-                                  <Wrench className="w-2.5 h-2.5" /> {name}
-                                </span>
-                              ))}
-                            </div>
+                            assignedTechs.slice(0, 2).map((name: string, i: number) => (
+                              <span
+                                key={i}
+                                className="inline-flex items-center gap-0.5 text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200"
+                              >
+                                <Wrench className="w-2 h-2" /> {name}
+                              </span>
+                            ))
                           ) : (
-                            <span className="text-slate-400 italic text-xs">Unassigned</span>
+                            <span className="text-slate-400 italic text-[10px]">No tech</span>
                           )}
-                        </td>
-
-                        {/* Scheduled Visit */}
-                        <td className="py-3 px-4 whitespace-nowrap text-slate-700">
-                          {item.scheduled_date ? (
-                            <div>
-                              <p className="font-medium flex items-center gap-1">
-                                <Calendar className="w-3.5 h-3.5 text-slate-400" />
-                                {new Date(`${item.scheduled_date}T00:00:00`).toLocaleDateString("en-IN", {
-                                  day: "2-digit",
-                                  month: "short",
-                                  year: "numeric",
-                                })}
-                              </p>
-                              {item.scheduled_time && (
-                                <p className="text-slate-500 text-xs flex items-center gap-1">
-                                  <Clock className="w-3 h-3 text-slate-400" />
-                                  {item.scheduled_time}
-                                </p>
-                              )}
-                            </div>
-                          ) : (
-                            <span className="text-slate-400 italic text-xs">Not scheduled</span>
+                          {assignedTechs.length > 2 && (
+                            <span className="text-[9px] text-slate-400 font-medium">+{assignedTechs.length - 2}</span>
                           )}
-                        </td>
+                        </div>
+                      </div>
 
-                        {/* Status */}
-                        <td className="py-3 px-4 whitespace-nowrap">
-                          <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold border ${getStatusBadgeStyle(item.status)}`}>
-                            {item.status}
-                          </span>
-                        </td>
+                      {/* Actions */}
+                      <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-1.5">
+                        <div className="flex items-center gap-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setViewInstallation(item)}
+                            className="h-7 px-2 text-xs text-slate-600 hover:text-primary gap-1"
+                          >
+                            <Eye className="w-3 h-3" /> View
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleOpenEdit(item)}
+                            className="h-7 px-2 text-xs text-amber-700 hover:bg-amber-50 gap-1"
+                          >
+                            <Edit2 className="w-3 h-3" /> Edit
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleQuickAssign(item)}
+                            className="h-7 px-2 text-xs text-indigo-700 hover:bg-indigo-50 gap-1"
+                          >
+                            <UserPlus className="w-3 h-3" /> Assign
+                          </Button>
+                        </div>
 
-                        {/* Actions */}
-                        <td className="py-3 px-4 text-right whitespace-nowrap">
-                          <div className="flex items-center justify-end gap-1.5">
-                            {/* View Quick Modal */}
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => setViewInstallation(item)}
-                              title="View Quick Details"
-                              className="h-8 w-8 p-0 text-slate-600 hover:text-primary hover:bg-slate-100"
-                            >
-                              <Eye className="w-4 h-4" />
-                            </Button>
-
-                            {/* Full Workflow Page */}
+                        <div className="flex items-center gap-1">
+                          {siteAddress && siteAddress !== "Site address not specified" && (
                             <Button
                               variant="outline"
                               size="sm"
-                              onClick={() => navigate(`/installations/${item.id}`)}
-                              title="Open Full Execution & Verification Workflow"
-                              className="h-8 px-2.5 text-xs text-primary border-primary/30 bg-primary/5 hover:bg-primary/10 font-semibold gap-1"
+                              onClick={() => window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(siteAddress)}`, '_blank')}
+                              className="h-7 px-2 text-xs text-emerald-700 border-emerald-200 bg-emerald-50/50 hover:bg-emerald-100/70"
                             >
-                              <Wrench className="w-3.5 h-3.5" /> Workflow
+                              <Navigation className="w-3 h-3 text-emerald-600" />
                             </Button>
-
-                            {/* Edit Installation (Admin) */}
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => handleOpenEdit(item)}
-                              title="Edit Installation Details"
-                              className="h-8 w-8 p-0 text-slate-600 hover:text-amber-600 hover:bg-amber-50"
-                            >
-                              <Edit2 className="w-3.5 h-3.5" />
-                            </Button>
-
-                            {/* Quick Assign */}
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => handleQuickAssign(item)}
-                              title="Assign Technicians & Schedule"
-                              className="h-8 w-8 p-0 text-slate-600 hover:text-indigo-600 hover:bg-indigo-50"
-                            >
-                              <UserPlus className="w-3.5 h-3.5" />
-                            </Button>
-
-                            {/* Navigate with Google Maps */}
-                            {siteAddress && siteAddress !== "Site address not specified" && (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(siteAddress)}`, '_blank')}
-                                title="Navigate with Google Maps"
-                                className="h-8 px-2 text-xs text-emerald-700 border-emerald-200 bg-emerald-50/50 hover:bg-emerald-100/70 gap-1 font-semibold"
-                              >
-                                <Navigation className="w-3 h-3 text-emerald-600" />
-                              </Button>
-                            )}
-
-                            {/* Delete Installation */}
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => setDeleteConfirmId(item.id)}
-                              title="Delete Installation"
-                              className="h-8 w-8 p-0 text-slate-600 hover:text-rose-600 hover:bg-rose-50"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </Button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Mobile Cards View */}
-            <div className="md:hidden space-y-3">
-              {filteredInstallations.map((item) => {
-                const custName = item.customer?.full_name || item.non_btl_customer_name || "N/A";
-                const siteAddress =
-                  item.location?.location_name ||
-                  item.location?.address ||
-                  item.non_btl_address ||
-                  "Site address not specified";
-
-                const assignedTechs = (item.installation_technicians || []).map((it: any) => {
-                  const t = it.technician || technicians.find((tech: any) => tech.id === it.technician_id);
-                  return t?.full_name || t?.email || "Technician";
-                });
-
-                return (
-                  <div
-                    key={item.id}
-                    className="p-3.5 rounded-xl border border-slate-200 bg-white shadow-sm hover:shadow transition-shadow space-y-2.5"
-                  >
-                    {/* Header: ID + Status */}
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <span
-                          onClick={() => navigate(`/installations/${item.id}`)}
-                          className="font-mono font-bold text-sm text-primary hover:underline cursor-pointer"
-                        >
-                          {formatInstallationTicketId(item)}
-                        </span>
-                        <div className="flex items-center gap-1.5 mt-1 flex-wrap">
-                          <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase ${getPriorityBadgeStyle(item.priority)}`}>
-                            {item.priority}
-                          </span>
-                          {item.is_chargeable && (
-                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
-                              Chargeable
-                            </span>
                           )}
-                          {(!item.customer_id || item.customer_type !== "BTL") ? (
-                            <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-700 border border-amber-300">
-                              Walk-in
-                            </span>
-                          ) : (
-                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600 border">
-                              BTL
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold border shrink-0 ${getStatusBadgeStyle(item.status)}`}>
-                        {item.status}
-                      </span>
-                    </div>
-
-                    {/* Customer & Address */}
-                    <div
-                      className="text-xs cursor-pointer"
-                      onClick={() => navigate(`/installations/${item.id}`)}
-                    >
-                      <p className="font-semibold text-slate-900 hover:text-primary transition-colors">{custName}</p>
-                      <p className="text-slate-500 text-[11px] mt-0.5 flex items-start gap-1">
-                        <MapPin className="w-3 h-3 text-slate-400 shrink-0 mt-0.5" />
-                        <span className="line-clamp-2">{siteAddress}</span>
-                      </p>
-                    </div>
-
-                    {/* Technicians & Schedule */}
-                    <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-[11px]">
-                      {item.scheduled_date ? (
-                        <div className="flex items-center gap-1 text-slate-700 font-medium">
-                          <Calendar className="w-3.5 h-3.5 text-slate-400" />
-                          <span>
-                            {new Date(`${item.scheduled_date}T00:00:00`).toLocaleDateString("en-IN", {
-                              day: "2-digit",
-                              month: "short",
-                            })}
-                          </span>
-                          {item.scheduled_time && (
-                            <span className="text-slate-500 text-[10px]">({item.scheduled_time})</span>
-                          )}
-                        </div>
-                      ) : (
-                        <span className="text-slate-400 italic">Not scheduled</span>
-                      )}
-
-                      <div className="flex items-center gap-1 flex-wrap">
-                        {assignedTechs.length > 0 ? (
-                          assignedTechs.slice(0, 2).map((name: string, i: number) => (
-                            <span
-                              key={i}
-                              className="inline-flex items-center gap-0.5 text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200"
-                            >
-                              <Wrench className="w-2 h-2" /> {name}
-                            </span>
-                          ))
-                        ) : (
-                          <span className="text-slate-400 italic text-[10px]">No tech</span>
-                        )}
-                        {assignedTechs.length > 2 && (
-                          <span className="text-[9px] text-slate-400 font-medium">+{assignedTechs.length - 2}</span>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Actions */}
-                    <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-1.5">
-                      <div className="flex items-center gap-1">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setViewInstallation(item)}
-                          className="h-7 px-2 text-xs text-slate-600 hover:text-primary gap-1"
-                        >
-                          <Eye className="w-3 h-3" /> View
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleOpenEdit(item)}
-                          className="h-7 px-2 text-xs text-amber-700 hover:bg-amber-50 gap-1"
-                        >
-                          <Edit2 className="w-3 h-3" /> Edit
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleQuickAssign(item)}
-                          className="h-7 px-2 text-xs text-indigo-700 hover:bg-indigo-50 gap-1"
-                        >
-                          <UserPlus className="w-3 h-3" /> Assign
-                        </Button>
-                      </div>
-
-                      <div className="flex items-center gap-1">
-                        {siteAddress && siteAddress !== "Site address not specified" && (
                           <Button
                             variant="outline"
                             size="sm"
-                            onClick={() => window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(siteAddress)}`, '_blank')}
-                            className="h-7 px-2 text-xs text-emerald-700 border-emerald-200 bg-emerald-50/50 hover:bg-emerald-100/70"
+                            onClick={() => navigate(`/installations/${item.id}`)}
+                            className="h-7 px-2 text-xs text-primary border-primary/30 bg-primary/5 hover:bg-primary/10 font-semibold gap-1"
                           >
-                            <Navigation className="w-3 h-3 text-emerald-600" />
+                            <Wrench className="w-3 h-3" /> Workflow
                           </Button>
-                        )}
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => navigate(`/installations/${item.id}`)}
-                          className="h-7 px-2 text-xs text-primary border-primary/30 bg-primary/5 hover:bg-primary/10 font-semibold gap-1"
-                        >
-                          <Wrench className="w-3 h-3" /> Workflow
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setDeleteConfirmId(item.id)}
-                          className="h-7 px-1.5 text-xs text-rose-600 hover:bg-rose-50"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                        </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setDeleteConfirmId(item.id)}
+                            className="h-7 px-1.5 text-xs text-rose-600 hover:bg-rose-50"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </Button>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
       </Card>
@@ -2133,8 +2070,340 @@ export default function Installations() {
       {/* ==================================================== */}
       {/* View Details Modal                                   */}
       {/* ==================================================== */}
-      <Dialog open={!!viewInstallation} onOpenChange={(open) => !open && setViewInstallation(null)}>
-        <DialogContent className="max-w-4xl lg:max-w-5xl w-[95vw] max-h-[92vh] overflow-y-auto p-0 rounded-2xl border border-slate-200 shadow-2xl bg-white">
+
+      {/* Log New Installation — ~80% off-canvas */}
+      <OffCanvasPanel
+        open={isLogNewOpen}
+        onClose={() => setIsLogNewOpen(false)}
+        header={
+          <>
+            <div className="w-14 h-14 rounded-2xl bg-primary/10 text-primary flex items-center justify-center shrink-0">
+              <Plus className="w-6 h-6" />
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-xl font-display font-bold text-slate-800">Log New Installation</h3>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Create a new installation work order for BTL or walk-in clients.
+              </p>
+            </div>
+          </>
+        }
+      >
+
+          <form onSubmit={handleLogInstallation} className="space-y-4 text-sm">
+            {/* 1. Customer Type Dropdown */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-slate-700 block">
+                Customer Type <span className="text-destructive">*</span>
+              </label>
+              <Select
+                value={customerType}
+                onValueChange={(val: any) => {
+                  setCustomerType(val);
+                }}
+              >
+                <SelectTrigger className="w-full bg-slate-50 border-slate-200">
+                  <SelectValue placeholder="Select Customer Type" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Existing BTL Customer">Existing BTL Customer</SelectItem>
+                  <SelectItem value="New / Non-BTL Customer">New / Non-BTL Customer</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* CONDITIONAL: Existing BTL Customer */}
+            {customerType === "Existing BTL Customer" ? (
+              <div className="space-y-4 p-3.5 rounded-lg bg-slate-50/70 border border-slate-200/80">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-700 block">
+                    Customer <span className="text-destructive">*</span>
+                  </label>
+                  <Popover open={isCustomerPopoverOpen && !isLoadingCustomers} onOpenChange={setIsCustomerPopoverOpen}>
+                    <PopoverTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        role="combobox"
+                        className="h-10 w-full justify-between font-normal bg-white border-slate-200 text-slate-800 disabled:bg-slate-100 disabled:cursor-not-allowed hover:bg-slate-50"
+                        disabled={isLoadingCustomers}
+                      >
+                        {selectedCustomerId ? (
+                          <span className="truncate font-medium text-slate-900">
+                            {customers.find((c: any) => c.id === selectedCustomerId)?.full_name || "Selected Customer"}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground text-xs sm:text-sm">Search customer by name, phone, or email...</span>
+                        )}
+                        <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-[92vw] sm:w-[420px] max-w-[420px] p-0" align="start">
+                      <Command>
+                        <CommandInput placeholder="Search customer by name, phone, or email..." />
+                        <CommandList>
+                          <CommandEmpty>No customer found.</CommandEmpty>
+                          {customers.map((c: any) => (
+                            <CommandItem
+                              key={c.id}
+                              value={`${c.full_name} ${c.phone || ''} ${c.email || ''}`}
+                              onSelect={() => {
+                                handleCustomerSelect(c.id);
+                                setIsCustomerPopoverOpen(false);
+                              }}
+                            >
+                              <div className="flex flex-col py-0.5">
+                                <span className="font-semibold text-sm text-foreground">{c.full_name}</span>
+                                <span className="text-xs text-muted-foreground">
+                                  {c.phone ? `📞 ${c.phone}` : ''} {c.email ? `• ${c.email}` : ''} {c.customer_type ? `(${c.customer_type})` : ''}
+                                </span>
+                              </div>
+                            </CommandItem>
+                          ))}
+                        </CommandList>
+                      </Command>
+                    </PopoverContent>
+                  </Popover>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-700 block">
+                    Site / Location
+                  </label>
+                  <select
+                    value={selectedLocationId}
+                    onChange={(e) => setSelectedLocationId(e.target.value)}
+                    disabled={!selectedCustomerId || isLoadingLocations}
+                    className="w-full h-10 px-3 py-2 text-sm bg-white border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary text-slate-800 disabled:bg-slate-100 disabled:cursor-not-allowed"
+                  >
+                    <option value="">-- Select Location --</option>
+                    {locations.map((l: any) => (
+                      <option key={l.id} value={l.id}>
+                        {l.location_name}{l.city ? ` - ${l.city}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                  {selectedCustomerId && locations.length === 0 && !isLoadingLocations && (
+                    <p className="text-[11px] text-muted-foreground">
+                      Note: Using primary customer registered address as no branch locations were found.
+                    </p>
+                  )}
+                </div>
+              </div>
+            ) : (
+              /* CONDITIONAL: New / Non-BTL Customer */
+              <div className="space-y-3.5 p-3.5 rounded-xl bg-amber-50/50 border border-amber-200/80">
+                {/* Smart Walk-in Alert Banner */}
+                {showMatchAlert && matchedCustomer && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="p-3.5 rounded-xl bg-amber-500/15 border-2 border-amber-500/40 text-amber-950 dark:text-amber-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-md"
+                  >
+                    <div className="flex items-start gap-2.5">
+                      <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="font-bold text-xs">
+                          ⚠️ Existing Customer Profile Detected!
+                        </p>
+                        <p className="text-[11px] text-amber-900/80 dark:text-amber-300/80 mt-0.5">
+                          Phone number matches registered customer: <strong>{matchedCustomer.full_name}</strong> ({matchedCustomer.phone}). Do you want to link this installation to their registered account instead?
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto">
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => handleConvertToRegistered(matchedCustomer)}
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs h-7 px-3 shadow-sm rounded-lg flex-1 sm:flex-none"
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> Yes, Switch to Registered
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => setShowMatchAlert(false)}
+                        className="text-xs h-7 px-2 text-slate-600 hover:text-slate-900 rounded-lg"
+                      >
+                        No, Keep as Walk-in
+                      </Button>
+                    </div>
+                  </motion.div>
+                )}
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-700 block">
+                    Customer Name <span className="text-destructive">*</span>
+                  </label>
+                  <Input
+                    value={nonBtlName}
+                    onChange={(e) => setNonBtlName(e.target.value)}
+                    placeholder="Customer / Site Contact Name"
+                    className="bg-white border-slate-200"
+                    required
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-700 flex items-center justify-between">
+                    <span>Contact Number <span className="text-destructive">*</span></span>
+                    {isCheckingPhone && (
+                      <span className="text-[10px] text-primary flex items-center gap-1 font-semibold">
+                        <Loader2 className="w-3 h-3 animate-spin" /> Checking customer database...
+                      </span>
+                    )}
+                  </label>
+                  <Input
+                    type="tel"
+                    value={nonBtlContact}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setNonBtlContact(val);
+                      if (val.replace(/\D/g, '').length >= 10) {
+                        checkExistingCustomerPhone(val);
+                      }
+                    }}
+                    onBlur={(e) => checkExistingCustomerPhone(e.target.value)}
+                    placeholder="Contact Number (e.g., +91 9876543210)"
+                    className="bg-white border-slate-200"
+                    required
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-700 block">
+                    Installation Site / Address <span className="text-destructive">*</span>
+                  </label>
+                  <Input
+                    value={nonBtlAddress}
+                    onChange={(e) => setNonBtlAddress(e.target.value)}
+                    placeholder="Full site address"
+                    className="bg-white border-slate-200"
+                    required
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Equipment to Install and Brand / Make */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-700 block">
+                  Equipment to Install <span className="text-destructive">*</span>
+                </label>
+                <Input
+                  value={equipmentDetails}
+                  onChange={(e) => setEquipmentDetails(e.target.value)}
+                  placeholder="Models, quantity, scope (e.g., 4x CCTV Cameras)"
+                  required
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-700 block">
+                  Brand / Make
+                </label>
+                <Input
+                  value={brand}
+                  onChange={(e) => setBrand(e.target.value)}
+                  placeholder="e.g., Hikvision, Schneider, Luminous"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-700 block">Priority</label>
+                <Select value={priority} onValueChange={(val: any) => setPriority(val)}>
+                  <SelectTrigger className="w-full bg-white border-slate-200">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Critical">Critical</SelectItem>
+                    <SelectItem value="High">High</SelectItem>
+                    <SelectItem value="Medium">Medium</SelectItem>
+                    <SelectItem value="Low">Low</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-700 block">Chargeable</label>
+                <Select value={isChargeable} onValueChange={(val: any) => setIsChargeable(val)}>
+                  <SelectTrigger className="w-full bg-white border-slate-200">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="No">No (Included in Scope)</SelectItem>
+                    <SelectItem value="Yes">Yes (Billable)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            {/* Conditional Service Charge Amount Field */}
+            {isChargeable === "Yes" && (
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-700 block">
+                  Service Charge Amount (₹) <span className="text-destructive">*</span>
+                </label>
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="Enter amount (e.g. 500)"
+                  value={serviceCharge}
+                  onChange={(e) => setServiceCharge(e.target.value === "" ? "" : parseFloat(e.target.value) || 0)}
+                  className="bg-white border-slate-200 font-medium"
+                  required
+                />
+              </div>
+            )}
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-slate-700 block">Installation Notes</label>
+              <Textarea
+                rows={3}
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="Add any specific site requirements, gate pass details, electrical arrangements..."
+              />
+            </div>
+
+            <Button
+              type="submit"
+              disabled={isSubmitting}
+              className="w-full gradient-primary text-white font-semibold shadow-sm h-10"
+            >
+              {isSubmitting ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Logging Installation...
+                </>
+              ) : (
+                <>
+                  <Package className="w-4 h-4 mr-2" /> Log Installation
+                </>
+              )}
+            </Button>
+          </form>
+        
+      </OffCanvasPanel>
+
+      <OffCanvasPanel
+        open={!!viewInstallation}
+        onClose={() => setViewInstallation(null)}
+        bodyClassName="!px-0 !py-0"
+        header={
+          <div className="min-w-0 pr-2">
+            <h3 className="text-xl font-display font-bold text-slate-800">Installation Details</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {viewInstallation ? formatInstallationTicketId(viewInstallation) : ""}
+            </p>
+          </div>
+        }
+      >
           {viewInstallation && (
             <div className="flex flex-col">
               {/* Premium Header Banner */}
@@ -2164,12 +2433,12 @@ export default function Installations() {
 
                 <div className="flex flex-col sm:flex-row sm:items-baseline justify-between gap-2 mt-3">
                   <div>
-                    <DialogTitle className="text-xl sm:text-2xl font-black text-white tracking-tight">
+                    <h3 className="text-xl sm:text-2xl font-black text-white tracking-tight">
                       Installation Work Order & Dispatch
-                    </DialogTitle>
-                    <DialogDescription className="text-xs sm:text-sm text-slate-400 mt-0.5">
+                    </h3>
+                    <p className="text-xs sm:text-sm text-slate-400 mt-0.5">
                       Created on {viewInstallation.created_at ? new Date(viewInstallation.created_at).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }) : "N/A"}
-                    </DialogDescription>
+                    </p>
                   </div>
                   <div className="text-xs text-slate-400">
                     <span className="font-semibold text-slate-300">Customer Class:</span>{" "}
@@ -2248,7 +2517,7 @@ export default function Installations() {
                             </a>
                             <ManualWhatsAppButton
                               stage={
-                                viewInstallation.status === "verified" || viewInstallation.status === "Closed" ? "closed" :
+                                viewInstallation.status === "closed" || viewInstallation.status === "Closed" ? "closed" :
                                   viewInstallation.status === "completed" ? "technician_signoff" :
                                     viewInstallation.status === "Assigned" ? "field_visit_scheduled" : "creation"
                               }
@@ -2542,26 +2811,61 @@ export default function Installations() {
               </div>
             </div>
           )}
-        </DialogContent>
-      </Dialog>
+      </OffCanvasPanel>
 
       {/* ==================================================== */}
       {/* Edit Installation Modal (Admin)                      */}
       {/* ==================================================== */}
-      <Dialog open={!!editInstallation} onOpenChange={(open) => !open && setEditInstallation(null)}>
-        <DialogContent className="max-w-3xl w-[95vw] max-h-[90vh] overflow-y-auto p-6 rounded-2xl border border-slate-200 shadow-2xl bg-white">
-          <DialogHeader>
-            <DialogTitle className="text-lg font-bold text-slate-900 flex items-center gap-2">
-              <Edit2 className="w-5 h-5 text-amber-600" />
-              Edit Installation {editInstallation ? formatInstallationTicketId(editInstallation) : ""}
-            </DialogTitle>
-            <DialogDescription className="text-xs text-slate-500">
-              Update installation details, customer information, equipment scope, charges, and lifecycle status.
-            </DialogDescription>
-          </DialogHeader>
-
-          {editInstallation && (
-            <form onSubmit={handleSaveEdit} className="space-y-4 text-sm mt-3">
+      <OffCanvasPanel
+        open={!!editInstallation}
+        onClose={() => setEditInstallation(null)}
+        header={
+          <div className="min-w-0 flex items-center gap-3">
+            <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
+              <Edit2 className="w-5 h-5" />
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-xl font-display font-bold text-slate-800">
+                Edit Installation {editInstallation ? formatInstallationTicketId(editInstallation) : ""}
+              </h3>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Update installation details, customer information, equipment scope, charges, and lifecycle status.
+              </p>
+            </div>
+          </div>
+        }
+        footer={
+          editInstallation ? (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                className="flex-1 rounded-xl h-11 font-bold text-sm"
+                onClick={() => setEditInstallation(null)}
+                disabled={isSavingEdit}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                form="edit-installation-form"
+                className="flex-1 gradient-primary text-primary-foreground shadow-glow rounded-xl h-11 font-bold text-sm"
+                disabled={isSavingEdit}
+              >
+                {isSavingEdit ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Saving...
+                  </>
+                ) : (
+                  "Save Changes"
+                )}
+              </Button>
+            </>
+          ) : null
+        }
+      >
+{editInstallation && (
+            <form id="edit-installation-form" onSubmit={handleSaveEdit} className="space-y-4 text-sm">
               {/* Customer Type */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
@@ -2723,35 +3027,9 @@ export default function Installations() {
                 />
               </div>
 
-              <DialogFooter className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setEditInstallation(null)}
-                  className="text-xs"
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="submit"
-                  size="sm"
-                  disabled={isSavingEdit}
-                  className="text-xs font-semibold bg-primary text-white"
-                >
-                  {isSavingEdit ? (
-                    <>
-                      <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> Saving...
-                    </>
-                  ) : (
-                    "Save Changes"
-                  )}
-                </Button>
-              </DialogFooter>
-            </form>
+</form>
           )}
-        </DialogContent>
-      </Dialog>
+      </OffCanvasPanel>
 
       {/* ==================================================== */}
       {/* Delete Confirmation Dialog (Admin)                   */}

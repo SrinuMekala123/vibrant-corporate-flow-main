@@ -33,7 +33,6 @@ import {
   getRemoteResolutionMessage,
   getFieldVisitScheduledMessage,
   getTechnicianSignOffMessage,
-  getTicketFullSummaryMessage,
 } from "@/utils/whatsappService";
 
 type SignatureMode = "draw" | "upload";
@@ -73,7 +72,6 @@ const getEffectivePhase = (t: any): number => {
   // Phase 6: QA Verification & Closure
   if (
     status === "closed" ||
-    status === "Closed" ||
     status === "completed" ||
     status === "resolved" ||
     status === "Next Steps / Closure" ||
@@ -244,6 +242,8 @@ const ComplaintDetail = () => {
   const [followUpNotes, setFollowUpNotes] = useState<string>("");
   const [isFinalizingClosure, setIsFinalizingClosure] = useState(false);
   const [isForceClosing, setIsForceClosing] = useState(false);
+  const [arrivalCoords, setArrivalCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [isCapturingArrivalGps, setIsCapturingArrivalGps] = useState(false);
 
   // Return for Rework Modal (Phase 6 -> Phase 3 or Phase 5)
   const [showReworkModal, setShowReworkModal] = useState(false);
@@ -376,34 +376,52 @@ const ComplaintDetail = () => {
     const trackLocation = async () => {
       if (!navigator.geolocation) return;
       
-      navigator.geolocation.getCurrentPosition(
-        async (position) => {
-          const lat = position.coords.latitude;
-          const lng = position.coords.longitude;
-          const accuracy = position.coords.accuracy;
-          
-          try {
-            const { error } = await supabase.from("location_tracking").insert({
-              complaint_id: id,
-              latitude: lat,
-              longitude: lng,
-              accuracy: accuracy || null,
-              timestamp: new Date().toISOString()
-            });
-            if (error) {
-              console.warn("Failed to insert location tracking point:", error.message);
-            } else {
-              console.log(`📡 Logged location point: ${lat.toFixed(6)}, ${lng.toFixed(6)}`);
-            }
-          } catch (err) {
-            console.warn("Error inserting location tracking point:", err);
+      try {
+        const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(
+            resolve,
+            (error) => {
+              switch(error.code) {
+                case error.PERMISSION_DENIED:
+                  reject(new Error('GPS permission denied'));
+                  break;
+                case error.POSITION_UNAVAILABLE:
+                  reject(new Error('Location unavailable'));
+                  break;
+                case error.TIMEOUT:
+                  reject(new Error('GPS timeout'));
+                  break;
+                default:
+                  reject(new Error('Unknown GPS error'));
+              }
+            },
+            { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+          );
+        });
+
+        const lat = position.coords.latitude;
+        const lng = position.coords.longitude;
+        const accuracy = position.coords.accuracy;
+        
+        try {
+          const { error } = await supabase.from("location_tracking").insert({
+            complaint_id: id,
+            latitude: lat,
+            longitude: lng,
+            accuracy: accuracy || null,
+            timestamp: new Date().toISOString()
+          });
+          if (error) {
+            console.warn("Failed to insert location tracking point:", error.message);
+          } else {
+            console.log(`📡 Logged location point: ${lat.toFixed(6)}, ${lng.toFixed(6)}`);
           }
-        },
-        (error) => {
-          console.warn("Failed to get geolocation for automated tracking:", error.message);
-        },
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-      );
+        } catch (err) {
+          console.warn("Error inserting location tracking point:", err);
+        }
+      } catch (gpsErr) {
+        console.warn("GPS capture failed for automated tracking:", gpsErr);
+      }
     };
 
     // Log immediately on start
@@ -426,6 +444,52 @@ const ComplaintDetail = () => {
         });
     }
   }, [user?.id]);
+
+  // Session persistence for PIR/Resolution drafts
+  useEffect(() => {
+    if (!ticket?.id) return;
+    const storageKey = `complaint-draft-${ticket.id}`;
+    try {
+      const saved = sessionStorage.getItem(storageKey);
+      if (saved) {
+        const draft = JSON.parse(saved);
+        if (draft.pirFindings && !pirFindings) setPirFindings(draft.pirFindings);
+        if (draft.resolutionNote && !resolutionNote) setResolutionNote(draft.resolutionNote);
+        if (draft.pirSeverityInput && !pirSeverityInput) setPirSeverityInput(draft.pirSeverityInput);
+        if (draft.supSeverityInput && !supSeverityInput) setSupSeverityInput(draft.supSeverityInput);
+        if (draft.targetDurationInput && !targetDurationInput) setTargetDurationInput(draft.targetDurationInput);
+      }
+    } catch {
+      // ignore corrupt draft
+    }
+  }, [ticket?.id]);
+
+  useEffect(() => {
+    if (!ticket?.id) return;
+    const storageKey = `complaint-draft-${ticket.id}`;
+    const draft = {
+      pirFindings,
+      resolutionNote,
+      pirSeverityInput,
+      supSeverityInput,
+      targetDurationInput,
+    };
+    try {
+      sessionStorage.setItem(storageKey, JSON.stringify(draft));
+    } catch {
+      // ignore storage errors
+    }
+  }, [pirFindings, resolutionNote, pirSeverityInput, supSeverityInput, targetDurationInput, ticket?.id]);
+
+  const clearComplaintDraft = () => {
+    if (!ticket?.id) return;
+    const storageKey = `complaint-draft-${ticket.id}`;
+    try {
+      sessionStorage.removeItem(storageKey);
+    } catch {
+      // ignore
+    }
+  };
 
   useEffect(() => {
     if (ticket) {
@@ -847,7 +911,7 @@ const ComplaintDetail = () => {
   const currentPhase = getEffectivePhase(ticket);
 
   const canVerify = isSupervisorOrAdmin &&
-    (ticket.status === "completed" || ticket.status === "Resolution & Sign-off" || ticket.status === "awaiting_signoff" || currentPhase === 6 || ticket.status === "closed" || ticket.status === "Closed");
+    (ticket.status === "completed" || ticket.status === "Resolution & Sign-off" || ticket.status === "awaiting_signoff" || currentPhase === 6 || ticket.status === "closed");
 
   const canEdit = isRole("admin", "supervisor");
 
@@ -858,7 +922,7 @@ const ComplaintDetail = () => {
     const isClosed = ticket.status === 'closed' || ticket.status === 'Closed' || ticket.status === 'Resolved' || ticket.status === 'resolved' || Boolean(ticket.closed_at) || Boolean(ticket.closure_timestamp);
     if (!isClosed) return true;
     
-    // For closed tickets, allow reassignment within 48 hours from the closure timestamp onwards
+    // For verified tickets, allow reassignment within 48 hours from the closure timestamp onwards
     const closedDateStr = ticket.closed_at || ticket.closure_timestamp || ticket.feedback_timestamp || ticket.updated_at;
     if (!closedDateStr) return true;
     
@@ -1069,7 +1133,7 @@ const ComplaintDetail = () => {
     (isRole("technician") && isAssignedTechnician) ||
     isSupervisorOrAdmin
   ) &&
-    ticket.status !== "closed" &&
+    ticket.status !== "verified" &&
     ticket.status !== "Closed" &&
     (currentPhase === 3 || currentPhase === 4 || currentPhase === 5 || currentPhase === 6);
 
@@ -1252,6 +1316,10 @@ const ComplaintDetail = () => {
   };
 
   const handleStartJourney = async () => {
+    if (!isLeadTechnician) {
+      toast.error(`⚠️ Only the Lead Technician (${leadTechnicianName}) can start the journey.`);
+      return;
+    }
     setIsDetectingGps(true);
     setDetectedCoords(null);
     setTypedStartLocation("");
@@ -1310,6 +1378,62 @@ const ComplaintDetail = () => {
     }
 
     await saveJourneyStart(startLocJson);
+  };
+
+  // Robust GPS arrival capture for technicians marking "I Arrived"
+  const handleArrivedGPS = async () => {
+    if (!isLeadTechnician) {
+      toast.error(`⚠️ Only the Lead Technician (${leadTechnicianName}) can mark arrival.`);
+      return;
+    }
+    if (!navigator.geolocation) {
+      toast.error('Geolocation is not supported by your browser');
+      return;
+    }
+
+    setIsCapturingArrivalGps(true);
+    try {
+      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(
+          resolve,
+          (error) => {
+            switch(error.code) {
+              case error.PERMISSION_DENIED:
+                reject(new Error('Please allow GPS access in your browser settings'));
+                break;
+              case error.POSITION_UNAVAILABLE:
+                reject(new Error('Location information is unavailable'));
+                break;
+              case error.TIMEOUT:
+                reject(new Error('GPS request timed out. Please try again.'));
+                break;
+              default:
+                reject(new Error('An unknown error occurred while capturing GPS'));
+            }
+          },
+          { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+        );
+      });
+
+      const coords = { lat: position.coords.latitude, lng: position.coords.longitude };
+      setArrivalCoords(coords);
+
+      const nowIso = new Date().toISOString();
+      await updateMutation.mutateAsync({
+        arrival_timestamp: nowIso,
+        arrival_lat: coords.lat,
+        arrival_lng: coords.lng,
+        status: "in-progress",
+        current_phase: 4
+      } as any);
+
+      toast.success(`GPS location captured successfully (${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)})`);
+    } catch (error) {
+      console.error('GPS Error:', error);
+      toast.error(error instanceof Error ? error.message : 'Could not get GPS location. Please enable location services and try again.');
+    } finally {
+      setIsCapturingArrivalGps(false);
+    }
   };
 
   const confirmStartJourney = async () => {
@@ -1404,6 +1528,11 @@ const ComplaintDetail = () => {
   };
 
   const handleSubmitPIR = async () => {
+    if (!isLeadTechnician) {
+      toast.error(`⚠️ Only the Lead Technician (${leadTechnicianName}) can submit the PIR.`);
+      return;
+    }
+
     if (!pirFindings.trim()) {
       toast.error("Add PIR findings");
       return;
@@ -1446,6 +1575,7 @@ const ComplaintDetail = () => {
       setShowPIRForm(false);
       setShowResolution(true);
       toast.success("PIR submitted successfully! You can now add resolution notes.");
+      clearComplaintDraft();
 
       // 3. Dispatch notifications in background so UI is never blocked
       (async () => {
@@ -1481,6 +1611,11 @@ const ComplaintDetail = () => {
   };
 
   const handleSaveResolution = async () => {
+    if (!isLeadTechnician) {
+      toast.error(`⚠️ Only the Lead Technician (${leadTechnicianName}) can save resolution.`);
+      return;
+    }
+
     if (!resolutionNote.trim()) {
       toast.error("Please add resolution notes");
       return;
@@ -1517,6 +1652,7 @@ const ComplaintDetail = () => {
     setShowResolution(false);
     setShowSignOff(true);
     toast.success("Resolution saved! Now complete the sign-off.");
+    clearComplaintDraft();
   };
 
   const handleSignatureUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2040,7 +2176,7 @@ const ComplaintDetail = () => {
         }
 
         await updateMutation.mutateAsync({
-          status: "closed",
+          status: "verified",
           current_phase: 6,
           closed_at: new Date().toISOString(),
           closure_timestamp: new Date().toISOString(),
@@ -2224,13 +2360,13 @@ const ComplaintDetail = () => {
     }
 
     updateMutation.mutate({
-      status: "closed",
+      status: "verified",
       current_phase: 6,
       closure_timestamp: new Date().toISOString(),
       closed_by: currentUserFullName
     } as any);
     setShowVerification(false);
-    toast.success("🎉 Ticket officially closed!");
+    toast.success("🎉 Ticket officially verified!");
   };
 
   const handleApprove = async () => {
@@ -2274,7 +2410,7 @@ const ComplaintDetail = () => {
       }
     }
 
-    updateMutation.mutate({ status: "closed", current_phase: 6 } as any);
+    updateMutation.mutate({ status: "verified", current_phase: 6 } as any);
     setShowVerification(false);
   };
 
@@ -2433,11 +2569,14 @@ const ComplaintDetail = () => {
     const audioUrls = urls.filter(url => getFileType(url) === 'audio');
     const docUrls = urls.filter(url => getFileType(url) === 'document');
 
+    // Fallback: if no media detected but URLs exist, treat all as images
+    const finalMediaUrls = mediaUrls.length > 0 ? mediaUrls : (docUrls.length > 0 && urls.length > 0 ? urls : []);
+
     return (
       <div className="space-y-3 mt-2 w-full">
-        {mediaUrls.length > 0 && (
+        {finalMediaUrls.length > 0 && (
           <ImageGallery
-            images={mediaUrls}
+            images={finalMediaUrls}
             title="Attached Media"
             uploader="technician"
             emptyMessage="No media files attached"
@@ -3036,7 +3175,7 @@ const ComplaintDetail = () => {
   };
 
   return (
-    <div className="space-y-4 sm:space-y-6 max-w-[1600px] w-full mx-auto px-0 sm:px-2 md:px-0 py-1 sm:py-2">
+    <div className="space-y-4 sm:space-y-6 w-full max-w-none px-3 sm:px-4 md:px-6 lg:px-8 py-4 overflow-x-hidden">
 
       {/* Header */}
       <div className="glass-card rounded-xl sm:rounded-2xl p-4 sm:p-5 md:p-6 border border-border/60 shadow-glow relative overflow-hidden flex flex-col md:flex-row md:items-center justify-between gap-4 relative z-10">
@@ -3070,107 +3209,59 @@ const ComplaintDetail = () => {
             <h1 className="text-xl md:text-2xl font-display font-extrabold text-foreground tracking-tight break-words" title={ticket.title}>
               {ticket.title}
             </h1>
-            <div className="text-xs text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1.5 min-w-0 w-full">
-              <span className="flex items-center gap-1">
-                Customer: <span className="font-semibold text-foreground truncate max-w-[200px] sm:max-w-none">{ticket.customer_name || ticket.profiles?.full_name || ticket.created_by_name || "Customer"}</span>
-                {ticket.customer_phone && (
-                  <span className="text-muted-foreground text-[11px]">({ticket.customer_phone})</span>
-                )}
-              </span>
-              <span className="text-muted-foreground/45 hidden sm:inline">•</span>
-              <span className="flex items-center gap-1">
-                Registered: <span className="font-medium text-foreground">{formatIndianDateTime(ticket.created_at)}</span>
-              </span>
-              {ticket.assigned_supervisor && (
-                <>
-                  <span className="text-muted-foreground/45 hidden sm:inline">•</span>
-                  <span className="flex items-center gap-1">
-                    Supervisor: <span className="font-semibold text-primary truncate max-w-[150px] sm:max-w-none">{ticket.assigned_supervisor}</span>
-                  </span>
-                </>
-              )}
-              {assignedTechBadges.length > 0 && (
-                <>
-                  <span className="text-muted-foreground/45 hidden sm:inline">•</span>
-                  <span className="flex items-center gap-1.5 flex-wrap">
-                    Technician(s):
+             <div className="text-xs text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1.5 min-w-0 w-full">
+               <span className="flex items-center gap-1">
+                 Customer: <span className="font-semibold text-foreground break-words">{ticket.customer_name || ticket.profiles?.full_name || ticket.created_by_name || "Customer"}</span>
+                 {ticket.customer_phone && (
+                   <span className="text-muted-foreground text-[11px]">({ticket.customer_phone})</span>
+                 )}
+               </span>
+               <span className="text-muted-foreground/45 hidden sm:inline">•</span>
+               <span className="flex items-center gap-1">
+                 Registered: <span className="font-medium text-foreground">{formatIndianDateTime(ticket.created_at)}</span>
+               </span>
+               {ticket.assigned_supervisor && (
+                 <>
+                   <span className="text-muted-foreground/45 hidden sm:inline">•</span>
+                   <span className="flex items-center gap-1">
+                     Supervisor: <span className="font-semibold text-primary break-words">{ticket.assigned_supervisor}</span>
+                   </span>
+                 </>
+               )}
+                {assignedTechBadges.length > 0 && (
+                  <div className="flex flex-wrap gap-2 items-center">
+                    <span className="text-xs font-semibold text-muted-foreground">Technician(s):</span>
                     {assignedTechBadges.map((tb: any, i: number) => (
-                      <span key={tb.id || i} className="inline-flex items-center gap-1 font-semibold text-warning">
-                        {tb.is_lead && <Crown className="w-3.5 h-3.5 text-amber-500 fill-amber-500 inline" />}
+                      <span key={tb.id || i} className={tb.is_lead ? "font-bold text-amber-700 flex items-center gap-1" : "text-slate-700"}>
+                        {tb.is_lead && <Crown className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />}
                         {tb.name}
                         {tb.is_lead && <span className="text-[10px] bg-amber-500/20 text-amber-700 dark:text-amber-300 px-1 rounded font-bold">Lead</span>}
-                        {i < assignedTechBadges.length - 1 && <span className="text-muted-foreground/45">,</span>}
                       </span>
                     ))}
-                  </span>
-                </>
-              )}
-            </div>
+                  </div>
+                )}
+             </div>
           </div>
         </div>
         
-        <div className="flex items-center gap-2.5 self-end md:self-auto shrink-0 border-t md:border-t-0 pt-3 md:pt-0 w-full md:w-auto justify-end">
+        <div className="flex flex-col sm:flex-row gap-2 w-full">
           {/* 📲 WhatsApp Notification Center (Admin & Supervisor) */}
           {(isAdmin || isSupervisor) && (
-            <ManualWhatsAppButton
-              ticket={ticket}
-              buttonVariant="outline"
-              buttonText="WhatsApp Update"
-              size="sm"
-            />
-          )}
-
-          {/* 📲 Share via WhatsApp Button (Admin & Supervisor) */}
-          {(isAdmin || isSupervisor) && (
-            <Button
-              size="sm"
-              variant="outline"
-              className="border-emerald-500/60 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 font-semibold"
-              onClick={() => {
-                const rawPhone = customerPhone || ticket.customer_phone || ticket.profiles?.phone || "";
-                const cleanDigits = rawPhone.replace(/\D/g, "");
-                if (!cleanDigits) {
-                  toast.error("No valid customer phone number found for this complaint.");
-                  return;
-                }
-                const formattedPhone = cleanDigits.length === 10 ? `91${cleanDigits}` : cleanDigits;
-                const slicedId = formatComplaintTicketId(ticket);
-                const sDate = ticket.scheduled_date ? new Date(`${ticket.scheduled_date}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : undefined;
-                const sTime = ticket.scheduled_time ? ticket.scheduled_time.slice(0, 5) : undefined;
-                const techName = leadTechnicianName || ticket.assigned_technician || undefined;
-                const custName = ticket.customer_name || ticket.profiles?.full_name || "Valued Customer";
-                const hpCode = ticket.happiness_code || (ticket as any).walk_in_happiness_code || undefined;
-                const locDisplay = ticket.location || (ticket as any).address || "Site address";
-
-                const messageText = getTicketFullSummaryMessage({
-                  ticketType: "complaint",
-                  ticketId: slicedId,
-                  customerName: custName,
-                  titleOrEquipment: ticket.title,
-                  status: ticket.status,
-                  phase: ticket.current_phase || 1,
-                  technicianName: techName,
-                  scheduledDate: sDate,
-                  scheduledTime: sTime,
-                  happinessCode: hpCode,
-                  location: locDisplay,
-                  notes: ticket.resolution_notes || (ticket as any).notes || undefined,
-                });
-
-                window.open(`https://api.whatsapp.com/send?phone=${formattedPhone}&text=${encodeURIComponent(messageText)}`, "_blank");
-              }}
-              title="Share complaint details directly with customer via WhatsApp"
-            >
-              <MessageCircle className="w-4 h-4 mr-1.5 text-emerald-600 dark:text-emerald-400" />
-              Share Summary
-            </Button>
+            <div className="w-full sm:w-auto">
+              <ManualWhatsAppButton
+                ticket={ticket}
+                buttonVariant="outline"
+                buttonText="WhatsApp Update"
+                size="sm"
+              />
+            </div>
           )}
 
           {canReassign() && (
             <Button
               size="sm"
               variant="outline"
-              className="border-primary/60 text-primary hover:bg-primary/5"
+              className="w-full sm:w-auto border-primary/60 text-primary hover:bg-primary/5 whitespace-normal break-words text-center"
               onClick={() => {
                 const initialIds = (ticket.complaint_technicians && ticket.complaint_technicians.length > 0)
                   ? ticket.complaint_technicians.map((ct: any) => ct.technician_id)
@@ -3182,7 +3273,7 @@ const ComplaintDetail = () => {
                 setShowReassignModal(true);
               }}
             >
-              <RotateCcw className="w-4 h-4 mr-2" />
+              <RotateCcw className="w-4 h-4 mr-2 shrink-0" />
               {getReassignRemainingHours() !== null
                 ? `Reassign (${getReassignRemainingHours()}h left)`
                 : "Reassign Technicians"}
@@ -3192,25 +3283,25 @@ const ComplaintDetail = () => {
             <Button
               size="sm"
               variant="outline"
-              className="border-warning/60 text-warning hover:bg-warning/10 font-semibold"
+              className="w-full sm:w-auto border-warning/60 text-warning hover:bg-warning/10 font-semibold whitespace-normal break-words text-center"
               onClick={() => {
                 const elem = document.getElementById("phase-6-verification-section");
                 if (elem) elem.scrollIntoView({ behavior: "smooth" });
               }}
             >
-              <ShieldCheck className="w-4 h-4 mr-2" /> Verify & QA Close
+              <ShieldCheck className="w-4 h-4 mr-2 shrink-0" /> Verify & QA Close
             </Button>
           )}
           {canEdit && (
-            <Link to={`/complaints/${ticket.id}/edit`} className="w-full md:w-auto">
-              <Button variant="outline" size="sm" className="w-full md:w-auto border-border/80 hover:border-primary/30"><Edit className="w-4 h-4 mr-2" /> Edit</Button>
+            <Link to={`/complaints/${ticket.id}/edit`} className="w-full sm:w-auto">
+              <Button variant="outline" size="sm" className="w-full sm:w-auto border-border/80 hover:border-primary/30 whitespace-normal break-words text-center"><Edit className="w-4 h-4 mr-2 shrink-0" /> Edit</Button>
             </Link>
           )}
         </div>
       </div>
 
-      {/* 🚀 Mobile Mission Control (One-Tap Calling, WhatsApp, Navigation & GPS Arrival) - Only for Technicians */}
-      {isTechnician && (
+      {/* 🚀 Mobile Mission Control (One-Tap Calling, WhatsApp, Navigation & GPS Arrival) - Only for Lead Technician */}
+      {isLeadTechnician && (
         <TechnicianMissionControl
           ticketType="complaint"
           ticketId={ticket.id}
@@ -3231,6 +3322,35 @@ const ComplaintDetail = () => {
         />
       )}
 
+      {/* Crew Navigation Card for Non-Lead Technicians */}
+      {isAssistingTechnician && !isLeadTechnician && (
+        <div className="crew-navigation-card bg-blue-50 border-2 border-blue-200 rounded-xl p-5 mb-6">
+          <h3 className="font-bold text-blue-900 mb-2 flex items-center gap-2">
+            <MapPin className="w-5 h-5" /> Site Navigation (Crew View)
+          </h3>
+          <p className="text-xs text-blue-700 mb-4">
+            You are assigned as crew. Contact Lead Technician: <strong>{leadTechnicianName}</strong> for coordination.
+          </p>
+          <button 
+            onClick={() => {
+              const address = ticket.location || ticket.address || "";
+              const lat = ticket.customer_lat;
+              const lng = ticket.customer_lng;
+              let url = "#";
+              if (lat && lng) {
+                url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving`;
+              } else if (address) {
+                url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`;
+              }
+              if (url !== "#") window.open(url, '_blank');
+            }}
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl font-semibold flex items-center justify-center gap-2"
+          >
+            <Navigation className="w-4 h-4" /> Navigate to Site
+          </button>
+        </div>
+      )}
+
       {/* Reassignment Notice Banner */}
       {ticket.reassignment_reason && (
         <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-xl p-4 border-l-4 border-l-amber-500 bg-amber-500/10">
@@ -3241,6 +3361,56 @@ const ComplaintDetail = () => {
               <p className="text-xs text-amber-800 dark:text-amber-300 mt-1">
                 <strong>Supervisor Instructions:</strong> {ticket.reassignment_reason}
               </p>
+            </div>
+          </div>
+        </motion.div>
+      )}
+
+      {/* Previous Submission History (Shown after reassignment) */}
+      {ticket.reassignment_reason && (ticket.pir_findings || ticket.resolution_notes || (ticket.technician_evidence && ticket.technician_evidence.length > 0) || ticket.signature_url || ticket.signoff_timestamp) && (
+        <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-xl p-4 border-l-4 border-l-amber-500 bg-amber-500/10">
+          <div className="flex items-start gap-3">
+            <FileText className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0 space-y-2">
+              <p className="font-semibold text-sm text-amber-900 dark:text-amber-200">📦 Previous Submission History</p>
+              <p className="text-[11px] text-amber-700 dark:text-amber-300">
+                This ticket was previously worked on. The original findings, evidence, and sign-off are preserved below for reference.
+              </p>
+
+              {ticket.pir_findings && (
+                <div className="bg-white/60 dark:bg-slate-900/40 rounded-lg p-3 border border-amber-200/60">
+                  <p className="text-[10px] font-bold text-amber-800 uppercase tracking-wider mb-1">Previous PIR Findings</p>
+                  <p className="text-xs text-slate-700 dark:text-slate-300 whitespace-pre-wrap break-words">{ticket.pir_findings}</p>
+                </div>
+              )}
+
+              {(ticket.resolution || ticket.resolution_notes) && (
+                <div className="bg-white/60 dark:bg-slate-900/40 rounded-lg p-3 border border-amber-200/60">
+                  <p className="text-[10px] font-bold text-amber-800 uppercase tracking-wider mb-1">Previous Resolution Notes</p>
+                  <p className="text-xs text-slate-700 dark:text-slate-300 whitespace-pre-wrap break-words">{ticket.resolution || ticket.resolution_notes}</p>
+                </div>
+              )}
+
+              {ticket.technician_evidence && ticket.technician_evidence.length > 0 && (
+                <div className="bg-white/60 dark:bg-slate-900/40 rounded-lg p-3 border border-amber-200/60">
+                  <p className="text-[10px] font-bold text-amber-800 uppercase tracking-wider mb-1">Previous Work Evidence Photos ({ticket.technician_evidence.length})</p>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {ticket.technician_evidence.map((url: string, i: number) => (
+                      <img key={i} src={resolveSupabaseUrl(url)} alt={`Previous evidence ${i + 1}`} className="w-full h-24 object-cover rounded-lg border border-amber-200" />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {ticket.signature_url && (
+                <div className="bg-white/60 dark:bg-slate-900/40 rounded-lg p-3 border border-amber-200/60">
+                  <p className="text-[10px] font-bold text-amber-800 uppercase tracking-wider mb-1">Previous Customer Signature</p>
+                  <img src={resolveSupabaseUrl(ticket.signature_url)} alt="Previous Customer Signature" className="max-h-20 max-w-full object-contain rounded-lg border border-amber-200 bg-white p-1" />
+                  {ticket.signoff_timestamp && (
+                    <p className="text-[10px] text-amber-700 mt-1">Signed Off At: {formatIndianDateTime(ticket.signoff_timestamp)}</p>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </motion.div>
@@ -3366,9 +3536,9 @@ const ComplaintDetail = () => {
       )}
 
       {/* Main Grid Layout for Widescreen */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6 items-start w-full">
         {/* Left/Main Column: Actions, forms, timeline */}
-        <div className="lg:col-span-2 space-y-6">
+        <div className="lg:col-span-2 space-y-4 sm:space-y-6 min-w-0 w-full">
 
       {/* Phase 1: Supervisor Assignment (Admin action needed) */}
       {ticket.current_phase === 1 && !ticket.assigned_supervisor && (
@@ -3606,6 +3776,25 @@ const ComplaintDetail = () => {
                 {isLeadTechnician ? (
                   /* Lead Technician: PIR Diagnostic Input Form */
                   <div className="space-y-4">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        onClick={handleArrivedGPS}
+                        disabled={isCapturingArrivalGps || ticket.arrival_timestamp}
+                        className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold shadow-xs disabled:opacity-50"
+                      >
+                        {isCapturingArrivalGps ? (
+                          <><Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> Capturing GPS...</>
+                        ) : (
+                          <><MapPin className="w-3.5 h-3.5 mr-1.5" /> {ticket.arrival_timestamp ? 'Arrived (GPS) ✓' : 'I Arrived (GPS)'}</>
+                        )}
+                      </Button>
+                      {arrivalCoords && (
+                        <span className="text-[10px] text-muted-foreground font-mono">
+                          {arrivalCoords.lat.toFixed(5)}, {arrivalCoords.lng.toFixed(5)}
+                        </span>
+                      )}
+                    </div>
                     <div className="space-y-1">
                       <label className="text-sm font-semibold text-foreground flex items-center gap-1.5">
                         <FileText className="w-4 h-4 text-primary" /> PIR Findings & Site Diagnostic *
@@ -3752,12 +3941,12 @@ const ComplaintDetail = () => {
                     )}
 
                     {/* Action Button */}
-                    <div className="flex justify-end pt-3 border-t">
+                    <div className="flex justify-end pt-3 border-t px-4 py-3">
                       <Button
                         size="default"
                         onClick={handleSubmitPIR}
                         disabled={isSubmittingPIR || updateMutation.isPending || isUploading}
-                        className="gradient-primary text-white font-semibold shadow-sm"
+                        className="w-full sm:w-auto gradient-primary text-white font-semibold shadow-sm text-sm sm:text-base whitespace-normal break-words text-center"
                       >
                         {isSubmittingPIR || updateMutation.isPending || isUploading ? (
                           <>
@@ -3880,12 +4069,12 @@ const ComplaintDetail = () => {
                         Click below to enter the work completion notes, attach photo/video proofs of the fix, and capture the customer's signature.
                       </p>
                     </div>
-                    <Button
-                      onClick={() => setShowResolution(true)}
-                      className="bg-success hover:bg-success/90 text-success-foreground font-semibold px-5 py-2.5 shrink-0 shadow-sm transition-all"
-                    >
-                      <PlusCircle className="w-4 h-4 mr-2" /> {ticket.resolution ? "Update Resolution & Customer Sign-Off" : "Add Resolution & Customer Sign-Off"}
-                    </Button>
+                     <Button
+                       onClick={() => setShowResolution(true)}
+                       className="w-full sm:w-auto bg-success hover:bg-success/90 text-success-foreground font-semibold px-5 py-2.5 shadow-sm transition-all whitespace-normal break-words text-center text-sm sm:text-base"
+                     >
+                       <PlusCircle className="w-4 h-4 mr-2 shrink-0" /> {ticket.resolution ? "Update Resolution & Customer Sign-Off" : "Add Resolution & Customer Sign-Off"}
+                     </Button>
                   </div>
                 ) : (
                   <div className="space-y-4 pt-1">
@@ -4029,7 +4218,7 @@ const ComplaintDetail = () => {
                         <PenTool className="w-4 h-4 text-primary" /> Customer Sign-Off & Signature *
                       </label>
 
-                      <div className="flex gap-2 border-b border-border">
+                       <div className="flex flex-col sm:flex-row gap-2 border-b border-border">
                         <button
                           type="button"
                           onClick={() => setSignatureMode("draw")}
@@ -4175,7 +4364,11 @@ const ComplaintDetail = () => {
                   <h3 className="font-semibold text-foreground text-base">Phase 6: QA Verification & Final Closure</h3>
                 </div>
                 <div className="flex items-center gap-2">
-                  {ticket.status === 'closed' ? (
+                  {ticket.force_closed ? (
+                    <span className="text-xs font-bold bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 px-3 py-1 rounded-full border border-amber-300">
+                      Closed (Force Closure)
+                    </span>
+                  ) : ticket.status === 'closed' ? (
                     <span className="text-xs font-bold bg-muted text-muted-foreground px-3 py-1 rounded-full">
                       Ticket Closed
                     </span>
@@ -4188,7 +4381,7 @@ const ComplaintDetail = () => {
               </div>
 
               {/* 48-Hour Post-Closure Reassignment Action Strip (Admin / Supervisor) */}
-              {isSupervisorOrAdmin && (ticket.status === 'closed' || ticket.status === 'Closed' || Boolean(ticket.closed_at)) && (
+              {isSupervisorOrAdmin && (ticket.status === 'closed' || Boolean(ticket.closed_at)) && (
                 <div className="p-3.5 rounded-xl border border-primary/30 bg-primary/5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-xs">
                   <div className="flex items-center gap-2.5">
                     <div className="p-1.5 rounded-lg bg-primary/10 text-primary shrink-0">
@@ -4265,202 +4458,206 @@ const ComplaintDetail = () => {
                 )}
               </div>
 
-              {/* Customer Satisfaction Feedback & Happiness Code (Strictly visible only to Supervisors & Admins in Phase 6) */}
-              {isSupervisorOrAdmin ? (
-                !showVerificationForm && !ticket.feedback_collected ? (
-                  /* By default in Phase 6, show ONLY a button: "Collect Customer Feedback & Verify" */
-                  <div className="p-4 rounded-xl bg-primary/5 border border-primary/20 flex flex-col sm:flex-row items-center justify-between gap-4">
-                    <div>
-                      <h4 className="font-semibold text-sm text-foreground flex items-center gap-2">
-                        <MessageSquare className="w-4 h-4 text-primary" /> Customer Satisfaction & Happiness Code Verification
-                      </h4>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Verify the customer's 5-digit Happiness Code and record satisfaction feedback before final ticket closure.
-                      </p>
-                    </div>
-                    <Button
-                      onClick={() => setShowVerificationForm(true)}
-                      className="bg-primary hover:bg-primary/90 text-primary-foreground font-semibold px-4 py-2 text-xs shrink-0 shadow-xs"
-                    >
-                      <ShieldCheck className="w-4 h-4 mr-1.5" /> Collect Customer Feedback & Verify
-                    </Button>
-                  </div>
-                ) : (
-                  /* Full Feedback & Happiness Code Verification Panel */
-                  <div className="p-4 rounded-xl bg-primary/5 border border-primary/20 space-y-4">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <MessageSquare className="w-4.5 h-4.5 text-primary" />
-                        <h4 className="font-semibold text-sm text-primary">Customer Satisfaction & Verification</h4>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {customerPhone && (
-                          <Button size="sm" variant="outline" onClick={handleCallCustomer} className="text-xs h-7">
-                            <Phone className="w-3 h-3 mr-1" /> Call Customer ({customerPhone})
-                          </Button>
-                        )}
-                        {!ticket.feedback_collected && (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => setShowVerificationForm(false)}
-                            className="text-xs h-7 text-muted-foreground"
-                          >
-                            Collapse
-                          </Button>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* 1. Happiness Code Verification (LG style) */}
-                    <div className="p-3.5 rounded-lg bg-white dark:bg-slate-900 border border-border space-y-2.5">
-                      <div className="flex items-center justify-between">
-                        <label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
-                          <Sparkles className="w-4 h-4 text-amber-500" /> Enter Customer's Happiness Code *
-                        </label>
-                        {ticket.happiness_code_sent_at && (
-                          <span className="text-[11px] text-muted-foreground">
-                            Sent to customer via WhatsApp: {formatIndianDateTime(ticket.happiness_code_sent_at)}
-                          </span>
-                        )}
-                      </div>
-
-                      {ticket.happiness_code_verified || codeVerifiedLocally ? (
-                        <div className="p-2.5 rounded-lg bg-success/15 border border-success/30 text-success text-xs font-semibold flex items-center justify-between">
-                          <span className="flex items-center gap-1.5">
-                            <CheckCircle2 className="w-4 h-4" /> Happiness Code Verified Successfully!
-                          </span>
-                          <span className="font-mono bg-success/20 px-2 py-0.5 rounded text-xs tracking-wider">
-                            {ticket.happiness_code || "VERIFIED"}
-                          </span>
-                        </div>
-                      ) : (
-                        <div className="space-y-2">
-                          <p className="text-xs text-muted-foreground">
-                            Ask the customer for the 5-digit code sent to their WhatsApp upon technician resolution.
+              {!ticket.force_closed && (
+                <div>
+                  {/* Customer Satisfaction Feedback & Happiness Code (Strictly visible only to Supervisors & Admins in Phase 6) */}
+                  {isSupervisorOrAdmin ? (
+                    !showVerificationForm && !ticket.feedback_collected ? (
+                      /* By default in Phase 6, show ONLY a button: "Collect Customer Feedback & Verify" */
+                      <div className="p-4 rounded-xl bg-primary/5 border border-primary/20 flex flex-col sm:flex-row items-center justify-between gap-4">
+                        <div>
+                          <h4 className="font-semibold text-sm text-foreground flex items-center gap-2">
+                            <MessageSquare className="w-4 h-4 text-primary" /> Customer Satisfaction & Happiness Code Verification
+                          </h4>
+                          <p className="text-xs text-muted-foreground mt-1">
+                            Verify the customer's 5-digit Happiness Code and record satisfaction feedback before final ticket closure.
                           </p>
-                          <div className="flex items-center gap-2">
-                            <Input
-                              placeholder="Enter Customer's Happiness Code"
-                              value={inputHappinessCode}
-                              onChange={(e) => {
-                                setInputHappinessCode(e.target.value.replace(/\D/g, '').slice(0, 5));
-                                setCodeVerificationError("");
-                              }}
-                              maxLength={5}
-                              className="font-mono tracking-widest text-sm max-w-[260px] bg-background"
-                            />
-                            <Button
-                              size="sm"
-                              onClick={handleVerifyHappinessCode}
-                              disabled={isVerifyingCode || inputHappinessCode.length !== 5}
-                              className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs h-9 px-4 font-semibold"
-                            >
-                              {isVerifyingCode ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> : <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />}
-                              Verify Code
-                            </Button>
-                          </div>
-                          {codeVerificationError && (
-                            <p className="text-xs text-destructive font-medium flex items-center gap-1 mt-1">
-                              <AlertCircle className="w-3.5 h-3.5 shrink-0" /> {codeVerificationError}
-                            </p>
-                          )}
                         </div>
-                      )}
-                    </div>
-
-                    {/* 2. Customer Satisfaction Feedback */}
-                    {!ticket.feedback_collected ? (
-                      <div className="space-y-3 pt-1">
-                        {/* Context box if customer feedback was previously recorded before rework */}
-                        {ticket.feedback_comments && (
-                          <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/25 text-xs space-y-1">
-                            <p className="font-semibold text-amber-800 dark:text-amber-200 flex items-center gap-1.5">
-                              <RotateCcw className="w-3.5 h-3.5 text-amber-600" /> Previous Customer Feedback (Before Rework)
-                            </p>
-                            <p className="text-muted-foreground">
-                              Previous Rating: <strong className="capitalize text-foreground">{ticket.customer_satisfaction?.replace('_', ' ') || 'Recorded'}</strong>
-                            </p>
-                            <p className="text-slate-700 dark:text-slate-300 italic">"{ticket.feedback_comments}"</p>
-                            <p className="text-[11px] text-muted-foreground mt-1">
-                              * Collecting new feedback below will record the customer's updated satisfaction and replace the previous comments.
-                            </p>
-                          </div>
-                        )}
-                        <div className="space-y-1.5">
-                          <label className="text-xs font-semibold text-foreground">Satisfaction Level *</label>
-                          <div className="grid grid-cols-3 gap-2">
-                            <button
-                              type="button"
-                              onClick={() => setFeedbackSatisfaction('satisfied')}
-                              className={`p-2.5 rounded-lg border text-center transition-all ${feedbackSatisfaction === 'satisfied' ? 'border-success bg-success/15 text-success font-semibold' : 'border-border hover:border-success/40 text-muted-foreground'}`}
-                            >
-                              <ThumbsUp className="w-4 h-4 mx-auto mb-1" />
-                              <span className="text-xs">Satisfied</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setFeedbackSatisfaction('partially_satisfied')}
-                              className={`p-2.5 rounded-lg border text-center transition-all ${feedbackSatisfaction === 'partially_satisfied' ? 'border-warning bg-warning/15 text-warning font-semibold' : 'border-border hover:border-warning/40 text-muted-foreground'}`}
-                            >
-                              <Star className="w-4 h-4 mx-auto mb-1" />
-                              <span className="text-xs">Partially</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setFeedbackSatisfaction('unsatisfied')}
-                              className={`p-2.5 rounded-lg border text-center transition-all ${feedbackSatisfaction === 'unsatisfied' ? 'border-destructive bg-destructive/15 text-destructive font-semibold' : 'border-border hover:border-destructive/40 text-muted-foreground'}`}
-                            >
-                              <ThumbsDown className="w-4 h-4 mx-auto mb-1" />
-                              <span className="text-xs">Unsatisfied</span>
-                            </button>
-                          </div>
-                        </div>
-
-                        <div className="space-y-1.5">
-                          <label className="text-xs font-semibold text-foreground">Customer Comments</label>
-                          <Textarea
-                            value={feedbackComments}
-                            onChange={e => setFeedbackComments(e.target.value)}
-                            placeholder="Customer remarks on repair quality, punctuality..."
-                            rows={2}
-                            className="bg-white dark:bg-slate-900 text-xs"
-                          />
-                        </div>
-
                         <Button
-                          size="sm"
-                          onClick={handleCollectFeedback}
-                          disabled={!feedbackSatisfaction || isCollectingFeedback}
-                          className="w-full bg-primary text-primary-foreground text-xs font-semibold"
+                          onClick={() => setShowVerificationForm(true)}
+                          className="bg-primary hover:bg-primary/90 text-primary-foreground font-semibold px-4 py-2 text-xs shrink-0 shadow-xs"
                         >
-                          {isCollectingFeedback ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> : <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />}
-                          Record Customer Feedback
+                          <ShieldCheck className="w-4 h-4 mr-1.5" /> Collect Customer Feedback & Verify
                         </Button>
                       </div>
                     ) : (
-                      <div className="p-3 rounded-lg bg-success/10 border border-success/20 text-xs space-y-1">
-                        <p className="font-semibold text-success flex items-center gap-1.5">
-                          <CheckCircle2 className="w-4 h-4" /> Feedback Recorded
-                        </p>
-                        <p><strong>Satisfaction:</strong> {ticket.customer_satisfaction?.replace('_', ' ')}</p>
-                        {ticket.feedback_comments && <p><strong>Comments:</strong> {ticket.feedback_comments}</p>}
+                      /* Full Feedback & Happiness Code Verification Panel */
+                      <div className="p-4 rounded-xl bg-primary/5 border border-primary/20 space-y-4">
+                       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                         <div className="flex items-center gap-2">
+                           <MessageSquare className="w-4.5 h-4.5 text-primary" />
+                           <h4 className="font-semibold text-sm text-primary break-words">Customer Satisfaction & Verification</h4>
+                         </div>
+                         <div className="flex items-center gap-2 w-full sm:w-auto">
+                           {customerPhone && (
+                             <Button size="sm" variant="outline" onClick={handleCallCustomer} className="text-xs h-7 w-full sm:w-auto">
+                               <Phone className="w-3 h-3 mr-1" /> Call Customer ({customerPhone})
+                             </Button>
+                           )}
+                           {!ticket.feedback_collected && (
+                             <Button
+                               size="sm"
+                               variant="ghost"
+                               onClick={() => setShowVerificationForm(false)}
+                               className="text-xs h-7 text-muted-foreground w-full sm:w-auto"
+                             >
+                               Collapse
+                             </Button>
+                           )}
+                         </div>
+                       </div>
+
+                        {/* 1. Happiness Code Verification (LG style) */}
+                        <div className="p-3.5 rounded-lg bg-white dark:bg-slate-900 border border-border space-y-2.5">
+                          <div className="flex items-center justify-between">
+                            <label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                              <Sparkles className="w-4 h-4 text-amber-500" /> Enter Customer's Happiness Code *
+                            </label>
+                            {ticket.happiness_code_sent_at && (
+                              <span className="text-[11px] text-muted-foreground">
+                                Sent to customer via WhatsApp: {formatIndianDateTime(ticket.happiness_code_sent_at)}
+                              </span>
+                            )}
+                          </div>
+
+                          {ticket.happiness_code_verified || codeVerifiedLocally ? (
+                            <div className="p-2.5 rounded-lg bg-success/15 border border-success/30 text-success text-xs font-semibold flex items-center justify-between">
+                              <span className="flex items-center gap-1.5">
+                                <CheckCircle2 className="w-4 h-4" /> Happiness Code Verified Successfully!
+                              </span>
+                              <span className="font-mono bg-success/20 px-2 py-0.5 rounded text-xs tracking-wider">
+                                {ticket.happiness_code || "VERIFIED"}
+                              </span>
+                            </div>
+                          ) : (
+                            <div className="space-y-2">
+                              <p className="text-xs text-muted-foreground">
+                                Ask the customer for the 5-digit code sent to their WhatsApp upon technician resolution.
+                              </p>
+                              <div className="flex items-center gap-2">
+                                <Input
+                                  placeholder="Enter Customer's Happiness Code"
+                                  value={inputHappinessCode}
+                                  onChange={(e) => {
+                                    setInputHappinessCode(e.target.value.replace(/\D/g, '').slice(0, 5));
+                                    setCodeVerificationError("");
+                                  }}
+                                  maxLength={5}
+                                  className="font-mono tracking-widest text-sm max-w-[260px] bg-background"
+                                />
+                                <Button
+                                  size="sm"
+                                  onClick={handleVerifyHappinessCode}
+                                  disabled={isVerifyingCode || inputHappinessCode.length !== 5}
+                                  className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs h-9 px-4 font-semibold"
+                                >
+                                  {isVerifyingCode ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> : <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />}
+                                  Verify Code
+                                </Button>
+                              </div>
+                              {codeVerificationError && (
+                                <p className="text-xs text-destructive font-medium flex items-center gap-1 mt-1">
+                                  <AlertCircle className="w-3.5 h-3.5 shrink-0" /> {codeVerificationError}
+                                </p>
+                              )}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* 2. Customer Satisfaction Feedback */}
+                        {!ticket.feedback_collected ? (
+                          <div className="space-y-3 pt-1">
+                            {/* Context box if customer feedback was previously recorded before rework */}
+                            {ticket.feedback_comments && (
+                              <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/25 text-xs space-y-1">
+                                <p className="font-semibold text-amber-800 dark:text-amber-200 flex items-center gap-1.5">
+                                  <RotateCcw className="w-3.5 h-3.5 text-amber-600" /> Previous Customer Feedback (Before Rework)
+                                </p>
+                                <p className="text-muted-foreground">
+                                  Previous Rating: <strong className="capitalize text-foreground">{ticket.customer_satisfaction?.replace('_', ' ') || 'Recorded'}</strong>
+                                </p>
+                                <p className="text-slate-700 dark:text-slate-300 italic">"{ticket.feedback_comments}"</p>
+                                <p className="text-[11px] text-muted-foreground mt-1">
+                                  * Collecting new feedback below will record the customer's updated satisfaction and replace the previous comments.
+                                </p>
+                              </div>
+                            )}
+                            <div className="space-y-1.5">
+                              <label className="text-xs font-semibold text-foreground">Satisfaction Level *</label>
+                              <div className="grid grid-cols-3 gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => setFeedbackSatisfaction('satisfied')}
+                                  className={`p-2.5 rounded-lg border text-center transition-all ${feedbackSatisfaction === 'satisfied' ? 'border-success bg-success/15 text-success font-semibold' : 'border-border hover:border-success/40 text-muted-foreground'}`}
+                                >
+                                  <ThumbsUp className="w-4 h-4 mx-auto mb-1" />
+                                  <span className="text-xs">Satisfied</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setFeedbackSatisfaction('partially_satisfied')}
+                                  className={`p-2.5 rounded-lg border text-center transition-all ${feedbackSatisfaction === 'partially_satisfied' ? 'border-warning bg-warning/15 text-warning font-semibold' : 'border-border hover:border-warning/40 text-muted-foreground'}`}
+                                >
+                                  <Star className="w-4 h-4 mx-auto mb-1" />
+                                  <span className="text-xs">Partially</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setFeedbackSatisfaction('unsatisfied')}
+                                  className={`p-2.5 rounded-lg border text-center transition-all ${feedbackSatisfaction === 'unsatisfied' ? 'border-destructive bg-destructive/15 text-destructive font-semibold' : 'border-border hover:border-destructive/40 text-muted-foreground'}`}
+                                >
+                                  <ThumbsDown className="w-4 h-4 mx-auto mb-1" />
+                                  <span className="text-xs">Unsatisfied</span>
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="space-y-1.5">
+                              <label className="text-xs font-semibold text-foreground">Customer Comments</label>
+                              <Textarea
+                                value={feedbackComments}
+                                onChange={e => setFeedbackComments(e.target.value)}
+                                placeholder="Customer remarks on repair quality, punctuality..."
+                                rows={2}
+                                className="bg-white dark:bg-slate-900 text-xs"
+                              />
+                            </div>
+
+                            <Button
+                              size="sm"
+                              onClick={handleCollectFeedback}
+                              disabled={!feedbackSatisfaction || isCollectingFeedback}
+                              className="w-full bg-primary text-primary-foreground text-xs font-semibold"
+                            >
+                              {isCollectingFeedback ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> : <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />}
+                              Record Customer Feedback
+                            </Button>
+                          </div>
+                        ) : (
+                          <div className="p-3 rounded-lg bg-success/10 border border-success/20 text-xs space-y-1">
+                            <p className="font-semibold text-success flex items-center gap-1.5">
+                              <CheckCircle2 className="w-4 h-4" /> Feedback Recorded
+                            </p>
+                            <p><strong>Satisfaction:</strong> {ticket.customer_satisfaction?.replace('_', ' ')}</p>
+                            {ticket.feedback_comments && <p><strong>Comments:</strong> {ticket.feedback_comments}</p>}
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
-                )
-              ) : (
-                <div className="p-4 rounded-xl bg-indigo-50/70 dark:bg-indigo-950/20 border border-indigo-200 dark:border-indigo-800 text-center space-y-2">
-                  <ShieldCheck className="w-7 h-7 text-indigo-600 dark:text-indigo-400 mx-auto" />
-                  <h4 className="font-semibold text-sm text-foreground">Under Supervisor QA Review & Customer Verification</h4>
-                  <p className="text-xs text-muted-foreground max-w-md mx-auto">
-                    Your resolution and sign-off have been submitted. The supervisor or admin will verify satisfaction with the customer before closing this ticket.
-                  </p>
+                    )
+                  ) : (
+                    <div className="p-4 rounded-xl bg-indigo-50/70 dark:bg-indigo-950/20 border border-indigo-200 dark:border-indigo-800 text-center space-y-2">
+                      <ShieldCheck className="w-7 h-7 text-indigo-600 dark:text-indigo-400 mx-auto" />
+                      <h4 className="font-semibold text-sm text-foreground">Under Supervisor QA Review & Customer Verification</h4>
+                      <p className="text-xs text-muted-foreground max-w-md mx-auto">
+                        Your resolution and sign-off have been submitted. The supervisor or admin will verify satisfaction with the customer before closing this ticket.
+                      </p>
+                    </div>
+                  )}
                 </div>
               )}
 
               {/* Final Action (Supervisor / Admin) */}
-              {isSupervisorOrAdmin && ticket.status !== 'closed' && (
+              {isSupervisorOrAdmin && ticket.status !== 'verified' && (
                 <div className="space-y-3 pt-2 border-t">
                   <label className="text-sm font-semibold text-foreground block">Final Action Decision</label>
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
@@ -4550,9 +4747,9 @@ const ComplaintDetail = () => {
                     </div>
                   )}
 
-                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 pt-2">
-                    {/* Admin / Supervisor Force Close Button */}
-                    {isSupervisorOrAdmin && ticket.status !== 'closed' && (
+                   <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 pt-2">
+                     {/* Admin / Supervisor Force Close Button */}
+               {isSupervisorOrAdmin && ticket.status !== 'closed' && (
                       <Button
                         type="button"
                         variant="outline"
@@ -4626,7 +4823,7 @@ const ComplaintDetail = () => {
         </div>
 
         {/* Right/Sidebar Column (Details & Assigned Team) */}
-        <div className="space-y-6">
+        <div className="space-y-6 min-w-0 w-full">
           <motion.div initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-xl p-5 space-y-4">
             <h2 className="font-semibold flex items-center gap-2"><FileText className="w-4 h-4 text-primary" /> Details</h2>
             <div className="space-y-3 text-sm">
@@ -4872,7 +5069,7 @@ const ComplaintDetail = () => {
 
       {/* Field Visit Assignment Modal (Phase 2 -> Phase 3) */}
       <Dialog open={showFieldVisitModal} onOpenChange={setShowFieldVisitModal}>
-        <DialogContent className="sm:max-w-3xl w-[96vw] max-h-[90vh] flex flex-col gap-0 p-0 overflow-hidden rounded-3xl border border-border/80 shadow-2xl bg-card">
+        <DialogContent className="sm:max-w-3xl w-[96vw] max-h-[90vh] flex flex-col gap-0 p-0 overflow-hidden rounded-3xl border border-border/80 shadow-2xl bg-card max-w-full">
           {/* Sticky Header */}
           <div className="p-5 sm:p-6 pr-12 sm:pr-14 border-b border-border/60 bg-card/95 backdrop-blur-md shrink-0">
             <div className="flex items-center gap-3.5 min-w-0">
@@ -5274,7 +5471,7 @@ const ComplaintDetail = () => {
           </div>
 
           {/* Sticky Footer: ALWAYS Visible at Bottom */}
-          <div className="p-4 sm:p-5 border-t border-border/60 bg-muted/30 backdrop-blur-md shrink-0 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div className="p-4 sm:p-5 border-t border-border/60 bg-muted/30 backdrop-blur-md shrink-0 flex flex-col sm:flex-row items-center justify-between gap-3 pb-6">
             <div className="text-xs">
               {fieldVisitSelectedTechs.length === 0 ? (
                 <span className="text-destructive font-semibold flex items-center gap-1.5">
@@ -5297,19 +5494,19 @@ const ComplaintDetail = () => {
               )}
             </div>
 
-            <div className="flex items-center gap-2.5 w-full sm:w-auto justify-end">
+             <div className="flex items-center gap-2.5 w-full sm:w-auto justify-end">
               <Button
                 type="button"
                 variant="outline"
                 onClick={() => setShowFieldVisitModal(false)}
                 disabled={isAssigningFieldVisit}
-                className="rounded-xl h-10 px-4 text-xs font-bold"
+                className="rounded-xl h-10 px-4 text-xs font-bold w-full sm:w-auto"
               >
                 Cancel
               </Button>
               <Button
                 type="button"
-                className="gradient-primary rounded-xl font-bold h-10 px-5 text-xs shadow-md"
+                className="gradient-primary rounded-xl font-bold h-10 px-5 text-xs shadow-md w-full sm:w-auto"
                 onClick={handleConfirmFieldVisit}
                 disabled={
                   isAssigningFieldVisit ||
@@ -5744,7 +5941,7 @@ const ComplaintDetail = () => {
 
       {/* 🔄 Return for Rework Modal (Supervisor -> Reassign, Reschedule & Send Back) */}
       <Dialog open={showReworkModal} onOpenChange={setShowReworkModal}>
-        <DialogContent className="sm:max-w-xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="sm:max-w-xl max-h-[90vh] overflow-y-auto p-4 sm:p-6 max-w-full overflow-x-hidden">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-destructive font-bold">
               <RotateCcw className="w-5 h-5 text-destructive" /> Return Ticket for Rework
@@ -5764,7 +5961,7 @@ const ComplaintDetail = () => {
                 <button
                   type="button"
                   onClick={() => setReworkTargetPhase(3)}
-                  className={`p-3 rounded-xl border-2 text-left transition-all text-xs ${
+                  className={`w-full p-3 sm:p-4 rounded-lg border-2 text-left transition-all text-xs ${
                     reworkTargetPhase === 3
                       ? "border-amber-500 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 font-semibold ring-2 ring-amber-500"
                       : "border-border hover:border-amber-400/50 bg-background"
@@ -5774,7 +5971,7 @@ const ComplaintDetail = () => {
                     <Wrench className="w-4 h-4 text-amber-600" />
                     <span className="font-bold">Phase 3 (Dispatch)</span>
                   </div>
-                  <p className="text-[11px] text-muted-foreground font-normal">
+                  <p className="text-[11px] text-muted-foreground font-normal break-words">
                     Requires on-site re-visit, re-travel, and new diagnosis.
                   </p>
                 </button>
@@ -5782,7 +5979,7 @@ const ComplaintDetail = () => {
                 <button
                   type="button"
                   onClick={() => setReworkTargetPhase(5)}
-                  className={`p-3 rounded-xl border-2 text-left transition-all text-xs ${
+                  className={`w-full p-3 sm:p-4 rounded-lg border-2 text-left transition-all text-xs ${
                     reworkTargetPhase === 5
                       ? "border-indigo-500 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-900 dark:text-indigo-200 font-semibold ring-2 ring-indigo-500"
                       : "border-border hover:border-indigo-400/50 bg-background"
@@ -5792,7 +5989,7 @@ const ComplaintDetail = () => {
                     <FileText className="w-4 h-4 text-indigo-600" />
                     <span className="font-bold">Phase 5 (Resolution)</span>
                   </div>
-                  <p className="text-[11px] text-muted-foreground font-normal">
+                  <p className="text-[11px] text-muted-foreground font-normal break-words">
                     PIR is accepted, technician must redo fix/proof/sign-off.
                   </p>
                 </button>
@@ -5800,18 +5997,20 @@ const ComplaintDetail = () => {
             </div>
 
             {/* 2. New Scheduled Date & Time */}
-            <div className="bg-muted/30 p-3.5 rounded-xl border space-y-1.5">
-              <label className="text-xs font-semibold block text-foreground">
-                New Scheduled Date & Time <span className="text-destructive">*</span>
-              </label>
-              <DateTimePicker
-                dateValue={reworkScheduledDate}
-                timeValue={reworkScheduledTime}
-                onDateChange={setReworkScheduledDate}
-                onTimeChange={setReworkScheduledTime}
-                placeholder="Pick new scheduled date & time..."
-              />
-            </div>
+             <div className="bg-muted/30 p-3.5 rounded-xl border space-y-1.5 w-full">
+               <label className="text-xs font-semibold block text-foreground">
+                 New Scheduled Date & Time <span className="text-destructive">*</span>
+               </label>
+               <div className="w-full">
+                 <DateTimePicker
+                   dateValue={reworkScheduledDate}
+                   timeValue={reworkScheduledTime}
+                   onDateChange={setReworkScheduledDate}
+                   onTimeChange={setReworkScheduledTime}
+                   placeholder="Pick new scheduled date & time..."
+                 />
+               </div>
+             </div>
 
             {/* 3. Rework Instructions / Notes */}
             <div className="space-y-1.5">
@@ -5846,7 +6045,7 @@ const ComplaintDetail = () => {
                     return (
                       <div
                         key={tech.id}
-                        className={`p-2 rounded-lg border flex items-center justify-between text-xs transition-colors ${
+                        className={`w-full p-2 rounded-lg border flex items-center justify-between text-xs transition-colors ${
                           isSelected ? "bg-primary/10 border-primary/40 text-foreground" : "bg-background border-border text-muted-foreground"
                         }`}
                       >
@@ -5893,37 +6092,38 @@ const ComplaintDetail = () => {
             </div>
           </div>
 
-          <DialogFooter className="gap-2 sm:gap-0 border-t pt-3">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setShowReworkModal(false)}
-              disabled={isSubmittingRework}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              onClick={handleConfirmRework}
-              disabled={
-                isSubmittingRework ||
-                !reworkScheduledDate ||
-                !reworkInstructions.trim() ||
-                reworkSelectedTechs.length === 0
-              }
-              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground font-semibold"
-            >
-              {isSubmittingRework ? (
-                <>
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Scheduling Rework...
-                </>
-              ) : (
-                <>
-                  <RotateCcw className="w-4 h-4 mr-1.5" /> Confirm & Return to Phase {reworkTargetPhase}
-                </>
-              )}
-            </Button>
-          </DialogFooter>
+          <DialogFooter className="gap-2 sm:gap-0 border-t pt-3 flex flex-col sm:flex-row">
+             <Button
+               type="button"
+               variant="outline"
+               onClick={() => setShowReworkModal(false)}
+               disabled={isSubmittingRework}
+               className="w-full sm:w-auto"
+             >
+               Cancel
+             </Button>
+             <Button
+               type="button"
+               onClick={handleConfirmRework}
+               disabled={
+                 isSubmittingRework ||
+                 !reworkScheduledDate ||
+                 !reworkInstructions.trim() ||
+                 reworkSelectedTechs.length === 0
+               }
+               className="bg-destructive hover:bg-destructive/90 text-destructive-foreground font-semibold w-full sm:w-auto"
+             >
+               {isSubmittingRework ? (
+                 <>
+                   <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Scheduling Rework...
+                 </>
+               ) : (
+                 <>
+                   <RotateCcw className="w-4 h-4 mr-1.5" /> Confirm & Return to Phase {reworkTargetPhase}
+                 </>
+               )}
+             </Button>
+           </DialogFooter>
         </DialogContent>
       </Dialog>
 
