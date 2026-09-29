@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabase";
+import { whatsappLogService } from "@/services/whatsappLogService";
 
 export interface SendWhatsAppOptions {
   name?: string;
@@ -23,15 +24,38 @@ export const sendWhatsAppMessage = async (
   message: string,
   extraData?: SendWhatsAppOptions
 ): Promise<{ success: boolean; error?: string; messageId?: string }> => {
+  const logAttempt = async (result: { success: boolean; error?: string; messageId?: string }) => {
+    try {
+      const rawName = extraData?.name || extraData?.customerName || extraData?.recipientName;
+      const safeRecipientName = typeof rawName === 'object' && rawName !== null
+        ? (rawName.full_name || rawName.name || rawName.email || 'Customer')
+        : (typeof rawName === 'string' && rawName.trim() ? rawName.trim() : 'Customer');
+
+      await whatsappLogService.createLog({
+        ticket_id: extraData?.ticketId || extraData?.ticket_id || 'GENERAL',
+        ticket_type: extraData?.ticketType || (extraData?.equipmentType ? 'installation' : 'complaint'),
+        recipient_phone: phoneNumber || 'Unknown',
+        recipient_name: safeRecipientName,
+        message_type: extraData?.messageType || (message.toLowerCase().includes('happiness code') || message.toLowerCase().includes('otp') ? 'otp' : 'dispatch'),
+        message_content: message,
+        status: result.success ? 'sent' : 'failed',
+        error_details: result.error
+      });
+    } catch (logErr) {
+      console.warn('[WhatsAppService] Log error:', logErr);
+    }
+    return result;
+  };
+
   try {
     if (!phoneNumber) {
-      return { success: false, error: "Phone number is missing." };
+      return await logAttempt({ success: false, error: "Phone number is missing." });
     }
 
     // Format phone number (remove non-digits)
     const cleanPhone = phoneNumber.replace(/\D/g, "");
     if (!cleanPhone) {
-      return { success: false, error: "Invalid phone number." };
+      return await logAttempt({ success: false, error: "Invalid phone number." });
     }
 
     const payload = {
@@ -48,7 +72,7 @@ export const sendWhatsAppMessage = async (
       });
 
       if (!error && data?.success !== false) {
-        return { success: true, messageId: data?.messageId };
+        return await logAttempt({ success: true, messageId: data?.messageId });
       }
       if (error) {
         console.warn("supabase.functions.invoke('send-walkin-whatsapp') returned error:", error);
@@ -67,19 +91,19 @@ export const sendWhatsAppMessage = async (
 
       const resData = await response.json().catch(() => ({}));
       if (response.ok && resData?.success !== false) {
-        return { success: true, messageId: resData?.messageId };
+        return await logAttempt({ success: true, messageId: resData?.messageId });
       }
-      return {
+      return await logAttempt({
         success: false,
         error: resData?.error || "Failed to send WhatsApp message via API",
-      };
+      });
     } catch (fetchErr: any) {
       console.error("Direct WhatsApp fetch error:", fetchErr);
-      return { success: false, error: fetchErr?.message || "Network error sending WhatsApp" };
+      return await logAttempt({ success: false, error: fetchErr?.message || "Network error sending WhatsApp" });
     }
   } catch (error: any) {
     console.error("sendWhatsAppMessage unexpected error:", error);
-    return { success: false, error: error?.message || "Unexpected error" };
+    return await logAttempt({ success: false, error: error?.message || "Unexpected error" });
   }
 };
 
@@ -105,15 +129,37 @@ export const getCustomerPhone = (ticket: any): string => {
  */
 export const getCustomerName = (ticket: any): string => {
   if (!ticket) return "Valued Customer";
-  return (
-    ticket.customer_name ||
-    ticket.non_btl_customer_name ||
-    ticket.customer ||
-    ticket.walk_in_name ||
-    ticket.profiles?.full_name ||
-    ticket.customer?.name ||
-    "Valued Customer"
-  );
+  if (typeof ticket.customer_name === "string" && ticket.customer_name.trim()) {
+    return ticket.customer_name.trim();
+  }
+  if (typeof ticket.non_btl_customer_name === "string" && ticket.non_btl_customer_name.trim()) {
+    return ticket.non_btl_customer_name.trim();
+  }
+  if (ticket.customer) {
+    if (typeof ticket.customer === "string" && ticket.customer.trim()) {
+      return ticket.customer.trim();
+    }
+    if (typeof ticket.customer === "object") {
+      const name = ticket.customer.full_name || ticket.customer.name || ticket.customer.email;
+      if (name && typeof name === "string") return name.trim();
+    }
+  }
+  if (typeof ticket.walk_in_name === "string" && ticket.walk_in_name.trim()) {
+    return ticket.walk_in_name.trim();
+  }
+  if (ticket.profiles) {
+    if (typeof ticket.profiles === "string" && ticket.profiles.trim()) {
+      return ticket.profiles.trim();
+    }
+    if (typeof ticket.profiles === "object" && ticket.profiles.full_name) {
+      return String(ticket.profiles.full_name).trim();
+    }
+  }
+  if (ticket.customer_name && typeof ticket.customer_name === "object") {
+    const name = ticket.customer_name.full_name || ticket.customer_name.name || ticket.customer_name.email;
+    if (name) return String(name).trim();
+  }
+  return "Valued Customer";
 };
 
 // ==========================================

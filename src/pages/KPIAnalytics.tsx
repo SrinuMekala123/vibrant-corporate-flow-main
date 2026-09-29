@@ -285,30 +285,57 @@ const KPIAnalytics = () => {
     fieldData["Equipment Installation"] = installations.length;
   }
 
-  const getFieldColor = (field: string) => {
-    switch (field) {
-      case "Equipment Installation":
-        return "#06b6d4"; // Cyan
-      case "Solar PV":
-        return "#f97316"; // Orange
-      case "Networking":
-        return "#3b82f6"; // Blue
-      case "Security Systems":
-        return "#8b5cf6"; // Purple
-      case "Power Systems":
-        return "#10b981"; // Emerald
-      default:
-        return "#ec4899"; // Pink
+  const KNOWN_FIELD_COLORS: Record<string, string> = {
+    "Equipment Installation": "#06b6d4", // Vibrant Cyan
+    "Solar PV": "#f59e0b",              // Amber / Solar Gold
+    "Solar PV & Inverters": "#d97706",  // Deep Amber
+    "Networking": "#2563eb",            // Royal Blue
+    "Networking & IT Infrastructure": "#3b82f6", // Sky Blue
+    "Security Systems": "#8b5cf6",      // Purple / Violet
+    "CCTV & Video Surveillance": "#ec4899", // Fuchsia / Pink
+    "CCTV & Surveillance Installation": "#f43f5e", // Rose
+    "Access Control": "#10b981",        // Emerald Green
+    "Fire Safety Systems": "#ef4444",   // Ruby Red
+    "Biometric Systems": "#6366f1",     // Indigo
+    "HVAC & Cooling": "#0284c7",        // Ocean Blue
+    "Power Systems": "#14b8a6",         // Teal
+    "Electrical & Wiring": "#eab308",   // Warm Yellow
+    "Home Automation": "#a855f7",       // Bright Purple
+    "Walk-in / General": "#059669",     // Forest Green
+    "General": "#64748b",               // Slate
+    "General Service": "#475569",       // Dark Slate
+  };
+
+  const DYNAMIC_FIELD_PALETTE = [
+    "#06b6d4", "#f59e0b", "#3b82f6", "#8b5cf6", "#10b981",
+    "#ec4899", "#f43f5e", "#6366f1", "#14b8a6", "#eab308",
+    "#a855f7", "#0284c7", "#d97706", "#84cc16", "#fb7185",
+    "#38bdf8", "#4ade80", "#c084fc", "#fb923c", "#2dd4bf"
+  ];
+
+  const getFieldColor = (field: string, index: number) => {
+    // 1. Direct match
+    if (KNOWN_FIELD_COLORS[field]) {
+      return KNOWN_FIELD_COLORS[field];
     }
+    // 2. Case-insensitive or partial match
+    const lower = field.toLowerCase();
+    for (const [key, color] of Object.entries(KNOWN_FIELD_COLORS)) {
+      if (lower.includes(key.toLowerCase()) || key.toLowerCase().includes(lower)) {
+        return color;
+      }
+    }
+    // 3. Deterministic distinct color from palette based on index
+    return DYNAMIC_FIELD_PALETTE[index % DYNAMIC_FIELD_PALETTE.length];
   };
 
   const pieData = Object.entries(fieldData)
-    .map(([name, value]) => ({
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, value], index) => ({
       name,
       value,
-      fill: getFieldColor(name)
-    }))
-    .sort((a, b) => b.value - a.value);
+      fill: getFieldColor(name, index)
+    }));
 
   const kpiCards = [
     {

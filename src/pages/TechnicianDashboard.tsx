@@ -33,6 +33,7 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { TechnicianMissionControl } from "@/components/TechnicianMissionControl";
+import { PWAInstallButton } from "@/components/PWAInstallButton";
 import { toast } from "sonner";
 
 const formatIndianDateTime = (dateString?: string) => {
@@ -81,7 +82,7 @@ const TechnicianDashboard = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [activeTab, setActiveTab] = useState<"all" | "active" | "completed" | "verified" | "reassigned">("active");
+  const [activeTab, setActiveTab] = useState<"all" | "active" | "completed" | "verified" | "reassigned" | "closed">("active");
   const [taskCategory, setTaskCategory] = useState<"all" | "complaints" | "installations">("all");
   const [viewMode, setViewMode] = useState<"list" | "card">("list");
   const [updatingInstStatusId, setUpdatingInstStatusId] = useState<string | null>(null);
@@ -365,7 +366,8 @@ const TechnicianDashboard = () => {
             </p>
           </div>
 
-          <div className="flex items-center gap-2.5 shrink-0">
+          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            <PWAInstallButton variant="inline" className="h-10 text-xs shadow-sm bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white" />
             <Button
               onClick={() => navigate("/daily-schedule")}
               className="gradient-primary text-white hover:opacity-95 rounded-xl h-10 px-4 gap-2 font-bold shadow-glow text-xs"
@@ -521,7 +523,11 @@ const TechnicianDashboard = () => {
                       const custName = inst.customer?.full_name || inst.non_btl_customer_name || "Client";
                       const isNonBtl = inst.customer_type === "New / Non-BTL Customer" || inst.customer_type === "Non-BTL" || inst.customer_type === "Walk-in" || (!inst.customer_id && !inst.customer?.full_name && inst.customer_type !== "BTL" && inst.customer_type !== "Existing BTL Customer");
                       return (
-                        <tr key={inst.id} className="hover:bg-muted/30">
+                        <tr 
+                          key={inst.id} 
+                          onClick={() => navigate(`/installations/${inst.id}`)}
+                          className="hover:bg-muted/50 cursor-pointer transition-colors"
+                        >
                           <td className="py-2.5 px-3">
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-500/15 text-blue-700 dark:text-blue-400 border border-blue-300">
                               <Package className="w-3 h-3" /> Installation
@@ -547,7 +553,16 @@ const TechnicianDashboard = () => {
                             </span>
                           </td>
                           <td className="py-2.5 px-3 text-right">
-                            <Button size="sm" className="h-7 px-3 text-[10px] font-bold" onClick={() => navigate(`/installations/${inst.id}`)}>View Job Specs</Button>
+                            <Button 
+                              size="sm" 
+                              className="h-7 px-3 text-[10px] font-bold" 
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                navigate(`/installations/${inst.id}`);
+                              }}
+                            >
+                              View Job Specs
+                            </Button>
                           </td>
                         </tr>
                       );
@@ -556,7 +571,11 @@ const TechnicianDashboard = () => {
                       const isNonBtl = ticket.customer_type === "New / Non-BTL Customer" || ticket.customer_type === "Non-BTL" || ticket.customer_type === "Walk-in" || (!ticket.customer_id && !ticket.customer_name && ticket.customer_type !== "Existing BTL Customer");
                       const custName = ticket.customer_name || ticket.profiles?.full_name || "Customer";
                       return (
-                        <tr key={ticket.id} className="hover:bg-muted/30">
+                        <tr 
+                          key={ticket.id} 
+                          onClick={() => navigate(`/complaints/${ticket.id}`)}
+                          className="hover:bg-muted/50 cursor-pointer transition-colors"
+                        >
                           <td className="py-2.5 px-3">
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-orange-500/15 text-orange-700 dark:text-orange-400 border border-orange-300">
                               <Wrench className="w-3 h-3" /> Complaint
@@ -578,7 +597,16 @@ const TechnicianDashboard = () => {
                             <SeverityBadge severity={ticket.severity as any} />
                           </td>
                           <td className="py-2.5 px-3 text-right">
-                            <Button size="sm" className="h-7 px-3 text-[10px] font-bold" onClick={() => navigate(`/complaints/${ticket.id}`)}>Open Workflow</Button>
+                            <Button 
+                              size="sm" 
+                              className="h-7 px-3 text-[10px] font-bold" 
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                navigate(`/complaints/${ticket.id}`);
+                              }}
+                            >
+                              Open Workflow
+                            </Button>
                           </td>
                         </tr>
                       );

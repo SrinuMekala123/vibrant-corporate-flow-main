@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
+import { compressImageForUpload } from '@/lib/imageCompression';
+import { WhatsAppDeliveryStatus } from '@/components/WhatsAppDeliveryStatus';
 import { toast } from 'sonner';
 import SignatureCanvas from 'react-signature-canvas';
 import DatePicker from 'react-datepicker';
@@ -180,7 +182,7 @@ export default function InstallationDetail() {
     const normalizedStatus =
       workflowToAdminStatus[lower] ||
       adminStatuses.find((s) => s.toLowerCase() === lower) ||
-      (adminStatuses.includes(rawStatus) ? rawStatus : null) ||
+      (adminStatuses.includes(rawStatus as any) ? (rawStatus as any) : null) ||
       (rawStatus || 'Assigned');
 
     setAdminEditData({
@@ -652,19 +654,21 @@ export default function InstallationDetail() {
     if (files.length === 0) return;
     
     for (const file of files) {
-      const fileUrl = URL.createObjectURL(file);
-      setUploadedPhotos(prev => [...prev, { url: fileUrl, file, uploading: true }]);
+      // Auto-compress high-res mobile photos to ~250KB before uploading
+      const processedFile = await compressImageForUpload(file);
+      const fileUrl = URL.createObjectURL(processedFile);
+      setUploadedPhotos(prev => [...prev, { url: fileUrl, file: processedFile, uploading: true }]);
       
-      const fileName = `${id}/${Date.now()}_${file.name.replace(/\s+/g, '_')}`;
+      const fileName = `${id}/${Date.now()}_${processedFile.name.replace(/\s+/g, '_')}`;
       const { data, error } = await supabase.storage
         .from('installation-evidence')
-        .upload(fileName, file);
+        .upload(fileName, processedFile);
       
       if (error) {
         console.warn("installation-evidence bucket failed, attempting complaint-evidence:", error);
         const { data: fallbackData, error: fallbackError } = await supabase.storage
           .from('complaint-evidence')
-          .upload(fileName, file);
+          .upload(fileName, processedFile);
 
         if (fallbackError) {
           toast.error(`Failed to upload ${file.name}`);
@@ -837,7 +841,7 @@ export default function InstallationDetail() {
             `Installation ${displayId} has been signed off. Happiness code verification is now with admin.`,
             4,
             `/installations/${installation.id}`,
-            user?.id
+            currentUser?.id
           );
         } catch (notifErr) {
           console.warn("Installation sign-off app notification warning:", notifErr);
@@ -962,7 +966,7 @@ export default function InstallationDetail() {
             `Installation ${displayTicketId} has been verified and closed by admin.`,
             6,
             `/installations/${installation.id}`,
-            user?.id
+            currentUser?.id
           );
         } catch (notifErr) {
           console.warn("Installation close app notification warning:", notifErr);
@@ -977,7 +981,7 @@ export default function InstallationDetail() {
             `Rework required for installation ${displayTicketId}. Reason: ${reworkReason}`,
             6,
             `/installations/${installation.id}`,
-            user?.id
+            currentUser?.id
           );
         } catch (notifErr) {
           console.warn("Installation rework app notification warning:", notifErr);
@@ -992,7 +996,7 @@ export default function InstallationDetail() {
             `Follow-up visit scheduled for installation ${displayTicketId} on ${followupDate} at ${followupTime}. Reason: ${followupReason}`,
             6,
             `/installations/${installation.id}`,
-            user?.id
+            currentUser?.id
           );
         } catch (notifErr) {
           console.warn("Installation followup app notification warning:", notifErr);
@@ -1065,10 +1069,10 @@ export default function InstallationDetail() {
       }
 
       // Stage 4 WhatsApp Notification on Force Close
+      const displayId = formatInstallationTicketId(installation) || installation?.ticket_id || id?.slice(0, 8);
       try {
         const custPhone = getCustomerPhone(installation);
         const custName = getCustomerName(installation);
-        const displayId = formatInstallationTicketId(installation) || installation?.ticket_id || id?.slice(0, 8);
         if (custPhone) {
           const closeMsg = getInstallationClosedMessage({
             customerName: custName,
@@ -1098,7 +1102,7 @@ export default function InstallationDetail() {
             `Installation ${displayId} has been force closed by admin.${forceCloseReason ? ` Reason: ${forceCloseReason}` : ''}`,
             6,
             `/installations/${installation.id}`,
-            user?.id
+            currentUser?.id
           );
         } catch (notifErr) {
           console.warn("Installation force close app notification warning:", notifErr);
@@ -1388,17 +1392,18 @@ export default function InstallationDetail() {
                     
                     // Upload to Supabase
                     files.forEach(async (file) => {
-                      const fileName = `${id}/material_shortage/${Date.now()}_${file.name.replace(/\s+/g, '_')}`;
+                      const processedFile = await compressImageForUpload(file);
+                      const fileName = `${id}/material_shortage/${Date.now()}_${processedFile.name.replace(/\s+/g, '_')}`;
                       const { data, error } = await supabase.storage
                         .from('installation-evidence')
-                        .upload(fileName, file);
+                        .upload(fileName, processedFile);
                       
                       if (!error) {
                         const { data: urlData } = supabase.storage
                           .from('installation-evidence')
                           .getPublicUrl(fileName);
                         setMaterialShortagePhotos(prev => prev.map(p => 
-                          p.file === file ? { url: urlData.publicUrl, file, uploading: false } : p
+                          p.file === file ? { url: urlData.publicUrl, file: processedFile, uploading: false } : p
                         ));
                       }
                     });
@@ -2364,6 +2369,16 @@ export default function InstallationDetail() {
                   </div>
                 )}
                 
+                {/* WhatsApp Live Delivery Status & Resend Button */}
+                <WhatsAppDeliveryStatus
+                  ticketId={installation.ticket_id || id || ''}
+                  ticketType="installation"
+                  recipientPhone={installation.customer_phone}
+                  recipientName={installation.customer_name}
+                  happinessCode={installation.happiness_code}
+                  className="mb-4 bg-white/90"
+                />
+
                 <div className="grid md:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-xs font-semibold text-slate-700 mb-1">Enter Customer's Happiness Code *</label>

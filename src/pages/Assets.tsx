@@ -40,7 +40,8 @@ import {
   Download,
   ChevronDown,
   CheckSquare,
-  Square
+  Square,
+  X
 } from "lucide-react";
 import { downloadCSV, generateSampleCSV } from "@/utils/csvHelpers";
 import ExportButton from "@/components/ExportButton";
@@ -57,8 +58,12 @@ export default function Assets() {
   const ITEMS_PER_PAGE = 20;
 
   // Modal / Side-panel states
-  const [selectedAsset, setSelectedAsset] = useState<any | null>(null);
-  const [modalMode, setModalMode] = useState<"view" | "add" | "edit">("view");
+  const [selectedAsset, setSelectedAsset] = useState<any | null>(() => {
+    return sessionStorage.getItem("asset_modal_mode") === "add" ? {} : null;
+  });
+  const [modalMode, setModalMode] = useState<"view" | "add" | "edit">(() => {
+    return (sessionStorage.getItem("asset_modal_mode") as any) || "view";
+  });
 
   // Search states inside form for dropdowns
   const [customerSearch, setCustomerSearch] = useState("");
@@ -132,16 +137,10 @@ export default function Assets() {
   }, [modalMode]);
 
   useEffect(() => {
-    return assetDraft.save();
-  }, [customerId, branchId, category, productName, brand, modelNumber, serialNumber, purchaseDate, warrantyMonths, installationDate, status, notes]);
-
-  useEffect(() => {
-    const handleBeforeUnload = () => {
-      assetDraft.clear();
-    };
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [assetDraft]);
+    if (modalMode === "add") {
+      assetDraft.save();
+    }
+  }, [customerId, branchId, category, productName, brand, modelNumber, serialNumber, purchaseDate, warrantyMonths, installationDate, status, notes, modalMode]);
 
   // Role permissions
   const isAdmin = user?.role === "admin";
@@ -347,6 +346,7 @@ export default function Assets() {
     setSelectedLocationId("");
 
     if (mode === "add") {
+      sessionStorage.setItem("asset_modal_mode", "add");
       setSelectedAsset({});
       setCustomerId("");
       setBranchId("");
@@ -368,6 +368,7 @@ export default function Assets() {
       // Restore draft after resetting form
       setTimeout(() => assetDraft.restore(), 0);
     } else {
+      sessionStorage.removeItem("asset_modal_mode");
       setSelectedAsset(asset);
       setCustomerId(asset.customer_id || "");
       setBranchId(asset.branch_id || "");
@@ -474,6 +475,8 @@ export default function Assets() {
         toast.success(`Asset "${trimmedProduct}" updated successfully!`);
       }
 
+      sessionStorage.removeItem("asset_modal_mode");
+      assetDraft.clear();
       setSelectedAsset(null);
       refetch();
     } catch (error: any) {
@@ -1112,7 +1115,10 @@ export default function Assets() {
       {/* View & Add/Edit Overlay Modal — ~80% off-canvas */}
       <OffCanvasPanel
         open={!!selectedAsset}
-        onClose={() => setSelectedAsset(null)}
+        onClose={() => {
+          sessionStorage.removeItem("asset_modal_mode");
+          setSelectedAsset(null);
+        }}
         header={
           <>
             <div className="w-14 h-14 rounded-2xl flex items-center justify-center text-xl font-bold text-white uppercase gradient-warm shrink-0">
@@ -1135,7 +1141,10 @@ export default function Assets() {
                 type="button"
                 variant="outline"
                 className="flex-1 rounded-xl h-11 font-bold text-sm"
-                onClick={() => setSelectedAsset(null)}
+                onClick={() => {
+                  sessionStorage.removeItem("asset_modal_mode");
+                  setSelectedAsset(null);
+                }}
               >
                 Close Details
               </Button>
@@ -1181,7 +1190,10 @@ export default function Assets() {
                 type="button"
                 variant="outline"
                 className="flex-1 rounded-xl h-11 font-bold text-sm"
-                onClick={() => setSelectedAsset(null)}
+                onClick={() => {
+                  sessionStorage.removeItem("asset_modal_mode");
+                  setSelectedAsset(null);
+                }}
                 disabled={loading}
               >
                 Cancel

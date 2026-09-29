@@ -521,6 +521,11 @@ self.addEventListener('fetch', (event) => {
         return; 
     }
 
+    // Skip Vite dev server HMR, internal modules, and source files
+    if (url.pathname.startsWith('/@') || url.pathname.includes('/src/') || url.pathname.includes('node_modules') || url.pathname.includes('.vite')) {
+        return;
+    }
+
     if (event.request.method !== 'GET') return;
 
     // 🚨 CRITICAL: NEVER cache HTML navigation requests. Always go to network.

@@ -14,7 +14,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { complaintService } from "@/services/complaintService";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
-import browserImageCompression from "browser-image-compression";
+import { compressImageForUpload } from "@/lib/imageCompression";
 import { compressVideoForUpload } from "@/lib/videoCompression";
 import { notificationService } from "@/services/notificationService";
 import DatePicker from "react-datepicker";
@@ -291,6 +291,54 @@ const ComplaintEdit = () => {
   const [selectedAssetId, setSelectedAssetId] = useState("");
   const [availableFieldOfWork, setAvailableFieldOfWork] = useState<string[]>([]);
 
+  // 📝 New Complaint Draft Persistence across tab switches & reloads
+  useEffect(() => {
+    if (!isNew) return;
+    try {
+      const saved = localStorage.getItem('draft_new_complaint');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.form) {
+          setForm(prev => ({
+            ...prev,
+            ...parsed.form,
+            scheduledDate: parsed.form.scheduledDate ? new Date(parsed.form.scheduledDate) : null,
+          }));
+        }
+        if (parsed.customerType) setCustomerType(parsed.customerType);
+        if (parsed.selectedSupervisorId) setSelectedSupervisorId(parsed.selectedSupervisorId);
+        if (parsed.selectedTechnicianIds) setSelectedTechnicianIds(parsed.selectedTechnicianIds);
+        if (parsed.leadTechnicianId) setLeadTechnicianId(parsed.leadTechnicianId);
+        if (parsed.evidenceUrls) setEvidenceUrls(parsed.evidenceUrls);
+      }
+    } catch (e) {
+      console.warn("Failed to restore new complaint draft:", e);
+    }
+  }, [isNew]);
+
+  useEffect(() => {
+    if (!isNew) return;
+    const timer = setTimeout(() => {
+      try {
+        const hasContent = form.title || form.customerId || form.customerName || form.description;
+        if (hasContent) {
+          const data = {
+            form,
+            customerType,
+            selectedSupervisorId,
+            selectedTechnicianIds,
+            leadTechnicianId,
+            evidenceUrls,
+          };
+          localStorage.setItem('draft_new_complaint', JSON.stringify(data));
+        }
+      } catch (e) {
+        console.warn("Failed to save new complaint draft:", e);
+      }
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [isNew, form, customerType, selectedSupervisorId, selectedTechnicianIds, leadTechnicianId, evidenceUrls]);
+
   // 🛡️ Derived Asset & Warranty Expiry Information
   const selectedAsset = useMemo(() => {
     return customerAssets.find((a: any) => a.id === selectedAssetId) || null;
@@ -329,7 +377,7 @@ const ComplaintEdit = () => {
   const [supervisorError, setSupervisorError] = useState("");
 
   // 🔍 Smart Walk-in Auto-Detector State
-  const [matchedCustomer, setMatchedCustomer] = useState<{ id: string; full_name: string; phone?: string; email?: string } | null>(null);
+  const [matchedCustomer, setMatchedCustomer] = useState<{ id: string; user_id?: string; full_name: string; phone?: string; email?: string; address?: string; customer_type?: string } | null>(null);
   const [showMatchAlert, setShowMatchAlert] = useState(false);
   const [overrideDuplicateCustomer, setOverrideDuplicateCustomer] = useState(false);
   const [isCheckingPhone, setIsCheckingPhone] = useState(false);
@@ -352,17 +400,20 @@ const ComplaintEdit = () => {
       // 1. Check in customers table
       const { data: custData } = await supabase
         .from('customers')
-        .select('id, user_id, full_name, phone, email')
+        .select('id, user_id, full_name, phone, email, address, customer_type')
         .ilike('phone', `%${last10}%`)
         .limit(1)
         .maybeSingle();
 
       if (custData) {
         setMatchedCustomer({
-          id: custData.user_id || custData.id,
+          id: custData.id,
+          user_id: custData.user_id,
           full_name: custData.full_name,
           phone: custData.phone,
-          email: custData.email
+          email: custData.email,
+          address: custData.address,
+          customer_type: custData.customer_type
         });
         setShowMatchAlert(true);
         setOverrideDuplicateCustomer(false);
@@ -375,7 +426,7 @@ const ComplaintEdit = () => {
       // 2. Check in profiles table
       const { data: profData } = await supabase
         .from('profiles')
-        .select('id, full_name, phone, email')
+        .select('id, full_name, phone, email, customer_type')
         .eq('role', 'customer')
         .ilike('phone', `%${last10}%`)
         .limit(1)
@@ -385,7 +436,7 @@ const ComplaintEdit = () => {
         // Verify if this customer's active record in customers table has changed or removed their phone
         let { data: linkedCust } = await supabase
           .from('customers')
-          .select('id, user_id, phone, full_name')
+          .select('id, user_id, phone, full_name, address, customer_type')
           .eq('user_id', profData.id)
           .limit(1)
           .maybeSingle();
@@ -393,7 +444,7 @@ const ComplaintEdit = () => {
         if (!linkedCust && profData.email) {
           const { data: custByEmail } = await supabase
             .from('customers')
-            .select('id, user_id, phone, full_name')
+            .select('id, user_id, phone, full_name, address, customer_type')
             .ilike('email', profData.email)
             .limit(1)
             .maybeSingle();
@@ -412,7 +463,15 @@ const ComplaintEdit = () => {
           }
         }
 
-        setMatchedCustomer(profData);
+        setMatchedCustomer({
+          id: linkedCust?.id || profData.id,
+          user_id: profData.id,
+          full_name: profData.full_name,
+          phone: profData.phone,
+          email: profData.email,
+          address: linkedCust?.address || "",
+          customer_type: profData.customer_type || linkedCust?.customer_type
+        });
         setShowMatchAlert(true);
         setOverrideDuplicateCustomer(false);
         toast.warning(`⚠️ Customer with this phone number already exists: ${profData.full_name}. Please use existing customer.`, {
@@ -438,6 +497,9 @@ const ComplaintEdit = () => {
       customerName: matched.full_name,
       customerPhone: matched.phone || prev.customerPhone,
       customerEmail: matched.email || prev.customerEmail,
+      location: matched.address || prev.location,
+      coverage: "Under Warranty",
+      chargeableService: "No"
     }));
     setShowMatchAlert(false);
     toast.success(`Switched to registered customer: ${matched.full_name}`);
@@ -1043,12 +1105,15 @@ const ComplaintEdit = () => {
     setIsUploading(true);
     try {
       let fileToUpload = file;
-      if (file.type.startsWith('image/')) {
-        setUploadProgressText(`Optimizing image (${(file.size / 1024).toFixed(0)}KB)...`);
+      if (file.type.startsWith('image/') || /\.(jpe?g|png|webp|heic|bmp)$/i.test(file.name)) {
+        setUploadProgressText(`Compressing photo (${(file.size / 1024).toFixed(0)}KB -> ~250KB)...`);
         try {
-          fileToUpload = await browserImageCompression(file, { maxSizeMB: 1, maxWidthOrHeight: 1280, useWebWorker: true });
+          fileToUpload = await compressImageForUpload(file, { maxSizeMB: 0.25, maxWidthOrHeight: 1600, useWebWorker: true }, (pct) => {
+            setUploadProgressText(`Compressing photo: ${pct}%...`);
+          });
+          console.log(`[Upload] Image compressed: ${(file.size / 1024).toFixed(1)}KB -> ${(fileToUpload.size / 1024).toFixed(1)}KB`);
         } catch (err) {
-          console.warn('Image compression failed, using original:', err);
+          console.warn('Image compression fallback to original:', err);
         }
       } else if (file.type.startsWith('video/') || /\.(mp4|mov|avi|webm|mkv|3gp)$/i.test(file.name)) {
         try {
@@ -1232,6 +1297,7 @@ const ComplaintEdit = () => {
         }
 
         // 2. Auto-create Walk-in / New Customer in customers table and link
+        let isCustomerFound = false;
         if (!isExistingBtl && (form.customerPhone || form.customerName)) {
           try {
             const cleanPhone = (form.customerPhone || "").replace(/\D/g, "");
@@ -1245,13 +1311,31 @@ const ComplaintEdit = () => {
                 .ilike("phone", `%${last10}%`)
                 .maybeSingle();
               matchedCustomer = matchedCust;
+
+              if (!matchedCustomer) {
+                const { data: matchedProf } = await supabase
+                  .from("profiles")
+                  .select("id, full_name, email")
+                  .eq("role", "customer")
+                  .ilike("phone", `%${last10}%`)
+                  .maybeSingle();
+                if (matchedProf) {
+                  matchedCustomer = {
+                    id: matchedProf.id,
+                    user_id: matchedProf.id,
+                    full_name: matchedProf.full_name,
+                    email: matchedProf.email
+                  };
+                }
+              }
             }
 
-            if (matchedCustomer) {
+            if (matchedCustomer && !overrideDuplicateCustomer) {
               linkedCustomerId = matchedCustomer.user_id || matchedCustomer.id;
               if (matchedCustomer.full_name && !form.customerName) {
                 form.customerName = matchedCustomer.full_name;
               }
+              isCustomerFound = true;
             } else {
               let newProfileId: string | null = null;
 
@@ -1260,7 +1344,7 @@ const ComplaintEdit = () => {
                   const { data: edgeData, error: edgeError } = await supabase.functions.invoke("create-customer-user", {
                     body: {
                       email: form.customerEmail.trim().toLowerCase(),
-                      full_name: form.customerName || "Walk-in Customer",
+                      full_name: form.customerName || "Customer",
                       phone: form.customerPhone,
                       role: "customer"
                     }
@@ -1280,12 +1364,12 @@ const ComplaintEdit = () => {
                 const { data: newCust, error: newCustErr } = await supabase
                   .from("customers")
                   .insert([{
-                    full_name: form.customerName || "Walk-in Customer",
+                    full_name: form.customerName || "Customer",
                     phone: form.customerPhone || null,
                     email: form.customerEmail || null,
                     address: form.location || null,
-                    customer_type: "Walk-in",
-                    branch: "Default Branch"
+                    customer_type: customerType === "New / Non-BTL Customer" ? "Walk-in" : "Retail",
+                    entity_type: "Individual"
                   }])
                   .select("id")
                   .maybeSingle();
@@ -1300,7 +1384,7 @@ const ComplaintEdit = () => {
                       await supabase.functions.invoke("create-customer-user", {
                         body: {
                           email: form.customerEmail.trim().toLowerCase(),
-                          full_name: form.customerName || "Walk-in Customer",
+                          full_name: form.customerName || "Customer",
                           phone: form.customerPhone,
                           role: "customer"
                         }
@@ -1317,8 +1401,9 @@ const ComplaintEdit = () => {
           }
         }
 
+        const isNonBtl = !isExistingBtl && (!isCustomerFound || overrideDuplicateCustomer);
         const newComplaint = await complaintService.create({
-          customer_type: isExistingBtl ? "Existing BTL Customer" : "New / Non-BTL Customer",
+          customer_type: isNonBtl ? "New / Non-BTL Customer" : "Existing BTL Customer",
           customer_id: linkedCustomerId,
           customer_name: form.customerName || null,
           customer_phone: form.customerPhone || null,
@@ -1358,6 +1443,8 @@ const ComplaintEdit = () => {
         queryClient.invalidateQueries({ queryKey: ['dashboard-complaints'] });
         queryClient.invalidateQueries({ queryKey: ['customer-complaints'] });
         queryClient.invalidateQueries({ queryKey: ['customers'] });
+        queryClient.invalidateQueries({ queryKey: ['customers-list'] });
+        queryClient.invalidateQueries({ queryKey: ['customerProfiles'] });
         queryClient.invalidateQueries({ queryKey: ['users'] });
         
         const displayTicketId = newComplaint.ticket_id || newComplaint.id.slice(0, 8);
@@ -1427,6 +1514,7 @@ const ComplaintEdit = () => {
           }
         })();
 
+        localStorage.removeItem('draft_new_complaint');
         if (isCustomer) {
           toast.success(`Complaint #${displayTicketId} submitted! Our team will contact you soon.`);
           navigate("/dashboard");
@@ -1825,15 +1913,15 @@ const ComplaintEdit = () => {
                           }}
                           disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
                         >
-                          <SelectTrigger className="h-10">
-                            <SelectValue placeholder="Select location" />
+                          <SelectTrigger className="h-auto min-h-10 py-2 text-left whitespace-normal break-words max-w-full">
+                            <SelectValue placeholder="Select location" className="whitespace-normal break-words text-left" />
                           </SelectTrigger>
-                          <SelectContent>
+                          <SelectContent className="max-w-[92vw] sm:max-w-lg">
                             {customerLocations.map((loc: any) => (
-                              <SelectItem key={loc.id} value={loc.id}>
-                                <div className="flex flex-col text-left py-0.5">
-                                  <span className="font-medium">{loc.location_name}</span>
-                                  <span className="text-[10px] text-muted-foreground">
+                              <SelectItem key={loc.id} value={loc.id} className="whitespace-normal break-words py-2">
+                                <div className="flex flex-col text-left py-0.5 max-w-full">
+                                  <span className="font-semibold break-words">{loc.location_name}</span>
+                                  <span className="text-xs text-muted-foreground break-words whitespace-normal leading-relaxed mt-0.5">
                                     {[loc.address, loc.city, loc.state, loc.pincode].filter(Boolean).join(", ")}
                                     {loc.is_primary && " • Primary"}
                                   </span>

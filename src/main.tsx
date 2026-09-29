@@ -8,32 +8,13 @@
 import { createRoot } from "react-dom/client";
 import App from "./App.tsx";
 import "./index.css";
-// Development-only: forcefully unregister any existing Service Workers to avoid Vite HMR interception
-if ('serviceWorker' in navigator && import.meta.env.DEV) {
-  navigator.serviceWorker.getRegistrations().then((registrations) => {
-    registrations.forEach((reg) => {
-      reg.unregister().then((success) => {
-        if (success) console.log('🗑️ Unregistered Service Worker:', reg.scope);
-      });
-    });
-    // Clear any leftover caches to avoid stale service worker assets
-    if (caches && caches.keys) {
-      caches.keys().then((keys) => {
-        Promise.all(keys.map((key) => caches.delete(key))).then(() => {
-          console.log('🧹 Cleared all caches in dev mode');
-        });
-      });
-    }
-  });
-}
-
-// Register Service Worker only in production builds
-if ('serviceWorker' in navigator && import.meta.env.PROD) {
+// Register Service Worker to enable PWA installation on Desktop, Laptop, and Mobile
+if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker
       .register('/sw.js')
       .then((registration) => {
-        console.log('✅ Service Worker registered (prod):', registration);
+        console.log('✅ Service Worker registered for PWA:', registration.scope);
         // Force immediate activation of updates
         if (registration.waiting) {
           registration.waiting.postMessage({ type: 'SKIP_WAITING' });
@@ -50,7 +31,7 @@ if ('serviceWorker' in navigator && import.meta.env.PROD) {
         });
       })
       .catch((error) => {
-        console.log('❌ Service Worker registration failed:', error);
+        console.warn('⚠️ Service Worker note (expected if HTTP LAN origin):', error.message);
       });
   });
 }

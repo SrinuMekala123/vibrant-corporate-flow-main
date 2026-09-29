@@ -82,20 +82,27 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
         // REMOVED the custom fetch override that was causing the CORS preflight failure
     },
     realtime: {
-        enabled: false,
         params: {
             eventsPerSecond: 10,
         },
     },
 });
 
-export const resolveSupabaseUrl = (url: string | null | undefined): string => {
+export const resolveSupabaseUrl = (url: any): string => {
   if (!url) return "";
-  if (url.includes('127.0.0.1') || url.includes('localhost')) {
-    const hostname = window.location.hostname;
+  let target = "";
+  if (typeof url === "string") {
+    target = url.trim();
+  } else if (typeof url === "object" && url !== null) {
+    target = url.url || url.src || url.preview || url.file_url || url.path || "";
+  }
+  if (!target || typeof target !== "string") return "";
+
+  if (target.includes('127.0.0.1') || target.includes('localhost')) {
+    const hostname = typeof window !== 'undefined' ? window.location?.hostname : '';
     if (hostname && hostname !== 'localhost' && hostname !== '127.0.0.1') {
-      return url.replace('127.0.0.1', hostname).replace('localhost', hostname);
+      return target.replace('127.0.0.1', hostname).replace('localhost', hostname);
     }
   }
-  return url;
+  return target;
 };

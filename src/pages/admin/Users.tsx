@@ -123,9 +123,26 @@ export default function UsersPage() {
     return isValidPhone(num);
   };
 
+  const [isAddUserModalOpen, setIsAddUserModalOpen] = useState(() => {
+    return sessionStorage.getItem("admin_add_user_open") === "true";
+  });
+
+  const openAddUserModal = () => {
+    sessionStorage.setItem("admin_add_user_open", "true");
+    setIsAddUserModalOpen(true);
+    setTimeout(() => {
+      createUserDraft.restore();
+    }, 50);
+  };
+
+  const closeAddUserModal = () => {
+    sessionStorage.removeItem("admin_add_user_open");
+    setIsAddUserModalOpen(false);
+  };
+
   const createUserDraft = useFormDraft({
     key: 'draft_create_user',
-    enabled: true,
+    enabled: isAddUserModalOpen,
     excludeFields: ['password'],
     fields: {
       fullName: { value: fullName, setter: setFullName },
@@ -141,30 +158,16 @@ export default function UsersPage() {
   });
 
   useEffect(() => {
-    createUserDraft.restore();
-  }, []);
-
-  // Scroll to/create form section when a draft exists on mount
-  useEffect(() => {
-    if (createUserDraft.hasDraft()) {
-      const formEl = document.getElementById('create-user-form');
-      if (formEl) {
-        formEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }
+    if (isAddUserModalOpen) {
+      createUserDraft.restore();
     }
-  }, []);
+  }, [isAddUserModalOpen]);
 
   useEffect(() => {
-    return createUserDraft.save();
-  }, [fullName, email, phone, role, technicianId, designation, selectedExpertise, branchId, customerType]);
-
-  useEffect(() => {
-    const handleBeforeUnload = () => {
-      createUserDraft.clear();
-    };
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [createUserDraft]);
+    if (isAddUserModalOpen) {
+      createUserDraft.save();
+    }
+  }, [fullName, email, phone, role, technicianId, designation, selectedExpertise, branchId, customerType, isAddUserModalOpen]);
 
   const getPasswordStrength = (pwd: string) => {
     if (!pwd) return null;
@@ -492,8 +495,9 @@ export default function UsersPage() {
 
       toast.success(`User ${trimmedName} created successfully!`);
       
-      // Clear draft
+      // Clear draft & close modal
       createUserDraft.clear();
+      closeAddUserModal();
       
       // Clear form
       setEmail("");
@@ -934,6 +938,14 @@ export default function UsersPage() {
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
+
+            <Button
+              onClick={openAddUserModal}
+              className="gradient-primary text-white font-semibold shadow-glow h-10 px-4 gap-2 rounded-xl text-xs shrink-0"
+            >
+              <UserPlus className="w-4 h-4" />
+              <span>Add New User</span>
+            </Button>
           </div>
         </div>
       </div>
@@ -981,17 +993,44 @@ export default function UsersPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start relative z-10">
-        {/* Create User Form */}
-        <motion.div 
-          initial={{ opacity: 0, y: 15 }} 
-          animate={{ opacity: 1, y: 0 }} 
-          className="glass-card rounded-3xl p-6 lg:col-span-5 space-y-4 border border-border/60 shadow-md"
-        >
-          <h2 className="text-lg font-bold flex items-center gap-2 text-foreground">
-            <UserPlus className="w-5 h-5 text-primary" /> Create New User Profile
-          </h2>
-          <form id="create-user-form" onSubmit={handleCreateUser} className="space-y-4">
+      {/* Create User Slide-Out Drawer / Modal (Add New User) */}
+      <AnimatePresence>
+        {isAddUserModalOpen && (
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex justify-end">
+            <motion.div 
+              initial={{ x: "100%" }} 
+              animate={{ x: 0 }} 
+              exit={{ x: "100%" }}
+              transition={{ type: "spring", damping: 26, stiffness: 220 }}
+              className="bg-white dark:bg-slate-900 w-full max-w-none sm:w-[580px] md:w-[660px] h-full relative flex flex-col shadow-2xl border-l border-border"
+            >
+              {/* Close Button */}
+              <button 
+                onClick={closeAddUserModal}
+                aria-label="Close modal"
+                className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 p-2 rounded-xl transition-colors z-20"
+              >
+                <X className="w-5 h-5" />
+              </button>
+
+              {/* Modal Header */}
+              <div className="flex items-center gap-4 border-b border-border/60 pb-4 pr-12 shrink-0 px-6 pt-5">
+                <div className="w-12 h-12 rounded-2xl flex items-center justify-center text-xl font-bold text-white uppercase gradient-primary shadow-sm">
+                  <UserPlus className="w-6 h-6 text-white" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-xl font-display font-bold text-foreground">
+                    Create New User Profile
+                  </h3>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Configure account credentials, role permissions, and branch assignments.
+                  </p>
+                </div>
+              </div>
+
+              {/* Scrollable Form Body */}
+              <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5">
+                <form id="create-user-form" onSubmit={handleCreateUser} className="space-y-4">
             <div className="space-y-1.5">
               <div className="flex justify-between items-center">
                 <label className="text-xs font-semibold text-slate-600">Full Name</label>
@@ -1244,18 +1283,22 @@ export default function UsersPage() {
               ) : (
                 "Create User Account"
               )}
-            </Button>
-          </div>
-        </form>
-        </motion.div>
+              </Button>
+            </div>
+          </form>
+        </div>
+      </motion.div>
+    </div>
+        )}
+      </AnimatePresence>
 
-        {/* Users List */}
-        <motion.div 
-          initial={{ opacity: 0, y: 15 }} 
-          animate={{ opacity: 1, y: 0 }} 
-          transition={{ delay: 0.1 }}
-          className="glass-card rounded-xl p-6 lg:col-span-7 space-y-4"
-        >
+      {/* Users List */}
+      <motion.div 
+        initial={{ opacity: 0, y: 15 }} 
+        animate={{ opacity: 1, y: 0 }} 
+        transition={{ delay: 0.1 }}
+        className="glass-card rounded-2xl p-6 w-full space-y-4 border border-border/60 shadow-sm"
+      >
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b pb-4">
             <h2 className="text-lg font-semibold flex items-center gap-2 text-primary">
               <Shield className="w-5 h-5" /> Registered Users
@@ -1434,7 +1477,6 @@ export default function UsersPage() {
         </motion.div>
 
         {/* View & Edit Overlay Modal */}
-      </div>
       <AnimatePresence>
         {selectedUser && (
           <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex justify-end">

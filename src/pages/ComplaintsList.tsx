@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Search, Plus, MapPin, Clock, Loader2, X, Calendar, Upload, Download, FileText, Trash2, CheckSquare, Square, Eye, Wrench, UserPlus, Navigation, Edit2 } from "lucide-react";
+import { Search, Plus, MapPin, Clock, Loader2, X, Calendar, Upload, Download, FileText, Trash2, CheckSquare, Square, Eye, Wrench, UserPlus, Navigation, Edit2, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { StatusBadge, SeverityBadge } from "@/components/Badges";
@@ -203,6 +203,145 @@ const ComplaintsList = () => {
     staleTime: 1000 * 60 * 5,
   });
 
+  // Fetch customers lookup to accurately distinguish registered/admin-created BTL customers from walk-ins
+  const { data: allCustomers = [] } = useQuery({
+    queryKey: ['customers-lookup', user?.id],
+    queryFn: async () => {
+      try {
+        const [{ data: customersData }, { data: profilesData }] = await Promise.all([
+          supabase.from('customers').select('id, user_id, full_name, phone, customer_type'),
+          supabase.from('profiles').select('id, full_name, phone, role, customer_type').eq('role', 'customer')
+        ]);
+        const combined = [
+          ...(customersData || []),
+          ...(profilesData || []).map((p: any) => ({
+            id: p.id,
+            user_id: p.id,
+            full_name: p.full_name,
+            phone: p.phone,
+            customer_type: p.customer_type || 'Retail'
+          }))
+        ];
+        return combined;
+      } catch (e) {
+        console.warn("Failed to fetch customer lookup:", e);
+        return [];
+      }
+    },
+    enabled: !!user,
+    staleTime: 1000 * 60 * 5,
+  });
+
+  const formatDate = (dateStr?: string | null) => {
+    if (!dateStr) return "N/A";
+    try {
+      const d = new Date(dateStr);
+      return d.toLocaleDateString("en-GB", {
+        day: "numeric",
+        month: "short",
+        year: "numeric"
+      });
+    } catch {
+      return String(dateStr);
+    }
+  };
+
+  const getAssignedTechNames = (ticket: any): string[] => {
+    const names: string[] = [];
+    if (Array.isArray(ticket.complaint_technicians) && ticket.complaint_technicians.length > 0) {
+      ticket.complaint_technicians.forEach((ct: any) => {
+        const name = ct.technician?.full_name || ct.profiles?.full_name || ct.full_name;
+        if (name && !names.includes(name)) {
+          names.push(name);
+        }
+      });
+    }
+    if (ticket.assigned_technician) {
+      ticket.assigned_technician.split(",").forEach((t: string) => {
+        const clean = t.trim();
+        if (clean && !names.includes(clean)) {
+          names.push(clean);
+        }
+      });
+    }
+    return names;
+  };
+
+  const getCustomerBadgeInfo = (ticket: any) => {
+    const rawCoverage = (ticket.coverage || "").toLowerCase().trim();
+    const rawChargeable = String(ticket.chargeable_service || "").toLowerCase().trim();
+    const explicitType = (ticket.customer_type || "").toLowerCase().trim();
+
+    // 1. Explicit Walk-in / Non-BTL flag on ticket
+    if (explicitType === "walk-in" || explicitType.includes("non-btl") || explicitType === "new / non-btl customer") {
+      return { isNonBtl: true, label: "Walk-in / Non-BTL" };
+    }
+
+    // 2. Explicit BTL customer flag on ticket
+    if (explicitType === "existing btl customer" || explicitType === "btl") {
+      return { isNonBtl: false, label: "BTL Customer" };
+    }
+
+    // 3. Under Warranty / Non-chargeable service -> By definition BTL Customer
+    if (
+      rawCoverage.includes("under warranty") || 
+      rawCoverage === "warranty" || 
+      rawChargeable === "no" || 
+      rawChargeable === "false"
+    ) {
+      return { isNonBtl: false, label: "BTL Customer" };
+    }
+
+    // 4. Check if linked via customer_id in customers or profiles
+    if (ticket.customer_id) {
+      const matchedCust = allCustomers.find((c: any) => c.id === ticket.customer_id || c.user_id === ticket.customer_id);
+      if (matchedCust) {
+        const cType = (matchedCust.customer_type || "").toLowerCase().trim();
+        if (cType === "walk-in" || cType.includes("non-btl")) {
+          return { isNonBtl: true, label: "Walk-in / Non-BTL" };
+        }
+        return { isNonBtl: false, label: "BTL Customer" };
+      }
+      return { isNonBtl: false, label: "BTL Customer" };
+    }
+
+    // 5. Check by customer phone in directory
+    if (ticket.customer_phone) {
+      const last10 = ticket.customer_phone.replace(/\D/g, "").slice(-10);
+      if (last10.length === 10) {
+        const matchedCust = allCustomers.find((c: any) => (c.phone || "").replace(/\D/g, "").slice(-10) === last10);
+        if (matchedCust) {
+          const cType = (matchedCust.customer_type || "").toLowerCase().trim();
+          if (cType === "walk-in" || cType.includes("non-btl")) {
+            return { isNonBtl: true, label: "Walk-in / Non-BTL" };
+          }
+          return { isNonBtl: false, label: "BTL Customer" };
+        }
+      }
+    }
+
+    // 6. Check by customer name
+    if (ticket.customer_name) {
+      const normName = ticket.customer_name.trim().toLowerCase();
+      const matchedCust = allCustomers.find((c: any) => (c.full_name || "").trim().toLowerCase() === normName);
+      if (matchedCust) {
+        const cType = (matchedCust.customer_type || "").toLowerCase().trim();
+        if (cType === "walk-in" || cType.includes("non-btl")) {
+          return { isNonBtl: true, label: "Walk-in / Non-BTL" };
+        }
+        return { isNonBtl: false, label: "BTL Customer" };
+      }
+    }
+
+    // 7. If Out of warranty + Chargeable service + not in directory -> Walk-in / Non-BTL
+    if (rawCoverage.includes("out of warranty") && (rawChargeable === "yes" || rawChargeable === "true" || ticket.service_charge > 0)) {
+      return { isNonBtl: true, label: "Walk-in / Non-BTL" };
+    }
+
+    // Default for standard enterprise customer tickets
+    return { isNonBtl: false, label: "BTL Customer" };
+  };
+
   const debouncedSearch = useDebounce(search, 300);
 
   // Reset pagination on search, status filter or date filter change
@@ -212,12 +351,15 @@ const ComplaintsList = () => {
 
   // Client-side search, status, and date range filters
   const filtered = complaints?.filter((t) => {
+    const techNames = getAssignedTechNames(t).join(" ").toLowerCase();
     const matchSearch =
       t.title?.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
       t.id?.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+      t.ticket_id?.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
       t.profiles?.full_name?.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
       t.customer_name?.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
       t.assigned_technician?.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+      techNames.includes(debouncedSearch.toLowerCase()) ||
       t.assigned_supervisor?.toLowerCase().includes(debouncedSearch.toLowerCase());
 
     let matchStatus = false;
@@ -251,48 +393,46 @@ const ComplaintsList = () => {
     return matchSearch && matchStatus && matchDate;
   }) || [];
 
-  const itemsPerPage = 10;
-  const totalPages = Math.ceil(filtered.length / itemsPerPage);
+  const [itemsPerPage, setItemsPerPage] = useState<number>(() => {
+    const saved = localStorage.getItem('complaints_items_per_page');
+    return saved ? Number(saved) : 10;
+  });
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / itemsPerPage));
   const startIndex = (currentPage - 1) * itemsPerPage;
   const paginatedItems = filtered.slice(startIndex, startIndex + itemsPerPage);
 
   const getPageNumbers = () => {
     const pages: (number | string)[] = [];
-    const maxVisible = 5;
     
-    if (totalPages <= maxVisible) {
+    if (totalPages <= 7) {
       for (let i = 1; i <= totalPages; i++) {
         pages.push(i);
       }
-    } else {
-      let start = Math.max(1, currentPage - 1);
-      let end = Math.min(totalPages, currentPage + 1);
-      
-      if (currentPage === 1) {
-        end = 3;
-      }
-      if (currentPage === totalPages) {
-        start = totalPages - 2;
-      }
-      
-      if (start > 1) {
-        pages.push(1);
-        if (start > 2) {
-          pages.push("...");
-        }
-      }
-      
-      for (let i = start; i <= end; i++) {
-        pages.push(i);
-      }
-      
-      if (end < totalPages) {
-        if (end < totalPages - 1) {
-          pages.push("...");
-        }
-        pages.push(totalPages);
-      }
+      return pages;
     }
+
+    // Always include page 1
+    pages.push(1);
+
+    if (currentPage > 3) {
+      pages.push("...");
+    }
+
+    const start = Math.max(2, currentPage - 1);
+    const end = Math.min(totalPages - 1, currentPage + 1);
+
+    for (let i = start; i <= end; i++) {
+      pages.push(i);
+    }
+
+    if (currentPage < totalPages - 2) {
+      pages.push("...");
+    }
+
+    // Always include last page
+    pages.push(totalPages);
+
     return pages;
   };
 
@@ -763,135 +903,212 @@ const ComplaintsList = () => {
                         </button>
                       </th>
                       <th className="py-3 px-4">Ticket ID</th>
-                      <th className="py-3 px-4">Customer</th>
+                      <th className="py-3 px-4">Customer &amp; Site</th>
+                      <th className="py-3 px-4">Technician(s)</th>
+                      <th className="py-3 px-4">Scheduled Visit</th>
                       <th className="py-3 px-4">Status</th>
-                      <th className="py-3 px-4">Date</th>
                       <th className="py-3 px-4 text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border/40">
-                    {paginatedItems.map((ticket) => (
-                      <tr key={ticket.id} className={`hover:bg-muted/30 transition-colors ${selectedIds.has(ticket.id) ? 'bg-blue-50/60' : ''}`}>
-                        <td className="py-3 px-4">
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toggleSelect(ticket.id);
-                            }}
-                            className="text-slate-600 hover:text-slate-800"
-                          >
-                            {selectedIds.has(ticket.id) ? (
-                              <CheckSquare className="w-4 h-4 text-blue-600" />
+                    {paginatedItems.map((ticket) => {
+                      const assignedTechs = getAssignedTechNames(ticket);
+                      const badgeInfo = getCustomerBadgeInfo(ticket);
+                      const custName = ticket.customer_name || ticket.profiles?.full_name || ticket.created_by_name || 'Customer';
+                      const siteAddress = ticket.location || "";
+
+                      return (
+                        <tr key={ticket.id} className={`hover:bg-muted/30 transition-colors ${selectedIds.has(ticket.id) ? 'bg-blue-50/60' : ''}`}>
+                          {/* Checkbox */}
+                          <td className="py-3 px-4">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleSelect(ticket.id);
+                              }}
+                              className="text-slate-600 hover:text-slate-800"
+                            >
+                              {selectedIds.has(ticket.id) ? (
+                                <CheckSquare className="w-4 h-4 text-blue-600" />
+                              ) : (
+                                <Square className="w-4 h-4" />
+                              )}
+                            </button>
+                          </td>
+
+                          {/* Ticket ID & Badges */}
+                          <td className="py-3 px-4 whitespace-nowrap">
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); navigate(`/complaints/${ticket.id}`); }}
+                              className="font-mono font-bold text-primary hover:underline text-xs"
+                            >
+                              {formatComplaintTicketId(ticket)}
+                            </button>
+                            <div className="flex items-center gap-1 mt-1 flex-wrap">
+                              {ticket.severity && <SeverityBadge severity={ticket.severity as any} />}
+                              {(ticket.chargeable_service === "Yes" || (ticket as any).is_chargeable) && (
+                                <span className="text-[9px] font-bold px-1.5 py-0.2 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                  Chargeable
+                                </span>
+                              )}
+                            </div>
+                          </td>
+
+                          {/* Customer & Site */}
+                          <td className="py-3 px-4 min-w-[180px]">
+                            <div
+                              className="flex items-center gap-1.5 flex-wrap cursor-pointer"
+                              onClick={() => navigate(`/complaints/${ticket.id}`)}
+                            >
+                              <span className="font-semibold text-slate-800 hover:text-primary transition-colors">
+                                {custName}
+                              </span>
+                              {badgeInfo.isNonBtl ? (
+                                <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-300">
+                                  Walk-in / Non-BTL
+                                </span>
+                              ) : (
+                                <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+                                  BTL Customer
+                                </span>
+                              )}
+                            </div>
+                            {siteAddress && (
+                              <p className="text-slate-500 text-[11px] truncate mt-0.5 max-w-[220px]" title={siteAddress}>
+                                <MapPin className="w-3 h-3 inline mr-1 text-slate-400 shrink-0" />
+                                {siteAddress}
+                              </p>
+                            )}
+                          </td>
+
+                          {/* Technician(s) */}
+                          <td className="py-3 px-4">
+                            {assignedTechs.length > 0 ? (
+                              <div className="flex flex-wrap gap-1 max-w-xs">
+                                {assignedTechs.map((name: string, i: number) => (
+                                  <span
+                                    key={i}
+                                    className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200"
+                                  >
+                                    <Wrench className="w-2.5 h-2.5" /> {name}
+                                  </span>
+                                ))}
+                              </div>
                             ) : (
-                              <Square className="w-4 h-4" />
+                              <span className="text-slate-400 text-xs italic">Unassigned</span>
                             )}
-                          </button>
-                        </td>
-                        <td className="py-3 px-4 whitespace-nowrap">
-                          <button
-                            type="button"
-                            onClick={(e) => { e.stopPropagation(); navigate(`/complaints/${ticket.id}`); }}
-                            className="font-mono font-bold text-primary hover:underline"
-                          >
-                            {formatComplaintTicketId(ticket)}
-                          </button>
-                        </td>
-                        <td className="py-3 px-4 min-w-[180px]">
-                          <span
-                            onClick={(e) => { e.stopPropagation(); navigate(`/complaints/${ticket.id}`); }}
-                            className="font-semibold text-foreground hover:text-primary transition-colors cursor-pointer"
-                          >
-                            {ticket.customer_name || ticket.profiles?.full_name || ticket.created_by_name || 'Customer'}
-                          </span>
-                        </td>
-                        <td className="py-3 px-4 whitespace-nowrap">
-                          {ticket.status && <StatusBadge status={ticket.status} />}
-                        </td>
-                        <td className="py-3 px-4 whitespace-nowrap text-foreground">
-                          {formatIndianDateTime(ticket.created_at)}
-                        </td>
-                        <td className="py-3 px-4 text-right whitespace-nowrap">
-                          <div className="flex items-center justify-end gap-1.5">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                navigate(`/complaints/${ticket.id}`);
-                              }}
-                              className="h-8 w-8 p-0 text-slate-600 hover:text-primary"
-                              title="View details"
-                            >
-                              <Eye className="w-4 h-4" />
-                            </Button>
-                            {isRole("admin", "supervisor") && (
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  navigate(`/complaints/${ticket.id}/edit`);
-                                }}
-                                className="h-8 w-8 p-0 text-slate-600 hover:text-blue-600 hover:bg-blue-50"
-                                title="Edit complaint"
-                              >
-                                <Edit2 className="w-4 h-4" />
-                              </Button>
-                            )}
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                navigate(`/complaints/${ticket.id}`);
-                              }}
-                              className="h-8 px-2.5 text-xs text-primary border-primary/30 bg-primary/5 hover:bg-primary/10 font-semibold"
-                              title="Open workflow"
-                            >
-                              <Wrench className="w-3.5 h-3.5 mr-1" /> Workflow
-                            </Button>
-                            {(ticket.customer_lat && ticket.customer_lng) || (ticket.location && ticket.location.trim() !== "") ? (
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  const dest = ticket.customer_lat && ticket.customer_lng
-                                    ? `${ticket.customer_lat},${ticket.customer_lng}`
-                                    : encodeURIComponent(ticket.location?.trim() || '');
-                                  if (dest) {
-                                    window.open(`https://www.google.com/maps/dir/?api=1&destination=${dest}&travelmode=driving`, '_blank');
-                                  }
-                                }}
-                                className="h-8 w-8 p-0 text-slate-600 hover:text-blue-600 hover:bg-blue-50"
-                                title="Navigate to site"
-                              >
-                                <Navigation className="w-4 h-4" />
-                              </Button>
-                            ) : null}
-                            {isRole("admin", "supervisor") && (
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setDeleteConfirmId(ticket.id);
-                                }}
-                                className="h-8 w-8 p-0 text-slate-600 hover:text-rose-600 hover:bg-rose-50"
-                                title="Delete complaint"
-                              >
-                                {isDeletingId === ticket.id ? (
-                                  <Loader2 className="w-4 h-4 animate-spin" />
-                                ) : (
-                                  <Trash2 className="w-4 h-4" />
+                          </td>
+
+                          {/* Scheduled Visit */}
+                          <td className="py-3 px-4 whitespace-nowrap">
+                            {ticket.scheduled_date ? (
+                              <div className="text-xs">
+                                <p className="font-semibold text-slate-700 flex items-center gap-1">
+                                  <Calendar className="w-3 h-3 text-slate-400" />
+                                  {formatDate(ticket.scheduled_date)}
+                                </p>
+                                {ticket.scheduled_time && (
+                                  <p className="text-slate-500 text-[11px] flex items-center gap-1 mt-0.5">
+                                    <Clock className="w-3 h-3 text-slate-400" />
+                                    {ticket.scheduled_time}
+                                  </p>
                                 )}
-                              </Button>
+                              </div>
+                            ) : (
+                              <span className="text-slate-400 text-xs italic">Not scheduled</span>
                             )}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                          </td>
+
+                          {/* Status */}
+                          <td className="py-3 px-4 whitespace-nowrap">
+                            {ticket.status && <StatusBadge status={ticket.status} />}
+                          </td>
+
+                          {/* Actions */}
+                          <td className="py-3 px-4 text-right whitespace-nowrap">
+                            <div className="flex items-center justify-end gap-1.5">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  navigate(`/complaints/${ticket.id}`);
+                                }}
+                                className="h-8 w-8 p-0 text-slate-600 hover:text-primary"
+                                title="View details"
+                              >
+                                <Eye className="w-4 h-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  navigate(`/complaints/${ticket.id}`);
+                                }}
+                                className="h-8 px-2.5 text-xs text-primary border border-primary/30 bg-primary/5 hover:bg-primary/10 font-semibold rounded-lg"
+                                title="Open workflow"
+                              >
+                                <Wrench className="w-3.5 h-3.5 mr-1" /> Workflow
+                              </Button>
+                              {isRole("admin", "supervisor") && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    navigate(`/complaints/${ticket.id}/edit`);
+                                  }}
+                                  className="h-8 w-8 p-0 text-slate-600 hover:text-blue-600 hover:bg-blue-50"
+                                  title="Edit complaint"
+                                >
+                                  <Edit2 className="w-4 h-4" />
+                                </Button>
+                              )}
+                              {(ticket.customer_lat && ticket.customer_lng) || (ticket.location && ticket.location.trim() !== "") ? (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    const dest = ticket.customer_lat && ticket.customer_lng
+                                      ? `${ticket.customer_lat},${ticket.customer_lng}`
+                                      : encodeURIComponent(ticket.location?.trim() || '');
+                                    if (dest) {
+                                      window.open(`https://www.google.com/maps/dir/?api=1&destination=${dest}&travelmode=driving`, '_blank');
+                                    }
+                                  }}
+                                  className="h-8 w-8 p-0 text-slate-600 hover:text-blue-600 hover:bg-blue-50"
+                                  title="Navigate to site"
+                                >
+                                  <Navigation className="w-4 h-4" />
+                                </Button>
+                              ) : null}
+                              {isRole("admin", "supervisor") && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setDeleteConfirmId(ticket.id);
+                                  }}
+                                  className="h-8 w-8 p-0 text-slate-600 hover:text-rose-600 hover:bg-rose-50"
+                                  title="Delete complaint"
+                                >
+                                  {isDeletingId === ticket.id ? (
+                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                  ) : (
+                                    <Trash2 className="w-4 h-4" />
+                                  )}
+                                </Button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
                 {filtered.length === 0 && (
@@ -908,12 +1125,16 @@ const ComplaintsList = () => {
           
           {viewMode === "card" && (
             <div className="space-y-4">
-              {paginatedItems.map((ticket, i) => (
-                <Link
-                  key={ticket.id}
-                  to={`/complaints/${ticket.id}`}
-                  className="glass-card rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:border-primary/25 hover:shadow-glow transition-all duration-300 block group relative overflow-hidden"
-                >
+              {paginatedItems.map((ticket, i) => {
+                const assignedTechs = getAssignedTechNames(ticket);
+                const badgeInfo = getCustomerBadgeInfo(ticket);
+
+                return (
+                  <Link
+                    key={ticket.id}
+                    to={`/complaints/${ticket.id}`}
+                    className="glass-card rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:border-primary/25 hover:shadow-glow transition-all duration-300 block group relative overflow-hidden"
+                  >
                     <div className="absolute left-0 top-0 bottom-0 w-1 bg-primary opacity-0 group-hover:opacity-100 transition-opacity" />
                     {(isRole("admin", "supervisor")) && (
                       <div className="absolute right-3 top-3">
@@ -939,17 +1160,23 @@ const ComplaintsList = () => {
                         <span className="text-xs font-mono text-primary font-bold">
                           {formatComplaintTicketId(ticket)}
                         </span>
-                        {ticket.customer_type === 'New / Non-BTL Customer' || ticket.customer_type === 'Non-BTL' || ticket.customer_type === 'Walk-in' || (!ticket.customer_id && !ticket.customer_name) ? (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                        {badgeInfo.isNonBtl ? (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-300">
                             Walk-in / Non-BTL
                           </span>
                         ) : (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
-                            Existing Customer
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200">
+                            BTL Customer
                           </span>
                         )}
                         <span className="text-xs text-muted-foreground">•</span>
                         {ticket.severity && <SeverityBadge severity={ticket.severity as any} />}
+                        {(ticket.chargeable_service === "Yes" || (ticket as any).is_chargeable) && (
+                          <span className="text-[9px] font-bold px-1.5 py-0.2 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            Chargeable
+                          </span>
+                        )}
+                        <span className="text-xs text-muted-foreground">•</span>
                         {ticket.status && <StatusBadge status={ticket.status} />}
                       </div>
                       
@@ -964,15 +1191,27 @@ const ComplaintsList = () => {
                         <span>Raised on {formatIndianDateTime(ticket.created_at)}</span>
                       </div>
 
-                      {(ticket.assigned_supervisor || ticket.assigned_technician) && (
-                        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground mt-1 border-t border-border/20 pt-1.5 max-w-fit">
+                      {(ticket.assigned_supervisor || assignedTechs.length > 0 || ticket.assigned_technician) && (
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground mt-2 border-t border-border/20 pt-1.5">
                           {ticket.assigned_supervisor && (
                             <span>Supervisor: <span className="font-semibold text-foreground">{ticket.assigned_supervisor}</span></span>
                           )}
-                          {ticket.assigned_supervisor && ticket.assigned_technician && <span>•</span>}
-                          {ticket.assigned_technician && (
+                          {ticket.assigned_supervisor && (assignedTechs.length > 0 || ticket.assigned_technician) && <span>•</span>}
+                          {assignedTechs.length > 0 ? (
+                            <div className="flex flex-wrap items-center gap-1">
+                              <span className="text-xs text-muted-foreground mr-0.5">Technicians:</span>
+                              {assignedTechs.map((name: string, idx: number) => (
+                                <span
+                                  key={idx}
+                                  className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200"
+                                >
+                                  <Wrench className="w-2.5 h-2.5" /> {name}
+                                </span>
+                              ))}
+                            </div>
+                          ) : ticket.assigned_technician ? (
                             <span>Technician: <span className="font-semibold text-foreground">{ticket.assigned_technician}</span></span>
-                          )}
+                          ) : null}
                         </div>
                       )}
                     </div>
@@ -1040,62 +1279,127 @@ const ComplaintsList = () => {
                        </div>
                      </div>
                   </Link>
-                ))}
+                );
+              })}
               </div>
             )}
 
-          {/* Pagination Controls */}
-          {totalPages > 1 && (
-            <div className="flex flex-col sm:flex-row items-center justify-end border-t border-border/30 pt-4 mt-6 gap-4">
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <p className="text-xs text-muted-foreground">
-                  Showing <span className="font-semibold text-foreground">{startIndex + 1}</span> to{" "}
-                  <span className="font-semibold text-foreground">
+          {/* Enhanced Enterprise Pagination Controls */}
+          {filtered.length > 0 && (
+            <div className="flex flex-col md:flex-row items-center justify-between border-t border-border/40 pt-4 mt-6 gap-4 text-xs">
+              {/* Left: Summary & Rows Per Page */}
+              <div className="flex items-center gap-4 flex-wrap text-muted-foreground w-full md:w-auto justify-between md:justify-start">
+                <p>
+                  Showing <span className="font-bold text-foreground">{startIndex + 1}</span> to{" "}
+                  <span className="font-bold text-foreground">
                     {Math.min(startIndex + itemsPerPage, filtered.length)}
                   </span>{" "}
-                  of <span className="font-semibold text-foreground">{filtered.length}</span> complaints
+                  of <span className="font-bold text-foreground">{filtered.length}</span> complaints
                 </p>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setCurrentPage((prev) => Math.max(prev - 1, 1))}
-                  disabled={currentPage === 1}
-                  className="rounded-xl h-8 px-2.5"
-                >
-                  Previous
-                </Button>
-                {getPageNumbers().map((page, index) => {
-                  if (page === "...") {
-                    return (
-                      <span key={`dots-${index}`} className="px-2 text-muted-foreground text-xs font-bold">
-                        ...
-                      </span>
-                    );
-                  }
-                  return (
-                    <Button
-                      key={page}
-                      variant={currentPage === page ? "default" : "outline"}
-                      size="sm"
-                      onClick={() => setCurrentPage(page as number)}
-                      className={`w-8 h-8 p-0 rounded-xl font-bold text-xs ${
-                        currentPage === page ? "gradient-primary text-white border-primary/20 shadow-glow" : ""
-                      }`}
-                    >
-                      {page}
-                    </Button>
-                  );
-                })}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setCurrentPage((prev) => Math.min(prev + 1, totalPages))}
-                  disabled={currentPage === totalPages}
-                  className="rounded-xl h-8 px-2.5"
-                >
-                  Next
-                </Button>
+
+                <div className="flex items-center gap-2 border-l border-border/60 pl-4">
+                  <span className="font-medium text-slate-500">Rows per page:</span>
+                  <select
+                    value={itemsPerPage}
+                    onChange={(e) => {
+                      const newSize = Number(e.target.value);
+                      setItemsPerPage(newSize);
+                      localStorage.setItem('complaints_items_per_page', String(newSize));
+                      setCurrentPage(1);
+                    }}
+                    className="bg-white dark:bg-slate-900 border border-border/80 rounded-lg px-2.5 py-1 text-xs font-semibold text-foreground focus:outline-none focus:ring-1 focus:ring-primary shadow-xs cursor-pointer"
+                  >
+                    <option value={10}>10</option>
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                  </select>
+                </div>
               </div>
+
+              {/* Right: Navigation Controls */}
+              {totalPages > 1 && (
+                <div className="flex items-center gap-1.5 flex-wrap justify-center sm:justify-end w-full md:w-auto">
+                  {/* First Page */}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage(1)}
+                    disabled={currentPage === 1}
+                    className="rounded-xl h-8 w-8 p-0"
+                    title="First Page"
+                  >
+                    <ChevronsLeft className="w-4 h-4" />
+                  </Button>
+
+                  {/* Previous Page */}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage((prev) => Math.max(prev - 1, 1))}
+                    disabled={currentPage === 1}
+                    className="rounded-xl h-8 px-2.5 gap-1 font-medium"
+                    title="Previous Page"
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">Prev</span>
+                  </Button>
+
+                  {/* Page Numbers */}
+                  <div className="flex items-center gap-1">
+                    {getPageNumbers().map((page, index) => {
+                      if (page === "...") {
+                        return (
+                          <span key={`dots-${index}`} className="px-1.5 text-muted-foreground text-xs font-bold select-none">
+                            ...
+                          </span>
+                        );
+                      }
+                      const isCurrent = currentPage === page;
+                      return (
+                        <Button
+                          key={`page-${page}`}
+                          variant={isCurrent ? "default" : "outline"}
+                          size="sm"
+                          onClick={() => setCurrentPage(page as number)}
+                          className={`w-8 h-8 p-0 rounded-xl font-bold text-xs transition-all ${
+                            isCurrent
+                              ? "gradient-primary text-white border-primary/20 shadow-glow pointer-events-none"
+                              : "hover:bg-muted/80 text-foreground"
+                          }`}
+                        >
+                          {page}
+                        </Button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Next Page */}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage((prev) => Math.min(prev + 1, totalPages))}
+                    disabled={currentPage === totalPages}
+                    className="rounded-xl h-8 px-2.5 gap-1 font-medium"
+                    title="Next Page"
+                  >
+                    <span className="hidden sm:inline">Next</span>
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </Button>
+
+                  {/* Last Page */}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCurrentPage(totalPages)}
+                    disabled={currentPage === totalPages}
+                    className="rounded-xl h-8 w-8 p-0"
+                    title="Last Page"
+                  >
+                    <ChevronsRight className="w-4 h-4" />
+                  </Button>
+                </div>
+              )}
             </div>
           )}
 

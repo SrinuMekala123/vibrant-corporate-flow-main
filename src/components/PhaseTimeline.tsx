@@ -13,13 +13,13 @@ export function PhaseTimeline({ currentPhase, status, activePhase, onPhaseClick 
   const phases: Phase[] = [1, 2, 3, 4, 5, 6];
   const normalizedStatus = (status || "").toLowerCase();
   const isClosed = normalizedStatus === "closed" || normalizedStatus === "completed" || normalizedStatus === "resolved" || normalizedStatus === "verified";
-  const isVerified = normalizedStatus === "verified";
+  const isVerified = normalizedStatus === "verified" || normalizedStatus === "closed";
 
   return (
     <div className="grid grid-cols-3 gap-y-5 gap-x-2 md:flex md:items-center md:gap-1 w-full select-none">
       {phases.map((phase, i) => {
-        const isCompleted = phase < currentPhase || (phase === 6 && isVerified);
-        const isCurrent = phase === currentPhase && !isVerified;
+        const isCompleted = phase < currentPhase || (phase === 6 && (isVerified || isClosed));
+        const isCurrent = phase === currentPhase && !(isVerified || isClosed);
         const isFinalPhase = phase === 6;
         const isSelected = activePhase === phase;
         
@@ -38,7 +38,7 @@ export function PhaseTimeline({ currentPhase, status, activePhase, onPhaseClick 
                 className={cn(
                   "w-8 h-8 md:w-10 md:h-10 rounded-full flex items-center justify-center text-xs font-bold transition-all border-2",
                   isCompleted && !isFinalPhase && "gradient-primary text-primary-foreground border-transparent",
-                  isCompleted && isFinalPhase && "bg-success text-success-foreground border-transparent shadow-[0_0_12px_rgba(34,197,94,0.4)]",
+                  isCompleted && isFinalPhase && "bg-success text-success-foreground border-transparent shadow-[0_0_14px_rgba(34,197,94,0.5)]",
                   isCurrent && !isFinalPhase && "border-primary text-primary bg-primary/10 animate-pulse-glow",
                   isCurrent && isFinalPhase && "border-success text-success bg-success/10 animate-pulse-glow",
                   !isCompleted && !isCurrent && "border-border text-muted-foreground bg-muted",
@@ -49,6 +49,7 @@ export function PhaseTimeline({ currentPhase, status, activePhase, onPhaseClick 
               </div>
               <span className={cn(
                 "text-[10px] mt-1.5 text-center leading-tight max-w-[70px] transition-colors group-hover:text-primary",
+                isFinalPhase && (isVerified || isClosed) ? "text-success font-bold" :
                 isSelected ? "text-primary font-bold" :
                 isCurrent ? "text-primary font-semibold" : "text-muted-foreground"
               )}>
@@ -58,7 +59,7 @@ export function PhaseTimeline({ currentPhase, status, activePhase, onPhaseClick 
             {i < phases.length - 1 && (
               <div className={cn(
                 "h-0.5 flex-1 mx-1 rounded-full md:mt-[-22px] hidden md:block",
-                isCompleted ? "gradient-primary" : "bg-border"
+                (phase < currentPhase || (phase === 5 && (isVerified || isClosed))) ? (phase === 5 && (isVerified || isClosed) ? "bg-success" : "gradient-primary") : "bg-border"
               )} />
             )}
           </div>

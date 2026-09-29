@@ -446,7 +446,32 @@ export const complaintService = {
         .from("complaints")
         .select("*")
         .order("created_at", { ascending: false });
-      return enrichComplaintsWithTicketIds(data || []);
+      const rows = enrichComplaintsWithTicketIds(data || []);
+      if (rows.length === 0) return rows;
+
+      try {
+        const complaintIds = rows.map((r: any) => r.id);
+        const { data: ctRows } = await supabase
+          .from("complaint_technicians")
+          .select("complaint_id, technician_id, is_lead, technician:profiles!complaint_technicians_technician_id_fkey (id, full_name, email, phone)")
+          .in("complaint_id", complaintIds);
+
+        if (ctRows && ctRows.length > 0) {
+          const ctMap = new Map<string, any[]>();
+          ctRows.forEach((ct: any) => {
+            const list = ctMap.get(ct.complaint_id) || [];
+            list.push(ct);
+            ctMap.set(ct.complaint_id, list);
+          });
+          rows.forEach((r: any) => {
+            r.complaint_technicians = ctMap.get(r.id) || [];
+          });
+        }
+      } catch (ctErr) {
+        console.warn("Fallback complaint_technicians load skipped:", ctErr);
+      }
+
+      return rows;
     }
   },
 
@@ -785,8 +810,8 @@ export const complaintService = {
     }
 
     // 🔔 Step 1: Automated WhatsApp on Complaint Creation (Registered or Walk-in)
-    let targetPhone = data?.customer_phone || complaint.customer_phone || data?.walk_in_phone || complaint.walk_in_phone;
-    const custName = data?.customer_name || complaint.customer_name || data?.walk_in_name || complaint.walk_in_name || "Valued Customer";
+    let targetPhone = data?.customer_phone || complaint.customer_phone || (data as any)?.walk_in_phone || (complaint as any)?.walk_in_phone;
+    const custName = data?.customer_name || complaint.customer_name || (data as any)?.walk_in_name || (complaint as any)?.walk_in_name || "Valued Customer";
     const newTicketId = data?.ticket_id || ticket_id || (data?.id ? `#${data.id.slice(0, 8)}` : "CMS-REQ");
     const issueTitle = data?.title || complaint.title || "service request";
 
@@ -852,14 +877,15 @@ export const complaintService = {
       console.warn("Could not pre-fetch complaint details for update:", fetchErr);
     }
 
-    const wasRemoteFixed = current?.triage_outcome === "remote_fixed";
+    const wasRemoteFixed = current?.triage_outcome === "remote_fixed" || current?.resolved_remotely || current?.resolution_type === "telephonic_triage";
+    const isMovingToFieldVisit = updates.triage_outcome === "field_required" || (updates.current_phase !== undefined && updates.current_phase < 6);
 
-    if (wasRemoteFixed && (updates.triage_outcome === undefined || updates.triage_outcome === null)) {
+    if (wasRemoteFixed && (updates.triage_outcome === undefined || updates.triage_outcome === null || isMovingToFieldVisit)) {
       const nextPhase = updates.current_phase ?? current?.current_phase;
       const nextStatus = updates.status ?? current?.status;
 
-      if (nextPhase !== 6 || nextStatus !== "completed") {
-        updates.triage_outcome = null;
+      if (nextPhase !== 6 || nextStatus !== "completed" || isMovingToFieldVisit) {
+        if (updates.triage_outcome === undefined) updates.triage_outcome = null;
         updates.resolution = null;
         updates.signoff_timestamp = null;
         updates.pir_findings = null;
@@ -1135,6 +1161,13 @@ export const complaintService = {
       ...(scheduledTime ? { scheduled_time: scheduledTime } : {}),
       ...(supervisorNotes ? { supervisor_notes: supervisorNotes } : {}),
       triage_outcome: "field_required",
+      resolution: null,
+      resolution_notes: null,
+      resolved_remotely: false,
+      resolution_type: null,
+      resolved_at: null,
+      resolved_by: null,
+      signoff_timestamp: null,
       updated_at: new Date().toISOString(),
     };
 

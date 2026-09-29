@@ -169,12 +169,15 @@ import {
   ChevronRight,
   Settings,
   CalendarDays,
-  Package
+  Package,
+  Target
 } from "lucide-react";
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { motion, AnimatePresence } from "framer-motion";
 import { NotificationCenter } from "./NotificationCenter";
+import { PWAInstallButton } from "./PWAInstallButton";
+import { PWAInstallBanner } from "./PWAInstallBanner";
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
   const { user, signOut } = useAuth();
@@ -232,6 +235,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     const adminSupervisorItems = [
       { path: "/assignments", label: "Assignments", icon: Users, roles: ["admin", "supervisor"] },
       { path: "/daily-schedule", label: "Daily Schedule", icon: CalendarDays, roles: ["admin", "supervisor", "technician"] },
+      { path: "/priority-matrix", label: "Priority Matrix", icon: Target, roles: ["admin", "supervisor"] },
     ];
 
     const adminOnlyItems = [
@@ -324,6 +328,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
 
           {/* User Info & Logout */}
           <div className="p-4 border-t border-slate-200 bg-slate-100/30">
+            {/* PWA Install Button in Sidebar */}
+            {!sidebarCollapsed && <PWAInstallButton variant="sidebar" className="mb-2.5" />}
+
             {/* User card link to Profile & Settings */}
             <Link 
               to="/profile"
@@ -403,14 +410,16 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           </div>
         </Link>
 
-        {/* Right: Notification Center with safe margin from edge */}
-        <div className="flex items-center pr-1 sm:pr-2">
+        {/* Right: PWA Install + Notification Center */}
+        <div className="flex items-center gap-2 pr-1 sm:pr-2">
+          <PWAInstallButton variant="nav" />
           <NotificationCenter />
         </div>
       </header>
 
-      {/* 🖥️ Desktop Notification Center - Positioned comfortably in top-right with safe margins */}
-      <div className="hidden md:block fixed top-4 right-8 lg:right-10 z-40">
+      {/* 🖥️ Desktop Notification Center & PWA Install - Positioned comfortably in top-right with safe margins */}
+      <div className="hidden md:flex items-center gap-2.5 fixed top-4 right-8 lg:right-10 z-40">
+        <PWAInstallButton variant="nav" />
         <NotificationCenter />
       </div>
 
@@ -420,6 +429,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       }`}>
         {children}
       </main>
+
+      {/* 📱 Floating Mobile Install Banner */}
+      <PWAInstallBanner />
     </div>
   );
 }

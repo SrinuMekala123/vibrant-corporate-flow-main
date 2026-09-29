@@ -93,6 +93,7 @@ export const severityColors: Record<SeverityTier, string> = {
   minor: "bg-success/15 text-success",
   moderate: "bg-warning/15 text-warning",
   major: "bg-destructive/15 text-destructive",
+  critical: "bg-destructive/25 text-destructive font-bold",
 };
 
 // KPI chart data

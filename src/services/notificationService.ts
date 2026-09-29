@@ -38,7 +38,7 @@ export const notificationService = {
       const targetActionUrl = actionUrl || `/complaints/${ticketId}`;
       
       // 1. Insert in-app notification into DB
-      const { error } = await supabase.from('notifications').insert({
+      let { error } = await supabase.from('notifications').insert({
         user_id: userId,
         ticket_id: ticketId,
         type,
@@ -49,8 +49,23 @@ export const notificationService = {
         is_read: false
       });
 
+      // If foreign key constraint fails (e.g. ticket is an installation and not in complaints table), retry with ticket_id: null
+      if (error && (error.code === '23503' || error.message?.includes('foreign key constraint'))) {
+        const retryResult = await supabase.from('notifications').insert({
+          user_id: userId,
+          ticket_id: null,
+          type,
+          title,
+          message,
+          phase,
+          action_url: targetActionUrl,
+          is_read: false
+        });
+        error = retryResult.error;
+      }
+
       if (error) {
-        console.error('Error inserting notification:', error);
+        console.warn('Error inserting notification:', error);
       }
 
       // 2. Fetch target user's email to send email notification
@@ -58,10 +73,10 @@ export const notificationService = {
         .from('profiles')
         .select('email')
         .eq('id', userId)
-        .single();
+        .maybeSingle();
 
       if (profileError) {
-        console.error('Error fetching user email for notification:', profileError);
+        console.warn('Error fetching user email for notification:', profileError);
         return null;
       }
 

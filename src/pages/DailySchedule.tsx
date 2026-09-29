@@ -1,12 +1,15 @@
 import { useState, useEffect, useMemo } from "react";
+import { useNavigate } from "react-router-dom";
 import { CalendarDays, ChevronLeft, ChevronRight, Printer, Download, Wrench, AlertCircle, Layers, Navigation, Phone, Clock, MapPin, User, Eye, X, FileText, Calendar } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
-import { supabase } from "@/lib/supabase";
+import { supabase, resolveSupabaseUrl } from "@/lib/supabase";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Card } from "@/components/ui/card";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Calendar as DayPickerCalendar } from "@/components/ui/calendar";
 import {
   Dialog,
   DialogContent,
@@ -95,7 +98,1130 @@ const getStatusBadgeClass = (status?: string) => {
   return "bg-slate-100 text-slate-700 border-slate-200";
 };
 
+const escapeHtml = (unsafe?: string | null): string => {
+  if (!unsafe) return "";
+  return String(unsafe)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+};
+
+const renderEvidenceGridHtml = (images: any[], title: string): string => {
+  if (!images || !Array.isArray(images) || images.length === 0) {
+    return `<div style="font-style: italic; color: #94a3b8; font-size: 10px; padding: 4px 0;">No evidence photos submitted.</div>`;
+  }
+  const itemsHtml = images.map((item, idx) => {
+    const resolved = resolveSupabaseUrl(item);
+    if (!resolved) return "";
+    return `
+      <div class="photo-item">
+        <a href="${escapeHtml(resolved)}" target="_blank" rel="noopener noreferrer" title="Click to view full image" style="text-decoration: none; display: block;">
+          <img src="${escapeHtml(resolved)}" alt="${escapeHtml(title)} ${idx + 1}" class="photo-img" />
+        </a>
+        <div class="photo-caption">${escapeHtml(title)} #${idx + 1}</div>
+      </div>
+    `;
+  }).filter(Boolean).join("");
+
+  return itemsHtml ? `<div class="photo-grid">${itemsHtml}</div>` : `<div style="font-style: italic; color: #94a3b8; font-size: 10px; padding: 4px 0;">No evidence photos submitted.</div>`;
+};
+
+const generateComplaintPrintHtml = (c: any, item: UnifiedScheduleTask, techList: any[] = []): string => {
+  const ticketId = c.ticket_id || item.ticket_id;
+  const printedAtStr = new Date().toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  });
+
+  const registeredAtStr = c.created_at ? new Date(c.created_at).toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  }) : "N/A";
+
+  const arrivalStr = c.arrival_timestamp ? new Date(c.arrival_timestamp).toLocaleTimeString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  }) : (c.scheduled_time || "N/A");
+
+  // Technicians with lead marked with 👑
+  let techHtml = "";
+  if (c.complaint_technicians && c.complaint_technicians.length > 0) {
+    const sorted = [...c.complaint_technicians].sort((a: any, b: any) => {
+      if (a.is_lead === b.is_lead) return 0;
+      return a.is_lead ? -1 : 1;
+    });
+    techHtml = sorted.map((ct: any) => {
+      const t = ct.technician || ct.profiles || techList.find((tech: any) => tech.id === ct.technician_id);
+      const name = t?.full_name || "Technician";
+      const isLead = ct.is_lead === true || ct.is_lead === "true";
+      const techId = formatTechId(t);
+      const phone = t?.phone ? `(${t.phone})` : "";
+      return `<div style="margin-bottom: 3px;">${isLead ? "👑 <strong>" + escapeHtml(name) + "</strong> <span style=\"font-size:8.5px; background:#dbeafe; color:#1e40af; padding:1px 4px; border-radius:3px; font-weight:bold;\">LEAD</span>" : escapeHtml(name)} ${techId ? `<span style="font-family:monospace; color:#64748b;">[${escapeHtml(techId)}]</span>` : ""} ${escapeHtml(phone)}</div>`;
+    }).join("");
+  } else {
+    techHtml = `<div>${escapeHtml(item.technician_name || "Unassigned")} ${item.technician_id_display ? `<span style="font-family:monospace; color:#64748b;">[${escapeHtml(item.technician_id_display)}]</span>` : ""}</div>`;
+  }
+
+  // PIR images: complaint_images or evidence_urls
+  const pirImages: string[] = Array.isArray(c.complaint_images) && c.complaint_images.length > 0
+    ? c.complaint_images
+    : (Array.isArray(c.evidence_urls) ? c.evidence_urls : []);
+
+  // Resolution images: technician_evidence
+  const resImages: string[] = Array.isArray(c.technician_evidence) && c.technician_evidence.length > 0
+    ? c.technician_evidence
+    : [];
+
+  const signatureUrl = c.signature_url ? resolveSupabaseUrl(c.signature_url) : null;
+
+  const isOtpVerified = Boolean(
+    c.happiness_code_verified === true ||
+    c.happiness_code_verified === "true" ||
+    (typeof c.status === "string" && c.status.toLowerCase().trim() === "verified") ||
+    c.feedback_collected === true
+  );
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Service Call Report - ${escapeHtml(ticketId)}</title>
+  <style>
+    @page {
+      size: portrait;
+      margin: 10mm;
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      font-family: Arial, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      margin: 0;
+      padding: 0;
+      color: #0f172a;
+      background: #f1f5f9;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+      line-height: 1.35;
+      font-size: 10.5px;
+    }
+    .screen-toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 9999;
+      background: #0f172a;
+      color: #ffffff;
+      padding: 10px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+    }
+    .toolbar-title {
+      font-size: 13px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: #f8fafc;
+    }
+    .toolbar-actions {
+      display: flex;
+      gap: 10px;
+    }
+    .btn-action {
+      padding: 6px 15px;
+      font-size: 12px;
+      font-weight: 700;
+      border-radius: 5px;
+      border: none;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: background 0.15s ease;
+    }
+    .btn-print {
+      background: #2563eb;
+      color: #ffffff;
+    }
+    .btn-print:hover {
+      background: #1d4ed8;
+    }
+    .btn-close {
+      background: #475569;
+      color: #f8fafc;
+    }
+    .btn-close:hover {
+      background: #334155;
+    }
+    .page-sheet {
+      max-width: 210mm;
+      margin: 20px auto 40px auto;
+      background: #ffffff;
+      padding: 14mm 16mm;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
+      border-radius: 4px;
+      min-height: 280mm;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      border-bottom: 2.5px solid #0f172a;
+      padding-bottom: 8px;
+      margin-bottom: 12px;
+    }
+    .brand-title {
+      font-size: 19px;
+      font-weight: 900;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      color: #0f172a;
+    }
+    .brand-subtitle {
+      font-size: 12px;
+      font-weight: 800;
+      color: #ea580c;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      margin-top: 2px;
+    }
+    .header-right {
+      text-align: right;
+    }
+    .ticket-badge {
+      font-family: monospace;
+      font-size: 14px;
+      font-weight: 800;
+      color: #0f172a;
+      background: #f1f5f9;
+      border: 1.5px solid #cbd5e1;
+      padding: 3px 8px;
+      border-radius: 4px;
+      display: inline-block;
+    }
+    .print-date {
+      font-size: 9px;
+      color: #64748b;
+      margin-top: 3px;
+    }
+    .section-card {
+      border: 1px solid #cbd5e1;
+      border-radius: 5px;
+      margin-bottom: 10px;
+      overflow: hidden;
+      page-break-inside: avoid;
+    }
+    .section-header {
+      background: #f8fafc;
+      border-bottom: 1px solid #cbd5e1;
+      padding: 5px 8px;
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #1e293b;
+    }
+    .section-body {
+      padding: 8px;
+    }
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+    }
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+    .field-group {
+      margin-bottom: 4px;
+    }
+    .field-lbl {
+      font-size: 8.5px;
+      font-weight: 700;
+      color: #64748b;
+      text-transform: uppercase;
+    }
+    .field-val {
+      font-size: 10.5px;
+      font-weight: 600;
+      color: #0f172a;
+      word-break: break-word;
+    }
+    .badge-pill {
+      display: inline-block;
+      padding: 1.5px 6px;
+      border-radius: 3px;
+      font-size: 8.5px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+    .photo-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 6px;
+    }
+    .photo-item {
+      width: 145px;
+      max-width: 145px;
+      border: 1px solid #cbd5e1;
+      border-radius: 4px;
+      overflow: hidden;
+      background: #ffffff;
+      padding: 4px;
+      text-align: center;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+    .photo-img {
+      width: 100%;
+      height: 110px;
+      object-fit: contain;
+      background: #f8fafc;
+      border-radius: 3px;
+      display: block;
+    }
+    .photo-caption {
+      font-size: 8.5px;
+      font-weight: 700;
+      color: #475569;
+      margin-top: 3px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .sig-container {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 6px;
+    }
+    .sig-img-box {
+      border: 1px solid #cbd5e1;
+      border-radius: 4px;
+      padding: 4px;
+      background: #ffffff;
+      width: 160px;
+      height: 65px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .sig-img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+    }
+    .signoff-strip {
+      margin-top: 14px;
+      padding-top: 10px;
+      border-top: 1.5px solid #94a3b8;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      page-break-inside: avoid;
+    }
+    .sig-line {
+      margin-top: 25px;
+      border-bottom: 1px dotted #475569;
+      width: 130px;
+    }
+    @media print {
+      body {
+        background: #ffffff !important;
+        padding: 0 !important;
+        margin: 0 !important;
+      }
+      .no-print, .screen-toolbar {
+        display: none !important;
+      }
+      .page-sheet {
+        max-width: 100% !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        box-shadow: none !important;
+        border-radius: 0 !important;
+        min-height: auto !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <!-- Sticky Screen Preview Toolbar (Hidden in Print) -->
+  <div class="screen-toolbar no-print">
+    <div class="toolbar-title">
+      <span>📄 Service Call Report Preview — <strong>${escapeHtml(ticketId)}</strong></span>
+      ${isOtpVerified ? `<span style="background: #059669; color: #ffffff; font-size: 10px; font-weight: 800; padding: 2px 8px; border-radius: 4px; letter-spacing: 0.5px;">✓ VERIFIED BY OTP</span>` : ""}
+    </div>
+    <div class="toolbar-actions">
+      <button onclick="window.print()" class="btn-action btn-print">🖨️ Print Report</button>
+      <button onclick="if(window.parent&&window.parent!==window){window.parent.postMessage('close-in-app-print','*');}else{window.close();}" class="btn-action btn-close">✕ Close Preview</button>
+    </div>
+  </div>
+
+  <!-- A4 Page Sheet Container -->
+  <div class="page-sheet">
+    <!-- Header -->
+    <div class="header">
+      <div>
+        <div class="brand-title">Brihaspathi Technologies</div>
+        <div class="brand-subtitle">SERVICE CALL REPORT</div>
+      </div>
+      <div class="header-right">
+        <div style="display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-bottom: 3px;">
+          <div class="ticket-badge">${escapeHtml(ticketId)}</div>
+          ${isOtpVerified ? `<span style="background: #059669; color: #ffffff; font-size: 9px; font-weight: 800; padding: 3px 8px; border-radius: 4px; letter-spacing: 0.5px; text-transform: uppercase;">✓ VERIFIED BY OTP</span>` : ""}
+        </div>
+        <div class="print-date">Report Date: ${escapeHtml(printedAtStr)}</div>
+      </div>
+    </div>
+
+    <!-- Customer Info -->
+    <div class="section-card">
+      <div class="section-header">Customer & Site Information</div>
+      <div class="section-body grid-3">
+        <div class="field-group">
+          <div class="field-lbl">Customer Name</div>
+          <div class="field-val">${escapeHtml(c.customer_name || c.profiles?.full_name || item.client_name)}</div>
+        </div>
+        <div class="field-group">
+          <div class="field-lbl">Contact Phone</div>
+          <div class="field-val">${escapeHtml(c.customer_phone || c.profiles?.phone || item.contact_number)}</div>
+        </div>
+        <div class="field-group">
+          <div class="field-lbl">Category / Field of Work</div>
+          <div class="field-val">${escapeHtml(c.field_of_work || c.category || "General Maintenance")}</div>
+        </div>
+        <div class="field-group" style="grid-column: span 2;">
+          <div class="field-lbl">Address / Location</div>
+          <div class="field-val">${escapeHtml(c.location || item.address)}</div>
+        </div>
+        <div class="field-group">
+          <div class="field-lbl">Severity / Priority</div>
+          <div class="field-val">${escapeHtml(c.severity || c.priority || "Standard")}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Assignment -->
+    <div class="section-card">
+      <div class="section-header">Assignment & Field Crew</div>
+      <div class="section-body grid-3">
+        <div class="field-group">
+          <div class="field-lbl">Field Supervisor</div>
+          <div class="field-val">${escapeHtml(c.assigned_supervisor || item.assigned_supervisor || "Not assigned")}</div>
+        </div>
+        <div class="field-group">
+          <div class="field-lbl">Scheduled Date & Time</div>
+          <div class="field-val">${escapeHtml(c.scheduled_date || item.scheduled_date || "N/A")} at ${escapeHtml(c.scheduled_time || item.scheduled_time || "N/A")}</div>
+        </div>
+        <div class="field-group">
+          <div class="field-lbl">Assigned Field Technicians</div>
+          <div class="field-val">${techHtml}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Phase 1: Intake -->
+    <div class="section-card">
+      <div class="section-header">Phase 1: Complaint Intake</div>
+      <div class="section-body grid-2">
+        <div class="field-group" style="grid-column: span 2;">
+          <div class="field-lbl">Issue Title</div>
+          <div class="field-val" style="font-weight: 700; color: #1e3a8a;">${escapeHtml(c.title || item.notes_description)}</div>
+        </div>
+        <div class="field-group" style="grid-column: span 2;">
+          <div class="field-lbl">Detailed Description</div>
+          <div class="field-val" style="white-space: pre-wrap;">${escapeHtml(c.description || "N/A")}</div>
+        </div>
+        <div class="field-group">
+          <div class="field-lbl">Registered Date & Time</div>
+          <div class="field-val">${escapeHtml(registeredAtStr)}</div>
+        </div>
+        <div class="field-group">
+          <div class="field-lbl">Registered By</div>
+          <div class="field-val">${escapeHtml(c.created_by_name || "Customer / Helpdesk")}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Phase 3: Dispatch -->
+    <div class="section-card">
+      <div class="section-header">Phase 3: Dispatch & Instructions</div>
+      <div class="section-body grid-2">
+        <div class="field-group">
+          <div class="field-lbl">Dispatch Status</div>
+          <div style="margin-top: 2px; display: flex; align-items: center; gap: 6px;">
+            <span class="badge-pill" style="background:#e0f2fe; color:#0369a1; border:1px solid #7dd3fc;">${escapeHtml(c.status || item.status)}</span>
+            ${isOtpVerified ? `<span class="badge-pill" style="background:#d1fae5; color:#065f46; border:1px solid #6ee7b7;">✓ OTP Verified</span>` : ""}
+          </div>
+        </div>
+        <div class="field-group">
+          <div class="field-lbl">Supervisor Instructions</div>
+          <div class="field-val" style="white-space: pre-wrap;">${escapeHtml(c.supervisor_notes || "Standard field service protocol.")}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Phase 4: Execution -->
+    <div class="section-card">
+      <div class="section-header">Phase 4: Field Execution & Preliminary Inspection (PIR)</div>
+      <div class="section-body">
+        <div class="grid-3">
+          <div class="field-group">
+            <div class="field-lbl">Observed Severity</div>
+            <div class="field-val">${escapeHtml(c.pir_findings_severity || c.supervisor_severity || c.severity || "Standard")}</div>
+          </div>
+          <div class="field-group">
+            <div class="field-lbl">Arrival / On-site Time</div>
+            <div class="field-val">${escapeHtml(arrivalStr)}</div>
+          </div>
+          <div class="field-group">
+            <div class="field-lbl">Target Duration</div>
+            <div class="field-val">${escapeHtml(c.target_duration_hours ? c.target_duration_hours + " hours" : "Standard SLA")}</div>
+          </div>
+        </div>
+        <div class="field-group" style="margin-top: 6px;">
+          <div class="field-lbl">PIR Diagnostic Findings</div>
+          <div class="field-val" style="white-space: pre-wrap;">${escapeHtml(c.pir_findings || "No specific diagnostic findings recorded.")}</div>
+        </div>
+        <div style="margin-top: 6px;">
+          <div class="field-lbl">PIR Evidence Photos (Pre-Service)</div>
+          ${renderEvidenceGridHtml(pirImages, "PIR Photo")}
+        </div>
+      </div>
+    </div>
+
+    <!-- Phase 5: Resolution -->
+    <div class="section-card">
+      <div class="section-header">Phase 5: Resolution & Spares Utilized</div>
+      <div class="section-body">
+        <div class="grid-2">
+          <div class="field-group">
+            <div class="field-lbl">Resolution Notes</div>
+            <div class="field-val" style="white-space: pre-wrap;">${escapeHtml(c.resolution_notes || c.resolution || "Service completed as per standard procedure.")}</div>
+          </div>
+          <div class="field-group">
+            <div class="field-lbl">Spares / Materials Used</div>
+            <div class="field-val">${escapeHtml(c.spares_used || c.parts_used || (c.chargeable_service ? "Chargeable components / spares replaced" : "Standard parts / No major spare replaced"))}</div>
+          </div>
+          <div class="field-group" style="grid-column: span 2;">
+            <div class="field-lbl">Technician Remarks</div>
+            <div class="field-val">${escapeHtml(c.technician_remarks || c.remarks || c.resolution_type || "All systems checked and functional.")}</div>
+          </div>
+        </div>
+
+        <div style="margin-top: 6px;">
+          <div class="field-lbl">Resolution Evidence Photos (Post-Service)</div>
+          ${renderEvidenceGridHtml(resImages, "Resolution Photo")}
+        </div>
+
+        <div style="margin-top: 8px;">
+          <div class="field-lbl">Customer Digital Signature</div>
+          <div class="sig-container">
+            <div class="sig-img-box">
+              ${signatureUrl ? `<img src="${escapeHtml(signatureUrl)}" alt="Customer Signature" class="sig-img" />` : `<span style="font-size: 9px; color:#94a3b8; font-style: italic;">Pending Signature</span>`}
+            </div>
+            <div style="font-size: 9px; color: #475569;">
+              <div>Signed on site upon physical inspection & resolution.</div>
+              <div><strong>Signoff Timestamp:</strong> ${escapeHtml(c.signoff_timestamp ? new Date(c.signoff_timestamp).toLocaleString("en-IN") : "Recorded on field")}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Phase 6: Verification -->
+    <div class="section-card">
+      <div class="section-header" style="display: flex; justify-content: space-between; align-items: center;">
+        <span>Phase 6: Quality Verification & Customer Feedback</span>
+        ${isOtpVerified 
+          ? `<span style="background: #059669; color: #ffffff; font-size: 9px; font-weight: 800; padding: 2px 8px; border-radius: 4px; letter-spacing: 0.5px;">✓ VERIFIED BY OTP</span>` 
+          : `<span style="background: #f59e0b; color: #ffffff; font-size: 9px; font-weight: 800; padding: 2px 8px; border-radius: 4px; letter-spacing: 0.5px;">⏳ PENDING OTP VERIFICATION</span>`}
+      </div>
+      <div class="section-body grid-3">
+        <div class="field-group">
+          <div class="field-lbl">Customer Happiness Code (OTP)</div>
+          <div class="field-val" style="margin-top: 3px;">
+            ${isOtpVerified ? `
+              <div style="display: inline-flex; align-items: center; gap: 6px;">
+                <span style="font-family: monospace; font-size: 13px; font-weight: 800; color: #065f46; background: #d1fae5; border: 1.5px solid #059669; padding: 2px 8px; border-radius: 4px; letter-spacing: 1px;">
+                  ${escapeHtml(c.happiness_code ? String(c.happiness_code) : "VERIFIED")}
+                </span>
+                <span style="background: #059669; color: #ffffff; font-size: 9px; font-weight: 800; padding: 2px 7px; border-radius: 3px; display: inline-flex; align-items: center; gap: 3px;">
+                  ✓ VERIFIED BY OTP
+                </span>
+              </div>
+            ` : `
+              <div style="display: inline-flex; align-items: center; gap: 6px;">
+                <span style="font-family: monospace; font-size: 12px; font-weight: 700; color: #64748b; background: #f1f5f9; border: 1px solid #cbd5e1; padding: 2px 8px; border-radius: 4px;">
+                  ${escapeHtml(c.happiness_code ? String(c.happiness_code) : "PENDING")}
+                </span>
+                <span style="background: #fef3c7; color: #b45309; border: 1px solid #fde68a; font-size: 8.5px; font-weight: 700; padding: 2px 6px; border-radius: 3px;">
+                  Pending Verification
+                </span>
+              </div>
+            `}
+          </div>
+        </div>
+        <div class="field-group">
+          <div class="field-lbl">Customer Satisfaction</div>
+          <div class="field-val" style="color: ${isOtpVerified ? "#065f46" : "#0f172a"}; font-weight: 700;">
+            ${isOtpVerified ? "✓ Customer Verified & Satisfied (OTP Confirmed)" : escapeHtml(c.customer_satisfaction || "Pending Customer Confirmation")}
+          </div>
+        </div>
+        <div class="field-group">
+          <div class="field-lbl">Verified By / Timestamp</div>
+          <div class="field-val">${escapeHtml(c.closed_by || c.resolved_by || "Admin Operations")} · ${escapeHtml(c.feedback_timestamp || c.closure_timestamp ? new Date(c.feedback_timestamp || c.closure_timestamp).toLocaleString("en-IN") : (isOtpVerified ? "Verified" : "Pending"))}</div>
+        </div>
+        <div class="field-group" style="grid-column: span 3;">
+          <div class="field-lbl">Customer Feedback Comments</div>
+          <div class="field-val">${escapeHtml(c.feedback_comments || (isOtpVerified ? "Customer validated job completion with happiness OTP verification." : "Customer expressed full satisfaction with the resolution."))}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Footer Signatures -->
+    <div class="signoff-strip">
+      <div>
+        <strong style="color: #0f172a;">Lead Field Technician:</strong>
+        <div class="sig-line"></div>
+        <div style="font-size: 8px; color: #64748b; margin-top: 2px;">Signature & Date</div>
+      </div>
+      <div>
+        <strong style="color: #0f172a;">Field Operations Supervisor:</strong>
+        <div class="sig-line"></div>
+        <div style="font-size: 8px; color: #64748b; margin-top: 2px;">Verification Signature & Date</div>
+      </div>
+      <div>
+        <strong style="color: #0f172a;">Customer Acknowledgment:</strong>
+        <div class="sig-line"></div>
+        <div style="font-size: 8px; color: #64748b; margin-top: 2px;">Signature & Stamp</div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>`;
+};
+
+const generateInstallationPrintHtml = (inst: any, item: UnifiedScheduleTask, techList: any[] = []): string => {
+  const ticketId = inst.ticket_id || item.ticket_id;
+  const printedAtStr = new Date().toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  });
+
+  // Client info
+  const clientName = (inst.customer_type === "BTL" ? inst.customer?.full_name : inst.non_btl_customer_name) || item.client_name;
+  const contactPhone = (inst.customer_type === "BTL" ? inst.customer?.phone : inst.non_btl_contact_number) || item.contact_number;
+  const addressStr = item.address;
+
+  // Technicians with lead marked with 👑
+  let techHtml = "";
+  if (inst.installation_technicians && inst.installation_technicians.length > 0) {
+    const sorted = [...inst.installation_technicians].sort((a: any, b: any) => {
+      if (a.is_lead === b.is_lead) return 0;
+      return a.is_lead ? -1 : 1;
+    });
+    techHtml = sorted.map((it: any) => {
+      const t = it.technician || techList.find((tech: any) => tech.id === it.technician_id);
+      const name = t?.full_name || "Technician";
+      const isLead = it.is_lead === true || it.is_lead === "true";
+      const techId = formatTechId(t);
+      const phone = t?.phone ? `(${t.phone})` : "";
+      return `<div style="margin-bottom: 3px;">${isLead ? "👑 <strong>" + escapeHtml(name) + "</strong> <span style=\"font-size:8.5px; background:#dbeafe; color:#1e40af; padding:1px 4px; border-radius:3px; font-weight:bold;\">LEAD</span>" : escapeHtml(name)} ${techId ? `<span style="font-family:monospace; color:#64748b;">[${escapeHtml(techId)}]</span>` : ""} ${escapeHtml(phone)}</div>`;
+    }).join("");
+  } else {
+    techHtml = `<div>${escapeHtml(item.technician_name || "Unassigned")} ${item.technician_id_display ? `<span style="font-family:monospace; color:#64748b;">[${escapeHtml(item.technician_id_display)}]</span>` : ""}</div>`;
+  }
+
+  // Evidence photos
+  const rawEvidence = Array.isArray(inst.evidence_photos)
+    ? inst.evidence_photos
+    : (Array.isArray(inst.evidence_urls) ? inst.evidence_urls : []);
+  const evidencePhotos: string[] = rawEvidence
+    .map((p: any) => resolveSupabaseUrl(p))
+    .filter(Boolean);
+  const signatureUrl = inst.customer_signature ? resolveSupabaseUrl(inst.customer_signature) : null;
+
+  const isOtpVerified = Boolean(
+    inst.happiness_code_verified === true ||
+    inst.happiness_code_verified === "true" ||
+    (typeof inst.status === "string" && inst.status.toLowerCase().trim() === "verified") ||
+    inst.feedback_collected === true
+  );
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Installation Work Order - ${escapeHtml(ticketId)}</title>
+  <style>
+    @page {
+      size: portrait;
+      margin: 10mm;
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      font-family: Arial, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      margin: 0;
+      padding: 0;
+      color: #0f172a;
+      background: #f1f5f9;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+      line-height: 1.35;
+      font-size: 10.5px;
+    }
+    .screen-toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 9999;
+      background: #0f172a;
+      color: #ffffff;
+      padding: 10px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+    }
+    .toolbar-title {
+      font-size: 13px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: #f8fafc;
+    }
+    .toolbar-actions {
+      display: flex;
+      gap: 10px;
+    }
+    .btn-action {
+      padding: 6px 15px;
+      font-size: 12px;
+      font-weight: 700;
+      border-radius: 5px;
+      border: none;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: background 0.15s ease;
+    }
+    .btn-print {
+      background: #2563eb;
+      color: #ffffff;
+    }
+    .btn-print:hover {
+      background: #1d4ed8;
+    }
+    .btn-close {
+      background: #475569;
+      color: #f8fafc;
+    }
+    .btn-close:hover {
+      background: #334155;
+    }
+    .page-sheet {
+      max-width: 210mm;
+      margin: 20px auto 40px auto;
+      background: #ffffff;
+      padding: 14mm 16mm;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
+      border-radius: 4px;
+      min-height: 280mm;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      border-bottom: 2.5px solid #0f172a;
+      padding-bottom: 8px;
+      margin-bottom: 12px;
+    }
+    .brand-title {
+      font-size: 19px;
+      font-weight: 900;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      color: #0f172a;
+    }
+    .brand-subtitle {
+      font-size: 12px;
+      font-weight: 800;
+      color: #2563eb;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      margin-top: 2px;
+    }
+    .header-right {
+      text-align: right;
+    }
+    .ticket-badge {
+      font-family: monospace;
+      font-size: 14px;
+      font-weight: 800;
+      color: #0f172a;
+      background: #f1f5f9;
+      border: 1.5px solid #cbd5e1;
+      padding: 3px 8px;
+      border-radius: 4px;
+      display: inline-block;
+    }
+    .print-date {
+      font-size: 9px;
+      color: #64748b;
+      margin-top: 3px;
+    }
+    .section-card {
+      border: 1px solid #cbd5e1;
+      border-radius: 5px;
+      margin-bottom: 10px;
+      overflow: hidden;
+      page-break-inside: avoid;
+    }
+    .section-header {
+      background: #f8fafc;
+      border-bottom: 1px solid #cbd5e1;
+      padding: 5px 8px;
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #1e293b;
+    }
+    .section-body {
+      padding: 8px;
+    }
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+    }
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+    .field-group {
+      margin-bottom: 4px;
+    }
+    .field-lbl {
+      font-size: 8.5px;
+      font-weight: 700;
+      color: #64748b;
+      text-transform: uppercase;
+    }
+    .field-val {
+      font-size: 10.5px;
+      font-weight: 600;
+      color: #0f172a;
+      word-break: break-word;
+    }
+    .photo-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 6px;
+    }
+    .photo-item {
+      width: 145px;
+      max-width: 145px;
+      border: 1px solid #cbd5e1;
+      border-radius: 4px;
+      overflow: hidden;
+      background: #ffffff;
+      padding: 4px;
+      text-align: center;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+    .photo-img {
+      width: 100%;
+      height: 110px;
+      object-fit: contain;
+      background: #f8fafc;
+      border-radius: 3px;
+      display: block;
+    }
+    .photo-caption {
+      font-size: 8.5px;
+      font-weight: 700;
+      color: #475569;
+      margin-top: 3px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .sig-container {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 6px;
+    }
+    .sig-img-box {
+      border: 1px solid #cbd5e1;
+      border-radius: 4px;
+      padding: 4px;
+      background: #ffffff;
+      width: 160px;
+      height: 65px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .sig-img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+    }
+    .signoff-strip {
+      margin-top: 14px;
+      padding-top: 10px;
+      border-top: 1.5px solid #94a3b8;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      page-break-inside: avoid;
+    }
+    .sig-line {
+      margin-top: 25px;
+      border-bottom: 1px dotted #475569;
+      width: 130px;
+    }
+    @media print {
+      body {
+        background: #ffffff !important;
+        padding: 0 !important;
+        margin: 0 !important;
+      }
+      .no-print, .screen-toolbar {
+        display: none !important;
+      }
+      .page-sheet {
+        max-width: 100% !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        box-shadow: none !important;
+        border-radius: 0 !important;
+        min-height: auto !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <!-- Sticky Screen Preview Toolbar (Hidden in Print) -->
+  <div class="screen-toolbar no-print">
+    <div class="toolbar-title">
+      <span>📄 Installation Work Order Preview — <strong>${escapeHtml(ticketId)}</strong></span>
+      ${isOtpVerified ? `<span style="background: #059669; color: #ffffff; font-size: 10px; font-weight: 800; padding: 2px 8px; border-radius: 4px; letter-spacing: 0.5px;">✓ VERIFIED BY OTP</span>` : ""}
+    </div>
+    <div class="toolbar-actions">
+      <button onclick="window.print()" class="btn-action btn-print">🖨️ Print Work Order</button>
+      <button onclick="if(window.parent&&window.parent!==window){window.parent.postMessage('close-in-app-print','*');}else{window.close();}" class="btn-action btn-close">✕ Close Preview</button>
+    </div>
+  </div>
+
+  <!-- A4 Page Sheet Container -->
+  <div class="page-sheet">
+    <!-- Header -->
+    <div class="header">
+      <div>
+        <div class="brand-title">Brihaspathi Technologies</div>
+        <div class="brand-subtitle">INSTALLATION WORK ORDER</div>
+      </div>
+      <div class="header-right">
+        <div style="display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-bottom: 3px;">
+          <div class="ticket-badge">${escapeHtml(ticketId)}</div>
+          ${isOtpVerified ? `<span style="background: #059669; color: #ffffff; font-size: 9px; font-weight: 800; padding: 3px 8px; border-radius: 4px; letter-spacing: 0.5px; text-transform: uppercase;">✓ VERIFIED BY OTP</span>` : ""}
+        </div>
+        <div class="print-date">Work Order Date: ${escapeHtml(printedAtStr)}</div>
+      </div>
+    </div>
+
+    <!-- Customer & Site Info -->
+    <div class="section-card">
+      <div class="section-header">Customer & Site Information</div>
+      <div class="section-body grid-3">
+        <div class="field-group">
+          <div class="field-lbl">Customer Name</div>
+          <div class="field-val">${escapeHtml(clientName)}</div>
+        </div>
+        <div class="field-group">
+          <div class="field-lbl">Contact Phone</div>
+          <div class="field-val">${escapeHtml(contactPhone)}</div>
+        </div>
+        <div class="field-group">
+          <div class="field-lbl">Customer Account Type</div>
+          <div class="field-val">${escapeHtml(inst.customer_type === "BTL" ? "Existing BTL Customer" : "New / Walk-in Customer")}</div>
+        </div>
+        <div class="field-group" style="grid-column: span 3;">
+          <div class="field-lbl">Installation Site Address</div>
+          <div class="field-val">${escapeHtml(addressStr)}</div>
+        </div>
+        <div class="field-group">
+          <div class="field-lbl">Equipment Model / Scope</div>
+          <div class="field-val">${escapeHtml([inst.brand, inst.equipment_model].filter(Boolean).join(" ") || inst.equipment_details || "Standard Equipment")}</div>
+        </div>
+        <div class="field-group">
+          <div class="field-lbl">Serial Number</div>
+          <div class="field-val" style="font-family: monospace;">${escapeHtml(inst.serial_number || "Pending Handover")}</div>
+        </div>
+        <div class="field-group">
+          <div class="field-lbl">Warranty Classification</div>
+          <div class="field-val">${escapeHtml(inst.customer_type === "BTL" ? "Standard Manufacturer Warranty" : "Out of Warranty / Standard")}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Assignment -->
+    <div class="section-card">
+      <div class="section-header">Field Deployment & Schedule</div>
+      <div class="section-body grid-2">
+        <div class="field-group">
+          <div class="field-lbl">Scheduled Date & Time</div>
+          <div class="field-val">${escapeHtml(inst.scheduled_date || item.scheduled_date || "N/A")} at ${escapeHtml(inst.scheduled_time || item.scheduled_time || "N/A")}</div>
+        </div>
+        <div class="field-group">
+          <div class="field-lbl">Installation Lead & Crew</div>
+          <div class="field-val">${techHtml}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Phase 4: Execution -->
+    <div class="section-card">
+      <div class="section-header">Phase 4: Execution & Commissioning</div>
+      <div class="section-body">
+        <div class="field-group">
+          <div class="field-lbl">Installation Notes & Scope</div>
+          <div class="field-val" style="white-space: pre-wrap;">${escapeHtml(inst.installation_notes || inst.notes || "Complete system mounting, wiring, power configuration, and operational commissioning.")}</div>
+        </div>
+        <div class="field-group" style="margin-top: 6px;">
+          <div class="field-lbl">Testing Results & Quality Checklist</div>
+          <div class="field-val" style="white-space: pre-wrap;">${escapeHtml(inst.testing_results || "All testing benchmarks completed successfully. System is stable and operational.")}</div>
+        </div>
+        <div style="margin-top: 6px;">
+          <div class="field-lbl">Site Evidence Photos (Mounting & Handover)</div>
+          ${renderEvidenceGridHtml(evidencePhotos, "Installation Photo")}
+        </div>
+      </div>
+    </div>
+
+    <!-- Phase 5/6: Completion & Verification -->
+    <div class="section-card">
+      <div class="section-header" style="display: flex; justify-content: space-between; align-items: center;">
+        <span>Phase 5 & 6: Completion Handover & Quality Verification</span>
+        ${isOtpVerified 
+          ? `<span style="background: #059669; color: #ffffff; font-size: 9px; font-weight: 800; padding: 2px 8px; border-radius: 4px; letter-spacing: 0.5px;">✓ VERIFIED BY OTP</span>` 
+          : `<span style="background: #f59e0b; color: #ffffff; font-size: 9px; font-weight: 800; padding: 2px 8px; border-radius: 4px; letter-spacing: 0.5px;">⏳ PENDING OTP VERIFICATION</span>`}
+      </div>
+      <div class="section-body">
+        <div class="grid-3">
+          <div class="field-group">
+            <div class="field-lbl">Customer Happiness Code (OTP)</div>
+            <div class="field-val" style="margin-top: 3px;">
+              ${isOtpVerified ? `
+                <div style="display: inline-flex; align-items: center; gap: 6px;">
+                  <span style="font-family: monospace; font-size: 13px; font-weight: 800; color: #065f46; background: #d1fae5; border: 1.5px solid #059669; padding: 2px 8px; border-radius: 4px; letter-spacing: 1px;">
+                    ${escapeHtml(inst.happiness_code ? String(inst.happiness_code) : "VERIFIED")}
+                  </span>
+                  <span style="background: #059669; color: #ffffff; font-size: 9px; font-weight: 800; padding: 2px 7px; border-radius: 3px; display: inline-flex; align-items: center; gap: 3px;">
+                    ✓ VERIFIED BY OTP
+                  </span>
+                </div>
+              ` : `
+                <div style="display: inline-flex; align-items: center; gap: 6px;">
+                  <span style="font-family: monospace; font-size: 12px; font-weight: 700; color: #64748b; background: #f1f5f9; border: 1px solid #cbd5e1; padding: 2px 8px; border-radius: 4px;">
+                    ${escapeHtml(inst.happiness_code ? String(inst.happiness_code) : "PENDING")}
+                  </span>
+                  <span style="background: #fef3c7; color: #b45309; border: 1px solid #fde68a; font-size: 8.5px; font-weight: 700; padding: 2px 6px; border-radius: 3px;">
+                    Pending Verification
+                  </span>
+                </div>
+              `}
+            </div>
+          </div>
+          <div class="field-group">
+            <div class="field-lbl">Customer Satisfaction</div>
+            <div class="field-val" style="color: ${isOtpVerified ? "#065f46" : "#0f172a"}; font-weight: 700;">
+              ${isOtpVerified ? "✓ Customer Verified & Satisfied (OTP Confirmed)" : escapeHtml(inst.customer_satisfaction || "Pending Handover Verification")}
+            </div>
+          </div>
+          <div class="field-group">
+            <div class="field-lbl">Verified By / Timestamp</div>
+            <div class="field-val">${escapeHtml(inst.verified_by || inst.closed_by || "Admin Operations")} · ${escapeHtml(inst.signoff_timestamp ? new Date(inst.signoff_timestamp).toLocaleString("en-IN") : (isOtpVerified ? "Verified" : "Recorded"))}</div>
+          </div>
+          <div class="field-group" style="grid-column: span 3;">
+            <div class="field-lbl">Customer Feedback Comments</div>
+            <div class="field-val">${escapeHtml(inst.feedback_comments || (isOtpVerified ? "Customer confirmed satisfactory installation and verified via happiness OTP." : "Customer verified installation quality and accepted site handover."))}</div>
+          </div>
+        </div>
+
+        <div style="margin-top: 8px;">
+          <div class="field-lbl">Customer Digital Signature</div>
+          <div class="sig-container">
+            <div class="sig-img-box">
+              ${signatureUrl ? `<img src="${escapeHtml(signatureUrl)}" alt="Customer Signature" class="sig-img" />` : `<span style="font-size: 9px; color:#94a3b8; font-style: italic;">Pending Signature</span>`}
+            </div>
+            <div style="font-size: 9px; color: #475569;">
+              <div>Signed on site upon physical installation acceptance.</div>
+              <div><strong>Signoff Date:</strong> ${escapeHtml(inst.signoff_timestamp ? new Date(inst.signoff_timestamp).toLocaleString("en-IN") : "Recorded on field")}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Signoff Strip -->
+    <div class="signoff-strip">
+      <div>
+        <strong style="color: #0f172a;">Lead Installation Technician:</strong>
+        <div class="sig-line"></div>
+        <div style="font-size: 8px; color: #64748b; margin-top: 2px;">Signature & Date</div>
+      </div>
+      <div>
+        <strong style="color: #0f172a;">Technical Supervisor:</strong>
+        <div class="sig-line"></div>
+        <div style="font-size: 8px; color: #64748b; margin-top: 2px;">Verification Signature & Date</div>
+      </div>
+      <div>
+        <strong style="color: #0f172a;">Customer Handover Approval:</strong>
+        <div class="sig-line"></div>
+        <div style="font-size: 8px; color: #64748b; margin-top: 2px;">Signature & Stamp</div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>`;
+};
+
 const DailySchedule = () => {
+  const navigate = useNavigate();
   const { user } = useAuth();
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -110,6 +1236,8 @@ const DailySchedule = () => {
 
   const [fromDate, setFromDate] = useState<Date>(today);
   const [toDate, setToDate] = useState<Date>(today);
+  const [fromCalendarOpen, setFromCalendarOpen] = useState(false);
+  const [toCalendarOpen, setToCalendarOpen] = useState(false);
   const [selectedTechnician, setSelectedTechnician] = useState("all");
   const [technicianSearch, setTechnicianSearch] = useState("");
   const [taskTypeFilter, setTaskTypeFilter] = useState<"all" | "installation" | "complaint">("all");
@@ -120,6 +1248,26 @@ const DailySchedule = () => {
   const [fullDetails, setFullDetails] = useState<any>(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
   const [printOnlyItem, setPrintOnlyItem] = useState<any>(null);
+  const [inAppPrintModal, setInAppPrintModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    htmlContent: string;
+  }>({
+    isOpen: false,
+    title: "",
+    htmlContent: "",
+  });
+
+  useEffect(() => {
+    const handleFrameMsg = (e: MessageEvent) => {
+      if (e.data === "close-in-app-print") {
+        setInAppPrintModal((prev) => ({ ...prev, isOpen: false }));
+      }
+    };
+    window.addEventListener("message", handleFrameMsg);
+    return () => window.removeEventListener("message", handleFrameMsg);
+  }, []);
+
   const ITEMS_PER_PAGE = 20;
 
   const fromDateStr = formatDateToYYYYMMDD(fromDate);
@@ -162,7 +1310,6 @@ const DailySchedule = () => {
 
       const selectColumns = `
         id,
-        ticket_id,
         title,
         description,
         status,
@@ -175,6 +1322,7 @@ const DailySchedule = () => {
         customer_phone,
         location,
         location_id,
+        created_at,
         complaint_technicians (
           id,
           technician_id,
@@ -195,6 +1343,8 @@ const DailySchedule = () => {
           .from("complaints")
           .select(selectColumns)
           .is("scheduled_date", null)
+          .gte("created_at", `${fromDateStr}T00:00:00`)
+          .lte("created_at", `${toDateStr}T23:59:59.999Z`)
           .order("created_at", { ascending: false }),
       ]);
 
@@ -217,7 +1367,7 @@ const DailySchedule = () => {
       const complaintIds = rows.map(r => r.id);
       const { data: junctionRows, error: junctionError } = await supabase
         .from("complaint_technicians")
-        .select("complaint_id, technician_id, is_lead, technician:profiles!complaint_technicians_technician_id_fkey (id, full_name, phone, email, technician_id)")
+        .select("complaint_id, technician_id, is_lead, technician:profiles!complaint_technicians_technician_id_fkey (id, full_name, phone, email)")
         .in("complaint_id", complaintIds);
 
       if (junctionError) {
@@ -234,7 +1384,7 @@ const DailySchedule = () => {
 
       return rows.map((row: any) => ({
         ...row,
-        complaint_technicians: junctionMap.get(row.id) || [],
+        complaint_technicians: junctionMap.get(row.id) || row.complaint_technicians || [],
       }));
     },
   });
@@ -347,7 +1497,7 @@ const DailySchedule = () => {
       let assignedIds: string[] = [];
 
       if (ctList.length > 0) {
-        assignedIds = ctList.map((ct: any) => ct.technician_id);
+        assignedIds = Array.from(new Set([...ctList.map((ct: any) => ct.technician_id), c.assigned_to].filter(Boolean)));
         const parts = ctList.map((ct: any) => {
           const t = ct.technician || technicians.find((tech: any) => tech.id === ct.technician_id);
           const name = t?.full_name || "Technician";
@@ -377,7 +1527,7 @@ const DailySchedule = () => {
         raw_id: c.id,
         task_type: "complaint",
         ticket_id: ticketIdDisplay,
-        scheduled_date: c.scheduled_date || "",
+        scheduled_date: c.scheduled_date || (c.created_at ? c.created_at.slice(0, 10) : ""),
         scheduled_time: c.scheduled_time ? c.scheduled_time.slice(0, 5) : "",
         technician_name: techName,
         technician_id_display: techId,
@@ -603,8 +1753,353 @@ const DailySchedule = () => {
     return `${fromDate.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })} - ${toDate.toLocaleDateString("en-US", { weekday: "short", month: "long", day: "numeric", year: "numeric" })}`;
   };
 
-  const handlePrint = () => {
-    window.print();
+  const navigateToTicket = (ticketId: string, taskType: string) => {
+    if (taskType === "Installation" || taskType.toLowerCase() === "installation") {
+      navigate(`/installations/${ticketId}`);
+    } else {
+      navigate(`/complaints/${ticketId}`);
+    }
+  };
+
+  const handlePrintTimetable = () => {
+    if (filteredScheduleData.length === 0) {
+      toast.error("No schedule tasks to print for the selected filter.");
+      return;
+    }
+
+    const dateLabel = getDateLabel();
+    const techLabel = selectedTechnician === "all"
+      ? "All Technicians"
+      : `${filteredTechnicians.find((t: any) => t.id === selectedTechnician)?.full_name || "Assigned"} (${formatTechId(filteredTechnicians.find((t: any) => t.id === selectedTechnician))})`;
+    const typeLabel = taskTypeFilter === "all" 
+      ? "All Tasks (Complaints & Installations)" 
+      : taskTypeFilter === "installation" ? "Installations Only" : "Complaints Only";
+    
+    const printedAtStr = new Date().toLocaleString("en-IN", {
+      timeZone: "Asia/Kolkata",
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: true,
+    });
+
+    const tableRowsHtml = filteredScheduleData.map((item, index) => {
+      const isInstall = item.task_type === "installation";
+      return `
+        <tr>
+          <td style="text-align: center; font-weight: bold; color: #475569;">${index + 1}</td>
+          <td style="font-weight: 700; color: #0f172a;">${escapeHtml(item.technician_name)}</td>
+          <td style="font-family: monospace; color: #334155; white-space: nowrap;">${escapeHtml(item.technician_id_display || "—")}</td>
+          <td style="text-align: center; font-weight: 600; white-space: nowrap;">${escapeHtml(item.scheduled_time || "—")}</td>
+          <td style="text-align: center; white-space: nowrap;">
+            <span class="badge ${isInstall ? "badge-install" : "badge-complaint"}">
+              ${isInstall ? "Installation" : "Complaint"}
+            </span>
+          </td>
+          <td style="font-family: monospace; font-weight: 700; color: #1e40af; white-space: nowrap;">${escapeHtml(item.ticket_id)}</td>
+          <td style="font-weight: 600; color: #0f172a;">${escapeHtml(item.client_name)}</td>
+          <td style="white-space: nowrap; color: #334155;">${escapeHtml(item.contact_number)}</td>
+          <td style="color: #334155;">${escapeHtml(item.address)}</td>
+          <td style="color: #1e293b;">${escapeHtml(item.notes_description)}</td>
+          <td style="text-align: center; white-space: nowrap;">
+            <span class="badge badge-status">${escapeHtml(item.status)}</span>
+          </td>
+        </tr>
+      `;
+    }).join("");
+
+    const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Daily Field Schedule - Brihaspathi Technologies</title>
+  <style>
+    @page {
+      size: landscape;
+      margin: 8mm;
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      font-family: Arial, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      margin: 0;
+      padding: 0;
+      color: #0f172a;
+      background: #f1f5f9;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+    .screen-toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 9999;
+      background: #0f172a;
+      color: #ffffff;
+      padding: 10px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+    }
+    .toolbar-title {
+      font-size: 13px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: #f8fafc;
+    }
+    .toolbar-actions {
+      display: flex;
+      gap: 10px;
+    }
+    .btn-action {
+      padding: 6px 15px;
+      font-size: 12px;
+      font-weight: 700;
+      border-radius: 5px;
+      border: none;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: background 0.15s ease;
+    }
+    .btn-print {
+      background: #2563eb;
+      color: #ffffff;
+    }
+    .btn-print:hover {
+      background: #1d4ed8;
+    }
+    .btn-close {
+      background: #475569;
+      color: #f8fafc;
+    }
+    .btn-close:hover {
+      background: #334155;
+    }
+    .page-sheet-landscape {
+      max-width: 297mm;
+      margin: 20px auto 40px auto;
+      background: #ffffff;
+      padding: 12mm 15mm;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
+      border-radius: 4px;
+      min-height: 200mm;
+    }
+    .header-container {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      border-bottom: 2px solid #0f172a;
+      padding-bottom: 8px;
+      margin-bottom: 10px;
+    }
+    .company-title {
+      font-size: 18px;
+      font-weight: 900;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      color: #0f172a;
+    }
+    .doc-subtitle {
+      font-size: 11px;
+      font-weight: 700;
+      color: #2563eb;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      margin-top: 2px;
+    }
+    .header-meta {
+      text-align: right;
+      font-size: 10px;
+      color: #475569;
+      line-height: 1.4;
+    }
+    .meta-strip {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-radius: 4px;
+      padding: 6px 10px;
+      margin-bottom: 10px;
+      font-size: 10px;
+      color: #334155;
+    }
+    .meta-strip strong {
+      color: #0f172a;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 9.5px;
+      margin-bottom: 15px;
+    }
+    th, td {
+      border: 1px solid #94a3b8;
+      padding: 5px 6px;
+      text-align: left;
+      vertical-align: middle;
+      word-break: break-word;
+    }
+    th {
+      background-color: #e2e8f0;
+      color: #0f172a;
+      font-weight: 800;
+      text-transform: uppercase;
+      font-size: 9px;
+      white-space: nowrap;
+    }
+    tr {
+      page-break-inside: avoid;
+    }
+    tr:nth-child(even) {
+      background-color: #f8fafc;
+    }
+    .badge {
+      display: inline-block;
+      padding: 2px 5px;
+      border-radius: 3px;
+      font-weight: 800;
+      font-size: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+    .badge-install {
+      background: #dbeafe;
+      color: #1e40af;
+      border: 1px solid #93c5fd;
+    }
+    .badge-complaint {
+      background: #ffedd5;
+      color: #9a3412;
+      border: 1px solid #fdba74;
+    }
+    .badge-status {
+      background: #f1f5f9;
+      color: #334155;
+      border: 1px solid #cbd5e1;
+    }
+    .signoff-section {
+      margin-top: 20px;
+      padding-top: 10px;
+      border-top: 1px solid #94a3b8;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      font-size: 9.5px;
+      page-break-inside: avoid;
+    }
+    .sig-line {
+      margin-top: 30px;
+      border-bottom: 1px dotted #475569;
+      width: 140px;
+    }
+    @media print {
+      body {
+        background: #ffffff !important;
+        padding: 0 !important;
+        margin: 0 !important;
+      }
+      .no-print, .screen-toolbar {
+        display: none !important;
+      }
+      .page-sheet-landscape {
+        max-width: 100% !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        box-shadow: none !important;
+        border-radius: 0 !important;
+        min-height: auto !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <!-- Sticky Screen Preview Toolbar (Hidden in Print) -->
+  <div class="screen-toolbar no-print">
+    <div class="toolbar-title">
+      <span>📄 Daily Field Schedule Preview — <strong>${escapeHtml(dateLabel)}</strong> (${filteredScheduleData.length} Tasks)</span>
+    </div>
+    <div class="toolbar-actions">
+      <button onclick="window.print()" class="btn-action btn-print">🖨️ Print Timetable</button>
+      <button onclick="if(window.parent&&window.parent!==window){window.parent.postMessage('close-in-app-print','*');}else{window.close();}" class="btn-action btn-close">✕ Close Preview</button>
+    </div>
+  </div>
+
+  <!-- Landscape Page Sheet Container -->
+  <div class="page-sheet-landscape">
+    <div class="header-container">
+      <div>
+        <div class="company-title">Brihaspathi Technologies</div>
+        <div class="doc-subtitle">Daily Field Service Schedule & Dispatch Sheet</div>
+      </div>
+      <div class="header-meta">
+        <div><strong>Printed:</strong> ${escapeHtml(printedAtStr)}</div>
+        <div><strong>Total Scheduled Jobs:</strong> ${filteredScheduleData.length} (Complaints: ${complaintCount}, Installations: ${installationCount})</div>
+      </div>
+    </div>
+
+    <div class="meta-strip">
+      <div><strong>Schedule Date:</strong> ${escapeHtml(dateLabel)}</div>
+      <div><strong>Category Scope:</strong> ${escapeHtml(typeLabel)}</div>
+      <div><strong>Technician Filter:</strong> ${escapeHtml(techLabel)}</div>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th style="text-align: center; width: 3%;">#</th>
+          <th style="width: 14%;">Technician Name</th>
+          <th style="width: 7%;">Tech ID</th>
+          <th style="text-align: center; width: 6%;">Time</th>
+          <th style="text-align: center; width: 8%;">Task Type</th>
+          <th style="width: 13%;">Ticket ID</th>
+          <th style="width: 13%;">Client Name</th>
+          <th style="width: 9%;">Contact</th>
+          <th style="width: 14%;">Address / Site</th>
+          <th style="width: 13%;">Notes / Description</th>
+          <th style="text-align: center; width: 8%;">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${tableRowsHtml}
+      </tbody>
+    </table>
+
+    <div class="signoff-section">
+      <div>
+        <strong>Prepared / Dispatched By:</strong>
+        <div class="sig-line"></div>
+        <div style="font-size: 8.5px; color: #64748b; margin-top: 3px;">Signature & Date</div>
+      </div>
+      <div>
+        <strong>Field Operations Supervisor:</strong>
+        <div class="sig-line"></div>
+        <div style="font-size: 8.5px; color: #64748b; margin-top: 3px;">Signature & Date</div>
+      </div>
+      <div>
+        <strong>Operations Head Approval:</strong>
+        <div class="sig-line"></div>
+        <div style="font-size: 8.5px; color: #64748b; margin-top: 3px;">Signature & Date</div>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>`;
+
+    setInAppPrintModal({
+      isOpen: true,
+      title: `Daily Field Schedule — ${dateLabel}`,
+      htmlContent: html,
+    });
   };
 
   const handleRowView = (item: UnifiedScheduleTask) => {
@@ -612,28 +2107,29 @@ const DailySchedule = () => {
     setIsViewModalOpen(true);
   };
 
-  const handleRowPrint = async (item: UnifiedScheduleTask) => {
-    setViewingItem(item);
-    setIsViewModalOpen(true);
-    setLoadingDetails(true);
-    setFullDetails(null);
-    setPrintOnlyItem(null);
-
+  const handlePrintSingleTicket = async (item: UnifiedScheduleTask) => {
+    const toastId = toast.loading(`Preparing printable report for ${item.ticket_id}...`);
     try {
-      let data: any = null;
+      let fullRecord: any = null;
       if (item.task_type === "complaint") {
-        data = await complaintService.getById(item.raw_id);
-      } else if (item.task_type === "installation") {
-        data = await installationService.getById(item.raw_id);
+        fullRecord = await complaintService.getById(item.raw_id);
+      } else {
+        fullRecord = await installationService.getById(item.raw_id);
       }
-      setFullDetails(data);
-      setPrintOnlyItem(data);
-      setTimeout(() => window.print(), 200);
-    } catch (err) {
-      console.error("Failed to fetch print details:", err);
-      toast.error("Failed to load work order for print.");
-    } finally {
-      setLoadingDetails(false);
+
+      const htmlContent = item.task_type === "complaint"
+        ? generateComplaintPrintHtml(fullRecord, item, technicians)
+        : generateInstallationPrintHtml(fullRecord, item, technicians);
+
+      setInAppPrintModal({
+        isOpen: true,
+        title: `${item.task_type === "installation" ? "Installation Work Order" : "Service Call Report"} — ${item.ticket_id}`,
+        htmlContent: htmlContent,
+      });
+      toast.dismiss(toastId);
+    } catch (err: any) {
+      console.error("Print generation error:", err);
+      toast.error("Failed to load ticket for printing: " + (err?.message || "Unknown error"), { id: toastId });
     }
   };
 
@@ -734,7 +2230,7 @@ const DailySchedule = () => {
             </Button>
             <Button
               type="button"
-              onClick={handlePrint}
+              onClick={handlePrintTimetable}
               className="gradient-primary text-white hover:opacity-95 rounded-xl h-10 px-4 gap-2 font-bold shadow-glow text-xs"
             >
               <Printer className="w-4 h-4" /> Print Timetable
@@ -750,53 +2246,59 @@ const DailySchedule = () => {
             {/* From Date */}
             <div className="space-y-1">
               <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider">From Date</label>
-              <div className="relative">
-                <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
-                <Input
-                  type="text"
-                  value={fromDate ? formatDateToDDMMYYYY(fromDate) : ""}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    const match = val.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
-                    if (match) {
-                      const [, dd, mm, yyyy] = match;
-                      const d = new Date(Number(yyyy), Number(mm) - 1, Number(dd));
-                      if (!isNaN(d.getTime())) setFromDate(d);
-                    } else if (val === "") {
-                      setFromDate(new Date());
-                    }
-                  }}
-                  placeholder="dd/MM/yyyy"
-                  className="border border-border/60 rounded-xl h-10 pl-10 pr-3 text-xs w-[140px] bg-card text-foreground font-semibold"
-                />
-              </div>
+              <Popover open={fromCalendarOpen} onOpenChange={setFromCalendarOpen}>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    className="border border-border/60 rounded-xl h-10 px-3 text-xs w-[140px] bg-card text-foreground font-semibold flex items-center justify-start gap-2 text-left shadow-2xs hover:bg-muted/40"
+                  >
+                    <Calendar className="w-4 h-4 text-primary shrink-0" />
+                    <span>{fromDate ? formatDateToDDMMYYYY(fromDate) : "dd/MM/yyyy"}</span>
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-0 z-50 bg-card border border-border/80 shadow-2xl rounded-2xl" align="start">
+                  <DayPickerCalendar
+                    mode="single"
+                    selected={fromDate}
+                    onSelect={(date) => {
+                      if (date) {
+                        setFromDate(date);
+                        setFromCalendarOpen(false);
+                      }
+                    }}
+                    initialFocus
+                  />
+                </PopoverContent>
+              </Popover>
             </div>
 
             {/* To Date */}
             <div className="space-y-1">
               <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider">To Date</label>
-              <div className="relative">
-                <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
-                <Input
-                  type="text"
-                  value={toDate ? formatDateToDDMMYYYY(toDate) : ""}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    const match = val.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
-                    if (match) {
-                      const [, dd, mm, yyyy] = match;
-                      const d = new Date(Number(yyyy), Number(mm) - 1, Number(dd));
-                      if (!isNaN(d.getTime())) setToDate(d);
-                    } else if (val === "") {
-                      const today = new Date();
-                      today.setHours(0, 0, 0, 0);
-                      setToDate(today);
-                    }
-                  }}
-                  placeholder="dd/MM/yyyy"
-                  className="border border-border/60 rounded-xl h-10 pl-10 pr-3 text-xs w-[140px] bg-card text-foreground font-semibold"
-                />
-              </div>
+              <Popover open={toCalendarOpen} onOpenChange={setToCalendarOpen}>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    className="border border-border/60 rounded-xl h-10 px-3 text-xs w-[140px] bg-card text-foreground font-semibold flex items-center justify-start gap-2 text-left shadow-2xs hover:bg-muted/40"
+                  >
+                    <Calendar className="w-4 h-4 text-primary shrink-0" />
+                    <span>{toDate ? formatDateToDDMMYYYY(toDate) : "dd/MM/yyyy"}</span>
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-0 z-50 bg-card border border-border/80 shadow-2xl rounded-2xl" align="start">
+                  <DayPickerCalendar
+                    mode="single"
+                    selected={toDate}
+                    onSelect={(date) => {
+                      if (date) {
+                        setToDate(date);
+                        setToCalendarOpen(false);
+                      }
+                    }}
+                    initialFocus
+                  />
+                </PopoverContent>
+              </Popover>
             </div>
 
             {/* Technician Dropdown (Only for Admin / Supervisor) */}
@@ -950,42 +2452,48 @@ const DailySchedule = () => {
             <div className="screen-only no-print space-y-4">
               {/* Desktop Table View */}
               <Card className="hidden md:block overflow-x-auto shadow-sm border border-slate-200 bg-white">
-                <table className="w-full text-sm min-w-[1200px]">
+                <table className="w-full text-sm min-w-[1050px]">
                   <thead className="bg-slate-50 text-slate-700 border-b border-slate-200 font-bold text-xs uppercase tracking-wider">
                     <tr>
-                      <th className="text-left py-3 px-3.5 whitespace-nowrap">Technician</th>
-                      <th className="text-left py-3 px-3 whitespace-nowrap">Tech ID</th>
-                      <th className="text-left py-3 px-3 whitespace-nowrap">Time</th>
-                      <th className="text-left py-3 px-3 whitespace-nowrap">Task Type</th>
-                      <th className="text-left py-3 px-3.5 whitespace-nowrap">Ticket ID</th>
-                      <th className="text-left py-3 px-3.5 whitespace-nowrap">Client Name</th>
-                      <th className="text-left py-3 px-3 whitespace-nowrap">Contact Number</th>
-                      <th className="text-left py-3 px-3.5 whitespace-nowrap">Address</th>
-                       <th className="text-left py-3 px-3.5 whitespace-nowrap">Notes / Description</th>
-                       <th className="text-left py-3 px-3 whitespace-nowrap">Status</th>
-                       <th className="text-left py-3 px-3 whitespace-nowrap w-24">Actions</th>
+                      <th className="text-left py-3 px-3 whitespace-nowrap">Technician</th>
+                      <th className="text-left py-3 px-2.5 whitespace-nowrap">Tech ID</th>
+                      <th className="text-center py-3 px-2 whitespace-nowrap">Time</th>
+                      <th className="text-center py-3 px-2.5 whitespace-nowrap">Task Type</th>
+                      <th className="text-left py-3 px-3 whitespace-nowrap">Ticket ID</th>
+                      <th className="text-left py-3 px-2.5 whitespace-nowrap">Client Name</th>
+                      <th className="text-left py-3 px-2 whitespace-nowrap">Contact Number</th>
+                      <th className="text-left py-3 px-2.5 whitespace-nowrap">Address</th>
+                      <th className="text-left py-3 px-2.5 whitespace-nowrap">Notes / Description</th>
+                      <th className="text-center py-3 px-2.5 whitespace-nowrap">Status</th>
+                      <th className="sticky right-0 bg-slate-50 text-slate-700 py-3 px-3 text-center whitespace-nowrap w-20 z-20 shadow-[-6px_0_10px_-4px_rgba(0,0,0,0.08)] border-l border-slate-200">
+                        Actions
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {paginatedData.map((item) => (
-                      <tr key={item.id} className="hover:bg-slate-50/70 transition-colors">
+                      <tr
+                        key={item.id}
+                        onClick={() => navigateToTicket(item.raw_id || item.ticket_id, item.task_type)}
+                        className="group hover:bg-slate-50 cursor-pointer transition-colors"
+                      >
                         {/* 1. Technician */}
-                        <td className="py-3 px-3.5 font-semibold text-slate-800 text-xs">
+                        <td className="py-2.5 px-3 font-semibold text-slate-800 text-xs max-w-[150px] truncate" title={item.technician_name}>
                           {item.technician_name}
                         </td>
 
                         {/* 2. Tech ID */}
-                        <td className="py-3 px-3 text-slate-600 font-mono text-xs max-w-[160px] truncate" title={item.technician_id_display || ""}>
+                        <td className="py-2.5 px-2.5 text-slate-600 font-mono text-xs max-w-[110px] truncate" title={item.technician_id_display || ""}>
                           {item.technician_id_display || "—"}
                         </td>
 
                         {/* 3. Time */}
-                        <td className="py-3 px-3 whitespace-nowrap font-medium text-slate-700 text-xs">
+                        <td className="py-2.5 px-2 text-center whitespace-nowrap font-medium text-slate-700 text-xs">
                           {item.scheduled_time || "—"}
                         </td>
 
                         {/* 4. Task Type Badge */}
-                        <td className="py-3 px-3 whitespace-nowrap">
+                        <td className="py-2.5 px-2.5 text-center whitespace-nowrap">
                           {item.task_type === "installation" ? (
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
                               <Wrench className="w-3 h-3" /> Installation
@@ -998,28 +2506,31 @@ const DailySchedule = () => {
                         </td>
 
                         {/* 5. Ticket ID */}
-                        <td className="py-3 px-3.5 whitespace-nowrap font-mono font-bold text-xs text-primary">
+                        <td className="py-2.5 px-3 whitespace-nowrap font-mono font-bold text-xs text-primary">
                           {item.ticket_id}
                         </td>
 
                         {/* 6. Client Name */}
-                        <td className="py-3 px-3.5 text-slate-800 font-medium text-xs max-w-[150px] truncate" title={item.client_name}>
+                        <td className="py-2.5 px-2.5 text-slate-800 font-medium text-xs max-w-[130px] truncate" title={item.client_name}>
                           {item.client_name}
                         </td>
 
                         {/* 7. Contact Number */}
-                        <td className="py-3 px-3 text-slate-600 whitespace-nowrap text-xs">
+                        <td className="py-2.5 px-2 text-slate-600 whitespace-nowrap text-xs">
                           {item.contact_number}
                         </td>
 
                         {/* 8. Address */}
-                        <td className="py-3 px-3.5 text-slate-600 text-xs max-w-[200px]">
+                        <td className="py-2.5 px-2.5 text-slate-600 text-xs max-w-[160px]">
                           <div className="flex items-center justify-between gap-1">
-                            <span className="truncate" title={item.address}>{formatText(item.address, 30)}</span>
+                            <span className="truncate" title={item.address}>{formatText(item.address, 26)}</span>
                             {item.address && item.address !== "N/A" && (
                               <button
                                 type="button"
-                                onClick={() => window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(item.address)}`, '_blank')}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(item.address)}`, '_blank');
+                                }}
                                 title="Open GPS Route"
                                 className="text-emerald-600 hover:text-emerald-800 p-1 hover:bg-emerald-50 rounded shrink-0 no-print"
                               >
@@ -1030,27 +2541,30 @@ const DailySchedule = () => {
                         </td>
 
                         {/* 9. Notes / Description */}
-                        <td className="py-3 px-3.5 text-slate-800 text-xs max-w-[200px] truncate" title={item.notes_description}>
-                          {formatText(item.notes_description, 40)}
+                        <td className="py-2.5 px-2.5 text-slate-800 text-xs max-w-[160px] truncate" title={item.notes_description}>
+                          {formatText(item.notes_description, 35)}
                         </td>
 
                         {/* 10. Status */}
-                        <td className="py-3 px-3 whitespace-nowrap">
-                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${getStatusBadgeClass(item.status)}`}>
+                        <td className="py-2.5 px-2.5 text-center whitespace-normal max-w-[135px]">
+                          <span
+                            className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border leading-tight ${getStatusBadgeClass(item.status)}`}
+                            title={item.status}
+                          >
                             {item.status}
                           </span>
                         </td>
 
-                        {/* 11. Actions */}
-                        <td className="py-3 px-3 whitespace-nowrap">
-                          <div className="flex items-center gap-1 no-print">
+                        {/* 11. Actions (Sticky Right Column) */}
+                        <td className="sticky right-0 bg-white group-hover:bg-slate-50 py-2.5 px-3 whitespace-nowrap z-10 shadow-[-6px_0_10px_-4px_rgba(0,0,0,0.08)] border-l border-slate-100 transition-colors">
+                          <div className="flex items-center justify-center gap-1 no-print">
                             <button
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 handleRowView(item);
                               }}
-                              className="p-1.5 rounded-lg text-slate-500 hover:text-blue-600 hover:bg-blue-50"
+                              className="p-1.5 rounded-lg text-slate-500 hover:text-blue-600 hover:bg-blue-50 transition-colors"
                               title="View details"
                             >
                               <Eye className="w-3.5 h-3.5" />
@@ -1059,10 +2573,10 @@ const DailySchedule = () => {
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                handleRowPrint(item);
+                                handlePrintSingleTicket(item);
                               }}
-                              className="p-1.5 rounded-lg text-slate-500 hover:text-blue-600 hover:bg-blue-50"
-                              title="Print work order"
+                              className="p-1.5 rounded-lg text-slate-500 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+                              title="Print ticket report"
                             >
                               <Printer className="w-3.5 h-3.5" />
                             </button>
@@ -1079,7 +2593,8 @@ const DailySchedule = () => {
                 {paginatedData.map((item) => (
                   <div
                     key={item.id}
-                    className="p-3.5 rounded-xl border border-slate-200 bg-white shadow-sm space-y-2.5"
+                    onClick={() => navigateToTicket(item.raw_id || item.ticket_id, item.task_type)}
+                    className="p-3.5 rounded-xl border border-slate-200 bg-white shadow-sm space-y-2.5 cursor-pointer hover:bg-slate-50 transition-colors"
                   >
                     {/* Header: Task type + Status */}
                     <div className="flex items-start justify-between gap-2">
@@ -1110,6 +2625,7 @@ const DailySchedule = () => {
                           <Phone className="w-3 h-3 text-slate-400" />
                           <a
                             href={`tel:${item.contact_number}`}
+                            onClick={(e) => e.stopPropagation()}
                             className="text-primary hover:underline font-medium"
                           >
                             {item.contact_number}
@@ -1153,7 +2669,10 @@ const DailySchedule = () => {
                           type="button"
                           variant="outline"
                           size="sm"
-                          onClick={() => window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(item.address)}`, '_blank')}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(item.address)}`, '_blank');
+                          }}
                           className="h-7 px-2 text-xs text-emerald-700 border-emerald-200 bg-emerald-50/50 hover:bg-emerald-100/70 gap-1 shrink-0 font-semibold"
                         >
                           <Navigation className="w-3 h-3 text-emerald-600" /> Map
@@ -1167,7 +2686,10 @@ const DailySchedule = () => {
                         type="button"
                         variant="outline"
                         size="sm"
-                        onClick={() => handleRowView(item)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleRowView(item);
+                        }}
                         className="h-7 px-2 text-xs text-slate-700 border-slate-200 hover:bg-slate-50 gap-1 font-semibold"
                       >
                         <Eye className="w-3 h-3" /> View
@@ -1176,10 +2698,13 @@ const DailySchedule = () => {
                         type="button"
                         variant="outline"
                         size="sm"
-                        onClick={() => handleRowPrint(item)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handlePrintSingleTicket(item);
+                        }}
                         className="h-7 px-2 text-xs text-slate-700 border-slate-200 hover:bg-slate-50 gap-1 font-semibold"
                       >
-                        <Printer className="w-3 h-3" /> Print
+                        <Printer className="w-3.5 h-3.5" /> Print
                       </Button>
                     </div>
                   </div>
@@ -1613,7 +3138,11 @@ const DailySchedule = () => {
             </Button>
             <Button
               size="sm"
-              onClick={() => window.print()}
+              onClick={() => {
+                if (viewingItem) {
+                  handlePrintSingleTicket(viewingItem);
+                }
+              }}
               className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold shadow-sm"
             >
               <Printer className="w-3.5 h-3.5 mr-2" /> Print Work Order
@@ -1697,6 +3226,61 @@ const DailySchedule = () => {
           </div>
         </div>
       )}
+      {/* In-App Print Preview Modal (Renders directly within app, no separate browser tab) */}
+      <Dialog
+        open={inAppPrintModal.isOpen}
+        onOpenChange={(openState) => {
+          if (!openState) {
+            setInAppPrintModal((prev) => ({ ...prev, isOpen: false }));
+          }
+        }}
+      >
+        <DialogContent className="max-w-[96vw] w-[1300px] h-[92vh] max-h-[95vh] p-0 flex flex-col overflow-hidden bg-slate-900 border border-slate-700 shadow-2xl rounded-xl">
+          {/* Header */}
+          <div className="flex items-center justify-between px-5 py-3 bg-slate-950 text-white border-b border-slate-800 shrink-0">
+            <div className="flex items-center gap-2.5">
+              <Printer className="w-5 h-5 text-blue-400" />
+              <span className="font-bold text-sm text-slate-100">{inAppPrintModal.title}</span>
+              <span className="text-[11px] bg-blue-900/60 text-blue-300 border border-blue-700/50 px-2 py-0.5 rounded-full font-medium">
+                In-App Document
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                onClick={() => {
+                  const frame = document.getElementById("in-app-print-frame") as HTMLIFrameElement;
+                  if (frame?.contentWindow) {
+                    frame.contentWindow.focus();
+                    frame.contentWindow.print();
+                  }
+                }}
+                className="bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs h-8 px-4 gap-1.5 shadow-xs"
+              >
+                <Printer className="w-3.5 h-3.5" /> Print Now
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setInAppPrintModal((prev) => ({ ...prev, isOpen: false }))}
+                className="border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800 text-xs h-8 px-3"
+              >
+                <X className="w-4 h-4 mr-1" /> Close
+              </Button>
+            </div>
+          </div>
+
+          {/* Embedded Preview Iframe */}
+          <div className="flex-1 w-full h-full bg-slate-200 overflow-hidden relative">
+            <iframe
+              id="in-app-print-frame"
+              title="Print Preview"
+              srcDoc={inAppPrintModal.htmlContent}
+              className="w-full h-full border-none"
+            />
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useFormDraft } from "@/hooks/useFormDraft";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Package,
@@ -240,7 +241,40 @@ export default function Installations() {
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  const [isLogNewOpen, setIsLogNewOpen] = useState(false);
+  const [isLogNewOpen, setIsLogNewOpen] = useState(() => {
+    return sessionStorage.getItem("log_installation_open") === "true";
+  });
+
+  const installationDraft = useFormDraft({
+    key: "draft_log_installation",
+    enabled: isLogNewOpen,
+    fields: {
+      customerType: { value: customerType, setter: setCustomerType as any },
+      selectedCustomerId: { value: selectedCustomerId, setter: setSelectedCustomerId },
+      selectedLocationId: { value: selectedLocationId, setter: setSelectedLocationId },
+      nonBtlName: { value: nonBtlName, setter: setNonBtlName },
+      nonBtlContact: { value: nonBtlContact, setter: setNonBtlContact },
+      nonBtlAddress: { value: nonBtlAddress, setter: setNonBtlAddress },
+      equipmentDetails: { value: equipmentDetails, setter: setEquipmentDetails },
+      brand: { value: brand, setter: setBrand },
+      priority: { value: priority, setter: setPriority as any },
+      isChargeable: { value: isChargeable, setter: setIsChargeable as any },
+      serviceCharge: { value: serviceCharge, setter: setServiceCharge as any },
+      notes: { value: notes, setter: setNotes },
+    },
+  });
+
+  useEffect(() => {
+    if (isLogNewOpen) {
+      installationDraft.restore();
+    }
+  }, [isLogNewOpen]);
+
+  useEffect(() => {
+    if (isLogNewOpen) {
+      installationDraft.save();
+    }
+  }, [customerType, selectedCustomerId, selectedLocationId, nonBtlName, nonBtlContact, nonBtlAddress, equipmentDetails, brand, priority, isChargeable, serviceCharge, notes, isLogNewOpen]);
 
   const [selectedInstallationIds, setSelectedInstallationIds] = useState<Set<string>>(new Set());
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
@@ -650,6 +684,8 @@ export default function Installations() {
       setIsChargeable("Yes");
       setServiceCharge("");
       setNotes("");
+      installationDraft.clear();
+      sessionStorage.removeItem("log_installation_open");
       setIsLogNewOpen(false);
 
       // Refresh lists
@@ -1084,7 +1120,10 @@ export default function Installations() {
             </p>
             <Button
               size="sm"
-              onClick={() => setIsLogNewOpen(true)}
+              onClick={() => {
+                sessionStorage.setItem("log_installation_open", "true");
+                setIsLogNewOpen(true);
+              }}
               className="gradient-primary text-white hover:opacity-95 rounded-xl h-10 px-4 gap-2 font-bold shadow-glow text-xs shrink-0"
             >
               <Plus className="w-4 h-4" />
@@ -2074,7 +2113,10 @@ export default function Installations() {
       {/* Log New Installation — ~80% off-canvas */}
       <OffCanvasPanel
         open={isLogNewOpen}
-        onClose={() => setIsLogNewOpen(false)}
+        onClose={() => {
+          sessionStorage.removeItem("log_installation_open");
+          setIsLogNewOpen(false);
+        }}
         header={
           <>
             <div className="w-14 h-14 rounded-2xl bg-primary/10 text-primary flex items-center justify-center shrink-0">

@@ -53,6 +53,7 @@ import {
   getCustomerBranchNames,
   type CustomerEntityType,
 } from "@/lib/customerForm";
+import { isValidPhone } from "@/lib/validation";
 import { useFormDraft } from "@/hooks/useFormDraft";
 import { Checkbox } from "@/components/ui/checkbox";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
@@ -132,8 +133,12 @@ export default function Customers() {
   const ITEMS_PER_PAGE = 20;
 
   // Modal / Side-panel states
-  const [selectedCustomer, setSelectedCustomer] = useState<any | null>(null);
-  const [modalMode, setModalMode] = useState<"view" | "add" | "edit">("view");
+  const [selectedCustomer, setSelectedCustomer] = useState<any | null>(() => {
+    return sessionStorage.getItem("customer_modal_mode") === "add" ? {} : null;
+  });
+  const [modalMode, setModalMode] = useState<"view" | "add" | "edit">(() => {
+    return (sessionStorage.getItem("customer_modal_mode") as any) || "view";
+  });
 
   // Form States
   const [fullName, setFullName] = useState("");
@@ -171,6 +176,7 @@ export default function Customers() {
   };
 
   const closeCustomerPanel = () => {
+    sessionStorage.removeItem("customer_modal_mode");
     setSelectedCustomer(null);
     setModalMode("view");
     setBranchPopoverOpen(false);
@@ -182,6 +188,48 @@ export default function Customers() {
   const [loginPassword, setLoginPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [creatingAccount, setCreatingAccount] = useState(false);
+  const [isCheckingMobile, setIsCheckingMobile] = useState(false);
+  const [existingMobileMatch, setExistingMobileMatch] = useState<{ id: string; full_name: string; email?: string } | null>(null);
+
+  const handlePhoneBlur = async () => {
+    if (modalMode !== "add") return;
+    const clean = phone.replace(/\D/g, "").slice(-10);
+    if (clean.length !== 10) return;
+
+    setIsCheckingMobile(true);
+    try {
+      const { data: matched } = await supabase
+        .from("customers")
+        .select("id, full_name, phone, email")
+        .ilike("phone", `%${clean}%`)
+        .limit(1)
+        .maybeSingle();
+
+      if (matched) {
+        setExistingMobileMatch(matched);
+        if (matched.email) {
+          toast.info(
+            `📱 Customer found for mobile ${clean}: ${matched.full_name} (${matched.email})`,
+            { duration: 5000 }
+          );
+          if (!email.trim()) {
+            setEmail(matched.email);
+          }
+        } else {
+          toast.warning(
+            `📱 Customer found for mobile ${clean}: ${matched.full_name}. No email registered for this mobile.`,
+            { duration: 5000 }
+          );
+        }
+      } else {
+        setExistingMobileMatch(null);
+      }
+    } catch (err) {
+      console.warn("Phone check error:", err);
+    } finally {
+      setIsCheckingMobile(false);
+    }
+  };
 
   const customerDraft = useFormDraft({
     key: 'draft_create_customer_v2',
@@ -236,16 +284,10 @@ export default function Customers() {
   }, [modalMode]);
 
   useEffect(() => {
-    return customerDraft.save();
-  }, [fullName, phone, email, entityType, customerType, branchIds, createLoginAccount, locationDrafts]);
-
-  useEffect(() => {
-    const handleBeforeUnload = () => {
-      customerDraft.clear();
-    };
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [customerDraft]);
+    if (modalMode === "add") {
+      customerDraft.save();
+    }
+  }, [fullName, phone, email, entityType, customerType, branchIds, createLoginAccount, locationDrafts, modalMode]);
 
   // Role permissions
   const isAdmin = user?.role === "admin";
@@ -386,9 +428,12 @@ export default function Customers() {
      setLoginPassword("");
      setShowPassword(false);
      setCreatingAccount(false);
-      setBranchPopoverOpen(false);
-      setStatePopoverOpenIndex(null);
-      if (mode === "add") {
+     setBranchPopoverOpen(false);
+     setStatePopoverOpenIndex(null);
+     setExistingMobileMatch(null);
+     setIsCheckingMobile(false);
+     if (mode === "add") {
+       sessionStorage.setItem("customer_modal_mode", "add");
        setSelectedCustomer({});
        setFullName("");
        setPhone("");
@@ -399,6 +444,7 @@ export default function Customers() {
        setProfileUserId("");
        setLocationDrafts([createEmptyLocationDraft(true)]);
     } else {
+      sessionStorage.removeItem("customer_modal_mode");
       if (!customer) return;
       const initialCust = { ...customer };
       setSelectedCustomer(initialCust);
@@ -570,13 +616,22 @@ export default function Customers() {
      }
      const { trimmedName, cleanPhone, trimmedEmail } = validation;
 
+     if (!phone.trim()) {
+       toast.error("Phone number is required. Please enter a valid 10-digit mobile number.");
+       return;
+     }
+     if (!isValidPhone(phone)) {
+       toast.error("Please enter a valid 10-digit Indian mobile number (starting with 6, 7, 8, or 9).");
+       return;
+     }
+
      // Duplicate Customer Check
      const last10Digits = cleanPhone.replace(/\D/g, '').slice(-10);
      if (last10Digits.length === 10) {
        try {
          let dupQuery = supabase
            .from('customers')
-           .select('id, full_name, phone')
+           .select('id, full_name, phone, email')
            .ilike('phone', `%${last10Digits}%`);
 
          if (modalMode === 'edit' && selectedCustomer?.id) {
@@ -585,9 +640,10 @@ export default function Customers() {
 
          const { data: dupCust, error: dupErr } = await dupQuery.limit(1).maybeSingle();
          if (!dupErr && dupCust) {
-           toast.error(`⚠️ Customer with this phone number already exists: ${dupCust.full_name}. Please use existing customer.`, {
-             duration: 6000
-           });
+           toast.error(
+             `⚠️ Customer with this mobile number already exists: ${dupCust.full_name}${dupCust.email ? ` (Email: ${dupCust.email})` : ''}. Please use the existing customer or update their profile.`,
+             { duration: 6000 }
+           );
            return;
          }
        } catch (dupCheckErr) {
@@ -751,6 +807,7 @@ export default function Customers() {
        setSelectedCustomer(null);
        setModalMode("view");
        customerDraft.clear();
+       sessionStorage.removeItem("customer_modal_mode");
        await refetch();
        await queryClient.invalidateQueries({ queryKey: ["admin-profiles-list"] });
        await queryClient.invalidateQueries({ queryKey: ["customer-profiles-to-link"] });
@@ -1380,8 +1437,8 @@ export default function Customers() {
                     </div>
                   )}
                     <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <h3 className="font-semibold text-slate-800 text-base break-words whitespace-normal" title={c.full_name}>{c.full_name}</h3>
+                      <div className="min-w-0 flex-1">
+                        <h3 className="font-semibold text-slate-800 text-base break-words whitespace-normal leading-snug" title={c.full_name}>{c.full_name}</h3>
                         {c.email && <p className="text-xs text-slate-400 font-light mt-0.5 break-words whitespace-normal" title={c.email}>{c.email}</p>}
                       </div>
                     <div className="flex flex-col gap-1 items-end shrink-0">
@@ -1738,15 +1795,38 @@ export default function Customers() {
 
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                           <div className="space-y-1.5">
-                            <label className="text-xs font-semibold text-slate-600">Phone Number <span className="text-destructive">*</span></label>
+                            <div className="flex items-center justify-between">
+                              <label className="text-xs font-semibold text-slate-600">
+                                Phone Number <span className="text-destructive">*</span>
+                              </label>
+                              {isCheckingMobile && (
+                                <span className="text-[10px] text-muted-foreground flex items-center gap-1 font-medium">
+                                  <Loader2 className="w-2.5 h-2.5 animate-spin" /> Checking mobile...
+                                </span>
+                              )}
+                            </div>
                             <Input
                               value={phone}
-                              onChange={(e) => setPhone(e.target.value)}
-                              placeholder="Contact phone"
+                              onChange={(e) => {
+                                setPhone(e.target.value);
+                                if (existingMobileMatch) setExistingMobileMatch(null);
+                              }}
+                              onBlur={handlePhoneBlur}
+                              placeholder="10-digit mobile number"
                               required
+                              maxLength={15}
                               disabled={loading}
-                              className="w-full rounded-lg border-slate-200 h-10"
+                              className={`w-full rounded-lg h-10 ${
+                                existingMobileMatch ? "border-amber-400 bg-amber-50/30" : "border-slate-200"
+                              }`}
                             />
+                            {existingMobileMatch ? (
+                              <p className="text-[11px] text-amber-700 dark:text-amber-400 font-medium">
+                                ⚠️ Registered: {existingMobileMatch.full_name} {existingMobileMatch.email ? `(${existingMobileMatch.email})` : '(No email)'}
+                              </p>
+                            ) : (
+                              <p className="text-[10px] text-muted-foreground">Enter 10-digit Indian mobile number</p>
+                            )}
                           </div>
 
                           <div className="space-y-1.5">
@@ -1759,6 +1839,7 @@ export default function Customers() {
                               disabled={loading}
                               className="w-full rounded-lg border-slate-200 h-10"
                             />
+                            <p className="text-[10px] text-muted-foreground">Alerts & login associated with customer mobile</p>
                           </div>
                         </div>
 

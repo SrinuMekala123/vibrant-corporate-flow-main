@@ -146,7 +146,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
       setSession(session);
       if (session?.user) {
-        setLoading(true);
+        setUser(prevUser => {
+          if (!prevUser) {
+            setLoading(true);
+          }
+          return prevUser;
+        });
         // Do not await network work inside Supabase's auth callback lock.
         // Awaiting here can block the first recovery updateUser request.
         void fetchProfile(session.user.id);

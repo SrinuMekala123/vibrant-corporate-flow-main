@@ -1,5 +1,6 @@
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { useState, useEffect, useRef } from "react";
+import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
 import { ArrowLeft, Edit, Phone, MapPin, Clock, User, Users, Wrench, FileText, ShieldCheck, CheckCircle, CheckCircle2, XCircle, X, Loader2, Play, CheckSquare, Upload, PenTool, Image as ImageIcon, AlertTriangle, MessageSquare, Star, Crown, ThumbsUp, ThumbsDown, RotateCcw, ZoomIn, Download, Calendar, Navigation, HelpCircle, PlusCircle, Search, Sparkles, AlertCircle, MessageCircle, Camera, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -18,7 +19,7 @@ import { complaintService, formatComplaintTicketId, type Complaint } from "@/ser
 import { supabase, resolveSupabaseUrl } from "@/lib/supabase";
 import { checkAndRunMigration } from "@/utils/databaseMigration";
 import SignatureCanvas from "react-signature-canvas";
-import browserImageCompression from "browser-image-compression";
+import { compressImageForUpload } from "@/lib/imageCompression";
 import { compressVideoForUpload } from "@/lib/videoCompression";
 import ImageGallery from "@/components/ImageGallery";
 import LiveRouteTrackingModal from "@/components/LiveRouteTrackingModal";
@@ -26,6 +27,7 @@ import { TechnicianMissionControl } from "@/components/TechnicianMissionControl"
 import { notificationService } from "@/services/notificationService";
 import { DateTimePicker } from "@/components/ui/datetime-picker";
 import { ManualWhatsAppButton } from "@/components/ManualWhatsAppButton";
+import { WhatsAppDeliveryStatus } from "@/components/WhatsAppDeliveryStatus";
 import {
   sendWhatsAppMessage,
   getCustomerPhone,
@@ -181,6 +183,7 @@ const ComplaintDetail = () => {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgressText, setUploadProgressText] = useState("");
   const [customerPhone, setCustomerPhone] = useState<string | null>(null);
+  const [customerTypeLabel, setCustomerTypeLabel] = useState<"Walk-in / Non-BTL" | "BTL Customer">("Walk-in / Non-BTL");
   const [pirSeverityInput, setPirSeverityInput] = useState("medium");
   const [supSeverityInput, setSupSeverityInput] = useState("medium");
   const [targetDurationInput, setTargetDurationInput] = useState("4");
@@ -448,6 +451,13 @@ const ComplaintDetail = () => {
   // Session persistence for PIR/Resolution drafts
   useEffect(() => {
     if (!ticket?.id) return;
+    const isRemoteFix = ticket.resolution_type === 'telephonic_triage' || ticket.resolved_remotely;
+    const isFieldVisit = ticket.triage_outcome === 'field_required' || ticket.current_phase < 6;
+    if (isRemoteFix && isFieldVisit) {
+      clearComplaintDraft();
+      setResolutionNote("");
+      return;
+    }
     const storageKey = `complaint-draft-${ticket.id}`;
     try {
       const saved = sessionStorage.getItem(storageKey);
@@ -493,7 +503,14 @@ const ComplaintDetail = () => {
 
   useEffect(() => {
     if (ticket) {
-      setResolutionNote(prev => prev || ticket.resolution || "");
+      const isRemoteFix = ticket.resolution_type === 'telephonic_triage' || ticket.resolved_remotely;
+      const isFieldVisit = ticket.triage_outcome === 'field_required' || ticket.current_phase < 6;
+
+      if (isRemoteFix && isFieldVisit) {
+        setResolutionNote("");
+      } else {
+        setResolutionNote(prev => prev || ticket.resolution || "");
+      }
       setPirFindings(prev => prev || ticket.pir_findings || "");
       setPirAudioUrl(prev => prev || ticket.pir_audio_url || "");
       setPirEvidenceUrls(prev => prev.length > 0 ? prev : (ticket.technician_evidence || []));
@@ -558,7 +575,130 @@ const ComplaintDetail = () => {
       }
     };
     fetchCustomerPhone();
-  }, [ticket?.customer_id, ticket?.customer_phone, ticket?.customer_name, ticket?.profiles?.phone]);
+
+    const determineCustomerType = async () => {
+      if (!ticket) return;
+
+      const explicitType = (ticket.customer_type || "").toLowerCase().trim();
+      const rawCoverage = (ticket.coverage || "").toLowerCase().trim();
+      const rawChargeable = String(ticket.chargeable_service || "").toLowerCase().trim();
+
+      if (explicitType === "existing btl customer" || explicitType === "btl") {
+        setCustomerTypeLabel("BTL Customer");
+        return;
+      }
+      if (explicitType === "walk-in" || explicitType.includes("non-btl") || explicitType === "new / non-btl customer") {
+        setCustomerTypeLabel("Walk-in / Non-BTL");
+        return;
+      }
+
+      // Under Warranty / Non-chargeable service -> By definition BTL Customer
+      if (
+        rawCoverage.includes("under warranty") || 
+        rawCoverage === "warranty" || 
+        rawChargeable === "no" || 
+        rawChargeable === "false"
+      ) {
+        setCustomerTypeLabel("BTL Customer");
+        return;
+      }
+
+      if (ticket.customer_id) {
+        try {
+          const { data: cust } = await supabase
+            .from("customers")
+            .select("customer_type")
+            .or(`id.eq.${ticket.customer_id},user_id.eq.${ticket.customer_id}`)
+            .maybeSingle();
+
+          if (cust) {
+            const cType = (cust.customer_type || "").toLowerCase().trim();
+            if (cType === "walk-in" || cType.includes("non-btl")) {
+              setCustomerTypeLabel("Walk-in / Non-BTL");
+            } else {
+              setCustomerTypeLabel("BTL Customer");
+            }
+            return;
+          }
+
+          const { data: prof } = await supabase
+            .from("profiles")
+            .select("id, role, customer_type")
+            .eq("id", ticket.customer_id)
+            .maybeSingle();
+
+          if (prof) {
+            const cType = (prof.customer_type || "").toLowerCase().trim();
+            if (cType === "walk-in" || cType.includes("non-btl")) {
+              setCustomerTypeLabel("Walk-in / Non-BTL");
+            } else {
+              setCustomerTypeLabel("BTL Customer");
+            }
+            return;
+          }
+        } catch {
+          // ignore lookup error
+        }
+      }
+
+      if (ticket.customer_phone) {
+        const last10 = ticket.customer_phone.replace(/\D/g, "").slice(-10);
+        if (last10.length === 10) {
+          try {
+            const { data: custByPhone } = await supabase
+              .from("customers")
+              .select("customer_type")
+              .ilike("phone", `%${last10}%`)
+              .maybeSingle();
+
+            if (custByPhone) {
+              const cType = (custByPhone.customer_type || "").toLowerCase().trim();
+              if (cType === "walk-in" || cType.includes("non-btl")) {
+                setCustomerTypeLabel("Walk-in / Non-BTL");
+              } else {
+                setCustomerTypeLabel("BTL Customer");
+              }
+              return;
+            }
+          } catch {
+            // ignore lookup error
+          }
+        }
+      }
+
+      // Check by customer name
+      if (ticket.customer_name) {
+        try {
+          const { data: custByName } = await supabase
+            .from("customers")
+            .select("customer_type")
+            .ilike("full_name", `%${ticket.customer_name.trim()}%`)
+            .maybeSingle();
+
+          if (custByName) {
+            const cType = (custByName.customer_type || "").toLowerCase().trim();
+            if (cType === "walk-in" || cType.includes("non-btl")) {
+              setCustomerTypeLabel("Walk-in / Non-BTL");
+            } else {
+              setCustomerTypeLabel("BTL Customer");
+            }
+            return;
+          }
+        } catch {
+          // ignore lookup error
+        }
+      }
+
+      // If Out of warranty + Chargeable service -> Walk-in / Non-BTL
+      if (rawCoverage.includes("out of warranty") && (rawChargeable === "yes" || rawChargeable === "true" || ticket.service_charge > 0)) {
+        setCustomerTypeLabel("Walk-in / Non-BTL");
+        return;
+      }
+
+      setCustomerTypeLabel("BTL Customer");
+    };
+    determineCustomerType();
+  }, [ticket?.customer_id, ticket?.customer_phone, ticket?.customer_name, ticket?.profiles?.phone, ticket?.customer_type, ticket?.coverage, ticket?.chargeable_service]);
 
   useEffect(() => {
     if (!ticket?.target_end_time) return;
@@ -700,17 +840,19 @@ const ComplaintDetail = () => {
     setIsUploading(true);
     try {
       let fileToUpload = file;
-      if (file.type.startsWith('image/')) {
-        setUploadProgressText(`Optimizing image (${(file.size / 1024).toFixed(0)}KB)...`);
+      if (file.type.startsWith('image/') || /\.(jpe?g|png|webp|heic|bmp)$/i.test(file.name)) {
+        setUploadProgressText(`Compressing photo (${(file.size / 1024).toFixed(0)}KB -> ~250KB)...`);
         try {
-          fileToUpload = await browserImageCompression(file, {
-            maxSizeMB: 1,
-            maxWidthOrHeight: 1280,
-            useWebWorker: true
+          fileToUpload = await compressImageForUpload(file, {
+            maxSizeMB: 0.25,
+            maxWidthOrHeight: 1600,
+            useWebWorker: true,
+          }, (pct) => {
+            setUploadProgressText(`Compressing photo: ${pct}%...`);
           });
-          console.log(`Image compressed: ${(file.size / 1024).toFixed(2)}KB -> ${(fileToUpload.size / 1024).toFixed(2)}KB`);
+          console.log(`[Upload] Image compressed: ${(file.size / 1024).toFixed(1)}KB -> ${(fileToUpload.size / 1024).toFixed(1)}KB`);
         } catch (err) {
-          console.warn('Image compression failed, using original:', err);
+          console.warn('Image compression fallback to original:', err);
         }
       } else if (file.type.startsWith('video/') || /\.(mp4|mov|avi|webm|mkv|3gp)$/i.test(file.name)) {
         try {
@@ -910,8 +1052,19 @@ const ComplaintDetail = () => {
 
   const currentPhase = getEffectivePhase(ticket);
 
+  const isPhase6ClosedOrVerified = Boolean(
+    ticket && (
+      ticket.status === 'closed' || 
+      ticket.status === 'verified' || 
+      ticket.status === 'Closed' || 
+      ticket.status === 'Resolved' ||
+      Boolean(ticket.closed_at) || 
+      Boolean(ticket.closure_timestamp)
+    )
+  );
+
   const canVerify = isSupervisorOrAdmin &&
-    (ticket.status === "completed" || ticket.status === "Resolution & Sign-off" || ticket.status === "awaiting_signoff" || currentPhase === 6 || ticket.status === "closed");
+    (ticket.status === "completed" || ticket.status === "Resolution & Sign-off" || ticket.status === "awaiting_signoff" || currentPhase === 6 || ticket.status === "closed" || ticket.status === "verified");
 
   const canEdit = isRole("admin", "supervisor");
 
@@ -1118,6 +1271,9 @@ const ComplaintDetail = () => {
 
       toast.success("Field visit scheduled and technicians assigned successfully!");
       setShowFieldVisitModal(false);
+      setResolutionNote("");
+      setRemoteResolutionNotes("");
+      clearComplaintDraft();
       queryClient.invalidateQueries({ queryKey: ["complaint", id] });
       queryClient.invalidateQueries({ queryKey: ["complaints"] });
       refetch();
@@ -1279,6 +1435,7 @@ const ComplaintDetail = () => {
         resolved_remotely: false,
         resolution: null,
         resolution_notes: null,
+        resolution_type: null,
         resolved_at: null,
         resolved_by: null,
         supervisor_notes: null, // Reset completely fresh for supervisor to enter new diagnostic notes
@@ -1306,6 +1463,9 @@ const ComplaintDetail = () => {
 
       setShowRevertPhase2Modal(false);
       setFieldVisitSupervisorNotes("");
+      setResolutionNote("");
+      setRemoteResolutionNotes("");
+      clearComplaintDraft();
       toast.success("Ticket successfully reverted back to Phase 2 (Telephonic Triage).");
     } catch (error: any) {
       console.error("Failed to revert ticket to Phase 2:", error);
@@ -3128,10 +3288,14 @@ const ComplaintDetail = () => {
       case 6:
         return (
           <div className="space-y-3">
-            <div className="flex items-center justify-between border-b pb-2">
-              <span className="font-semibold text-slate-800">Phase 6: QA Verification & Feedback</span>
-              <span className="text-xs text-muted-foreground">
-                {ticket.feedback_timestamp ? formatIndianDateTime(ticket.feedback_timestamp) : 'Pending Verification'}
+            <div className={cn("flex items-center justify-between border-b pb-2", isPhase6ClosedOrVerified ? "border-success/30" : "")}>
+              <span className={cn("font-semibold flex items-center gap-1.5", isPhase6ClosedOrVerified ? "text-success" : "text-slate-800")}>
+                {isPhase6ClosedOrVerified && <CheckCircle2 className="w-4 h-4 text-success" />}
+                Phase 6: QA Verification & Feedback
+                {isPhase6ClosedOrVerified && <span className="text-xs bg-success/20 text-success border border-success/30 px-2 py-0.5 rounded-full font-bold ml-1">Completed & Verified ✓</span>}
+              </span>
+              <span className={cn("text-xs font-medium", isPhase6ClosedOrVerified ? "text-success" : "text-muted-foreground")}>
+                {ticket.feedback_timestamp || ticket.closure_timestamp || ticket.closed_at ? formatIndianDateTime(ticket.feedback_timestamp || ticket.closure_timestamp || ticket.closed_at) : 'Pending Verification'}
               </span>
             </div>
             <p className="text-slate-600 leading-relaxed">
@@ -3182,25 +3346,26 @@ const ComplaintDetail = () => {
         {/* Decorative ambient light behind header */}
         <div className="absolute -right-8 -top-8 w-24 h-24 rounded-full bg-primary/5 group-hover:bg-primary/10 transition-all duration-300 filter blur-xl pointer-events-none" />
         
-        <div className="flex items-start gap-4 flex-1 min-w-0">
+        <div className="flex items-start gap-3 sm:gap-4 flex-1 min-w-0">
           <button 
             onClick={() => navigate(-1)} 
-            className="w-10 h-10 rounded-xl bg-muted hover:bg-muted/80 flex items-center justify-center shrink-0 border border-border/40 hover:border-primary/20 transition-all duration-200"
+            className="w-10 h-10 rounded-xl bg-muted hover:bg-muted/80 flex items-center justify-center shrink-0 border border-border/40 hover:border-primary/20 transition-all duration-200 mt-0.5"
+            title="Back to complaints"
           >
             <ArrowLeft className="w-5 h-5 text-muted-foreground" />
           </button>
           <div className="min-w-0 flex-1 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs font-mono font-bold bg-primary/10 text-primary px-2.5 py-1 rounded-full border border-primary/20">
+              <span className="text-xs font-mono font-bold bg-primary/10 text-primary px-3 py-1 rounded-full border border-primary/20 whitespace-nowrap shrink-0 shadow-xs">
                 Ticket ID: {formatComplaintTicketId(ticket)}
               </span>
-              {ticket.customer_type === 'New / Non-BTL Customer' || ticket.customer_type === 'Non-BTL' || ticket.customer_type === 'Walk-in' || (!ticket.customer_id && !ticket.customer_name) ? (
-                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 shadow-sm">
+              {customerTypeLabel === "Walk-in / Non-BTL" ? (
+                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-300 shadow-xs whitespace-nowrap shrink-0">
                   Walk-in / Non-BTL
                 </span>
               ) : (
-                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 shadow-sm">
-                  Existing Customer
+                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200 shadow-xs whitespace-nowrap shrink-0">
+                  BTL Customer
                 </span>
               )}
               {ticket.severity && <SeverityBadge severity={ticket.severity as any} />}
@@ -3244,10 +3409,10 @@ const ComplaintDetail = () => {
           </div>
         </div>
         
-        <div className="flex flex-col sm:flex-row gap-2 w-full">
+        <div className="flex flex-wrap items-center gap-2 w-full md:w-auto shrink-0 justify-start md:justify-end">
           {/* 📲 WhatsApp Notification Center (Admin & Supervisor) */}
           {(isAdmin || isSupervisor) && (
-            <div className="w-full sm:w-auto">
+            <div className="shrink-0">
               <ManualWhatsAppButton
                 ticket={ticket}
                 buttonVariant="outline"
@@ -3261,7 +3426,7 @@ const ComplaintDetail = () => {
             <Button
               size="sm"
               variant="outline"
-              className="w-full sm:w-auto border-primary/60 text-primary hover:bg-primary/5 whitespace-normal break-words text-center"
+              className="border-primary/60 text-primary hover:bg-primary/5 shrink-0 whitespace-nowrap"
               onClick={() => {
                 const initialIds = (ticket.complaint_technicians && ticket.complaint_technicians.length > 0)
                   ? ticket.complaint_technicians.map((ct: any) => ct.technician_id)
@@ -3283,7 +3448,7 @@ const ComplaintDetail = () => {
             <Button
               size="sm"
               variant="outline"
-              className="w-full sm:w-auto border-warning/60 text-warning hover:bg-warning/10 font-semibold whitespace-normal break-words text-center"
+              className="border-warning/60 text-warning hover:bg-warning/10 font-semibold shrink-0 whitespace-nowrap"
               onClick={() => {
                 const elem = document.getElementById("phase-6-verification-section");
                 if (elem) elem.scrollIntoView({ behavior: "smooth" });
@@ -3293,8 +3458,10 @@ const ComplaintDetail = () => {
             </Button>
           )}
           {canEdit && (
-            <Link to={`/complaints/${ticket.id}/edit`} className="w-full sm:w-auto">
-              <Button variant="outline" size="sm" className="w-full sm:w-auto border-border/80 hover:border-primary/30 whitespace-normal break-words text-center"><Edit className="w-4 h-4 mr-2 shrink-0" /> Edit</Button>
+            <Link to={`/complaints/${ticket.id}/edit`} className="shrink-0">
+              <Button variant="outline" size="sm" className="border-border/80 hover:border-primary/30 shrink-0 whitespace-nowrap">
+                <Edit className="w-4 h-4 mr-2 shrink-0" /> Edit
+              </Button>
             </Link>
           )}
         </div>
@@ -3333,7 +3500,7 @@ const ComplaintDetail = () => {
           </p>
           <button 
             onClick={() => {
-              const address = ticket.location || ticket.address || "";
+              const address = ticket.location || (ticket as any).address || "";
               const lat = ticket.customer_lat;
               const lng = ticket.customer_lng;
               let url = "#";
@@ -3417,7 +3584,8 @@ const ComplaintDetail = () => {
       )}
 
       {/* Previous Resolution Notes Notice (Shown to technicians during rework) */}
-      {ticket.current_phase < 6 && (ticket.resolution || ticket.resolution_notes) && (
+      {ticket.current_phase < 6 && (ticket.resolution || ticket.resolution_notes) && 
+        !(ticket.resolution_type === 'telephonic_triage' || ticket.resolved_remotely || ticket.triage_outcome === 'field_required') && (
         <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-xl p-4 border-l-4 border-l-blue-500 bg-blue-500/10">
           <div className="flex items-start gap-3">
             <FileText className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
@@ -3780,7 +3948,7 @@ const ComplaintDetail = () => {
                       <Button
                         type="button"
                         onClick={handleArrivedGPS}
-                        disabled={isCapturingArrivalGps || ticket.arrival_timestamp}
+                        disabled={Boolean(isCapturingArrivalGps || ticket.arrival_timestamp)}
                         className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold shadow-xs disabled:opacity-50"
                       >
                         {isCapturingArrivalGps ? (
@@ -4073,7 +4241,11 @@ const ComplaintDetail = () => {
                        onClick={() => setShowResolution(true)}
                        className="w-full sm:w-auto bg-success hover:bg-success/90 text-success-foreground font-semibold px-5 py-2.5 shadow-sm transition-all whitespace-normal break-words text-center text-sm sm:text-base"
                      >
-                       <PlusCircle className="w-4 h-4 mr-2 shrink-0" /> {ticket.resolution ? "Update Resolution & Customer Sign-Off" : "Add Resolution & Customer Sign-Off"}
+                       <PlusCircle className="w-4 h-4 mr-2 shrink-0" /> {
+                         (ticket.resolution && !(ticket.resolution_type === 'telephonic_triage' || ticket.resolved_remotely || ticket.triage_outcome === 'field_required'))
+                           ? "Update Resolution & Customer Sign-Off" 
+                           : "Add Resolution & Customer Sign-Off"
+                       }
                      </Button>
                   </div>
                 ) : (
@@ -4093,7 +4265,8 @@ const ComplaintDetail = () => {
                     </div>
 
                     {/* Previous Resolution Notes Reference Box */}
-                    {(ticket.resolution || ticket.resolution_notes) && (
+                    {(ticket.resolution || ticket.resolution_notes) && 
+                      !(ticket.resolution_type === 'telephonic_triage' || ticket.resolved_remotely || ticket.triage_outcome === 'field_required') && (
                       <div className="p-3 rounded-xl bg-blue-50/70 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 text-xs space-y-1">
                         <p className="font-semibold text-blue-800 dark:text-blue-300 flex items-center gap-1.5">
                           <FileText className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
@@ -4357,14 +4530,28 @@ const ComplaintDetail = () => {
 
           {/* Phase 6: QA Verification, Customer Satisfaction & Final Closure */}
           {currentPhase === 6 && (
-            <motion.div id="phase-6-verification-section" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-xl p-5 border-l-4 border-l-warning space-y-4">
+            <motion.div
+              id="phase-6-verification-section"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className={cn(
+                "glass-card rounded-xl p-5 border-l-4 space-y-4 transition-all",
+                isPhase6ClosedOrVerified ? "border-l-success border-success/40 bg-success/[0.04]" : "border-l-warning"
+              )}
+            >
               <div className="flex items-center justify-between border-b pb-3">
                 <div className="flex items-center gap-2">
-                  <ShieldCheck className="w-5 h-5 text-warning" />
-                  <h3 className="font-semibold text-foreground text-base">Phase 6: QA Verification & Final Closure</h3>
+                  <ShieldCheck className={cn("w-5 h-5", isPhase6ClosedOrVerified ? "text-success" : "text-warning")} />
+                  <h3 className={cn("font-semibold text-base", isPhase6ClosedOrVerified ? "text-success" : "text-foreground")}>
+                    Phase 6: QA Verification & Final Closure {isPhase6ClosedOrVerified && <span className="text-xs font-semibold text-success ml-1.5">(Completed & Verified ✓)</span>}
+                  </h3>
                 </div>
                 <div className="flex items-center gap-2">
-                  {ticket.force_closed ? (
+                  {isPhase6ClosedOrVerified ? (
+                    <span className="text-xs font-bold bg-success/20 text-success border border-success/30 px-3 py-1 rounded-full flex items-center gap-1.5 shadow-xs">
+                      <CheckCircle2 className="w-3.5 h-3.5" /> Closed & Verified ✓
+                    </span>
+                  ) : ticket.force_closed ? (
                     <span className="text-xs font-bold bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 px-3 py-1 rounded-full border border-amber-300">
                       Closed (Force Closure)
                     </span>
@@ -4379,6 +4566,31 @@ const ComplaintDetail = () => {
                   )}
                 </div>
               </div>
+
+              {/* Verified & Closed Celebration Banner */}
+              {isPhase6ClosedOrVerified && (
+                <div className="p-4 rounded-xl border border-success/30 bg-success/10 text-success flex items-start gap-3 shadow-xs">
+                  <CheckCircle2 className="w-5 h-5 shrink-0 mt-0.5 text-success" />
+                  <div className="space-y-1 text-xs">
+                    <div className="font-bold text-sm text-success flex items-center gap-2">
+                      Complaint Successfully Finalized & Closed!
+                      <span className="bg-success text-white text-[10px] font-bold px-2 py-0.5 rounded-full uppercase">Verified ✓</span>
+                    </div>
+                    <div className="text-success/90">
+                      Quality Assurance check completed, customer satisfaction verified via Happiness OTP, and the ticket is officially closed.
+                    </div>
+                    <div className="text-[11px] text-muted-foreground pt-1 flex flex-wrap gap-4 border-t border-success/20 mt-1.5">
+                      {ticket.closed_by && <span><strong>Closed By:</strong> {ticket.closed_by}</span>}
+                      {(ticket.closure_timestamp || ticket.closed_at) && (
+                        <span><strong>Closed At:</strong> {formatIndianDateTime(ticket.closure_timestamp || ticket.closed_at)}</span>
+                      )}
+                      {ticket.happiness_code && (
+                        <span><strong>Verified Code:</strong> <span className="font-mono font-bold text-success">{ticket.happiness_code}</span></span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* 48-Hour Post-Closure Reassignment Action Strip (Admin / Supervisor) */}
               {isSupervisorOrAdmin && (ticket.status === 'closed' || Boolean(ticket.closed_at)) && (
@@ -4519,6 +4731,16 @@ const ComplaintDetail = () => {
                               </span>
                             )}
                           </div>
+
+                          {/* WhatsApp Live Delivery Status & Resend Button */}
+                          <WhatsAppDeliveryStatus
+                            ticketId={ticket.ticket_id || id || ''}
+                            ticketType="complaint"
+                            recipientPhone={ticket.customer_phone || (ticket as any).contact_number || customerPhone}
+                            recipientName={ticket.customer_name}
+                            happinessCode={ticket.happiness_code}
+                            className="my-1.5"
+                          />
 
                           {ticket.happiness_code_verified || codeVerifiedLocally ? (
                             <div className="p-2.5 rounded-lg bg-success/15 border border-success/30 text-success text-xs font-semibold flex items-center justify-between">
@@ -4749,7 +4971,7 @@ const ComplaintDetail = () => {
 
                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 pt-2">
                      {/* Admin / Supervisor Force Close Button */}
-               {isSupervisorOrAdmin && ticket.status !== 'closed' && (
+               {isSupervisorOrAdmin && !isPhase6ClosedOrVerified && (
                       <Button
                         type="button"
                         variant="outline"
@@ -4773,19 +4995,25 @@ const ComplaintDetail = () => {
                     )}
 
                     <div className="flex items-center gap-2 sm:ml-auto">
-                      <Button
-                        onClick={handlePhase6Finalize}
-                        disabled={
-                          isFinalizingClosure || 
-                          isForceClosing ||
-                          updateMutation.isPending || 
-                          (phase6Action === 'close' && (!ticket.feedback_collected || !(ticket.happiness_code_verified || codeVerifiedLocally)))
-                        }
-                        className={phase6Action === 'close' ? 'bg-success hover:bg-success/90 text-white font-semibold flex-1 sm:flex-initial' : phase6Action === 'follow_up' ? 'gradient-primary text-white flex-1 sm:flex-initial' : 'bg-destructive text-white flex-1 sm:flex-initial'}
-                      >
-                        {isFinalizingClosure ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ShieldCheck className="w-4 h-4 mr-2" />}
-                        {phase6Action === 'close' ? 'Finalize & Close Complaint' : phase6Action === 'follow_up' ? 'Schedule Follow-up Visit' : 'Send Back for Rework'}
-                      </Button>
+                      {isPhase6ClosedOrVerified ? (
+                        <div className="flex items-center gap-2 bg-success/20 text-success font-semibold px-4 py-2 rounded-lg border border-success/30 text-xs shadow-xs">
+                          <CheckCircle2 className="w-4 h-4" /> Complaint Finalized & Officially Closed ✓
+                        </div>
+                      ) : (
+                        <Button
+                          onClick={handlePhase6Finalize}
+                          disabled={
+                            isFinalizingClosure || 
+                            isForceClosing ||
+                            updateMutation.isPending || 
+                            (phase6Action === 'close' && (!ticket.feedback_collected || !(ticket.happiness_code_verified || codeVerifiedLocally)))
+                          }
+                          className={phase6Action === 'close' ? 'bg-success hover:bg-success/90 text-white font-semibold flex-1 sm:flex-initial' : phase6Action === 'follow_up' ? 'gradient-primary text-white flex-1 sm:flex-initial' : 'bg-destructive text-white flex-1 sm:flex-initial'}
+                        >
+                          {isFinalizingClosure ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ShieldCheck className="w-4 h-4 mr-2" />}
+                          {phase6Action === 'close' ? 'Finalize & Close Complaint' : phase6Action === 'follow_up' ? 'Schedule Follow-up Visit' : 'Send Back for Rework'}
+                        </Button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -4798,7 +5026,15 @@ const ComplaintDetail = () => {
       {/* Timeline & Details */}
       <motion.div initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-xl p-6">
         <div className="flex items-center justify-between mb-5">
-          <h2 className="font-semibold">Phase {currentPhase}: {phaseLabels[currentPhase as keyof typeof phaseLabels]}</h2>
+          <h2 className={cn("font-semibold", isPhase6ClosedOrVerified ? "text-success flex items-center gap-2" : "")}>
+            {isPhase6ClosedOrVerified && <CheckCircle2 className="w-5 h-5 text-success" />}
+            Phase {currentPhase}: {phaseLabels[currentPhase as keyof typeof phaseLabels]}
+            {isPhase6ClosedOrVerified && (
+              <span className="text-xs bg-success/20 text-success border border-success/30 px-2.5 py-0.5 rounded-full font-bold ml-1.5">
+                Completed & Verified ✓
+              </span>
+            )}
+          </h2>
           <span className="text-xs text-primary font-medium bg-primary/10 px-2.5 py-1 rounded-full">
             💡 Click phases below to view details
           </span>
@@ -4812,10 +5048,11 @@ const ComplaintDetail = () => {
         
         {/* Selected Phase Details Card */}
         <div className="mt-6 border-t pt-5">
-          <h3 className="font-semibold text-sm text-primary mb-3 flex items-center gap-1.5">
-            🔍 Phase {activePhase} Detail: {phaseLabels[activePhase as keyof typeof phaseLabels]}
+          <h3 className={cn("font-semibold text-sm mb-3 flex items-center gap-1.5", (activePhase === 6 && isPhase6ClosedOrVerified) ? "text-success" : "text-primary")}>
+            {(activePhase === 6 && isPhase6ClosedOrVerified) ? <CheckCircle2 className="w-4 h-4 text-success" /> : "🔍"} Phase {activePhase} Detail: {phaseLabels[activePhase as keyof typeof phaseLabels]}
+            {(activePhase === 6 && isPhase6ClosedOrVerified) && <span className="text-xs bg-success/20 text-success border border-success/30 px-2 py-0.5 rounded font-bold ml-1">Verified & Closed ✓</span>}
           </h3>
-          <div className="bg-muted/30 border rounded-xl p-4 space-y-3 text-sm">
+          <div className={cn("border rounded-xl p-4 space-y-3 text-sm", (activePhase === 6 && isPhase6ClosedOrVerified) ? "bg-success/[0.04] border-success/30" : "bg-muted/30")}>
             {renderPhaseDetails(activePhase)}
           </div>
         </div>
@@ -5494,7 +5731,7 @@ const ComplaintDetail = () => {
               )}
             </div>
 
-             <div className="flex items-center gap-2.5 w-full sm:w-auto justify-end">
+             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 w-full sm:w-auto justify-end">
               <Button
                 type="button"
                 variant="outline"
