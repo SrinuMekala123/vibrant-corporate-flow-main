@@ -168,6 +168,8 @@ export interface Complaint {
   start_journey_timestamp?: string;
   arrival_timestamp?: string;
   signoff_timestamp?: string;
+  verified_at?: string | null;
+  verified_by?: string | null;
   arrival_lat?: number;
   arrival_lng?: number;
   
@@ -212,6 +214,7 @@ export interface Complaint {
   force_closure_reason?: string | null;
   
   closed_at?: string | null;
+  reassigned_at?: string | null;
   reassignment_reason?: string | null;
   complaint_technicians?: {
     id?: string;
