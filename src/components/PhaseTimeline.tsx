@@ -7,19 +7,35 @@ interface PhaseTimelineProps {
   status?: string;
   activePhase?: number;
   onPhaseClick?: (phase: number) => void;
+  isPhase6Verified?: boolean;
 }
 
-export function PhaseTimeline({ currentPhase, status, activePhase, onPhaseClick }: PhaseTimelineProps) {
+export function PhaseTimeline({ currentPhase, status, activePhase, onPhaseClick, isPhase6Verified }: PhaseTimelineProps) {
   const phases: Phase[] = [1, 2, 3, 4, 5, 6];
   const normalizedStatus = (status || "").toLowerCase();
-  const isClosed = normalizedStatus === "closed" || normalizedStatus === "completed" || normalizedStatus === "resolved" || normalizedStatus === "verified";
-  const isVerified = normalizedStatus === "verified" || normalizedStatus === "closed";
-
+  
+  const isPendingVerification = normalizedStatus === "pending_verification" || normalizedStatus === "resolution_submitted";
+  const isPhase5Completed = currentPhase >= 6 || isPendingVerification || normalizedStatus === "closed" || normalizedStatus === "verified" || normalizedStatus === "qa_verified";
+  const isPhase6Completed = normalizedStatus === "closed" || normalizedStatus === "verified" || normalizedStatus === "qa_verified";
+  const isPhase6Ready = !isPhase6Completed && (isPendingVerification || (currentPhase === 5 && !isPhase6Completed));
+  
+  console.log('[PhaseTimeline] Phase State Debug:', {
+    currentPhase,
+    status,
+    isPhase5Completed,
+    isPhase6Completed,
+    isPhase6Ready,
+    isPendingVerification,
+  });
+  
   return (
     <div className="grid grid-cols-3 gap-y-5 gap-x-2 md:flex md:items-center md:gap-1 w-full select-none">
       {phases.map((phase, i) => {
-        const isCompleted = phase < currentPhase || (phase === 6 && (isVerified || isClosed));
-        const isCurrent = phase === currentPhase && !(isVerified || isClosed);
+        const isCompleted = phase <= 5
+          ? (phase < currentPhase || (phase === 5 && isPhase5Completed))
+          : isPhase6Completed;
+
+        const isCurrent = !isCompleted && (phase === currentPhase || (phase === 6 && isPhase6Ready));
         const isFinalPhase = phase === 6;
         const isSelected = activePhase === phase;
         
@@ -40,7 +56,7 @@ export function PhaseTimeline({ currentPhase, status, activePhase, onPhaseClick 
                   isCompleted && !isFinalPhase && "gradient-primary text-primary-foreground border-transparent",
                   isCompleted && isFinalPhase && "bg-success text-success-foreground border-transparent shadow-[0_0_14px_rgba(34,197,94,0.5)]",
                   isCurrent && !isFinalPhase && "border-primary text-primary bg-primary/10 animate-pulse-glow",
-                  isCurrent && isFinalPhase && "border-success text-success bg-success/10 animate-pulse-glow",
+                  isCurrent && isFinalPhase && "border-amber-500 text-amber-700 bg-amber-50 animate-pulse-glow",
                   !isCompleted && !isCurrent && "border-border text-muted-foreground bg-muted",
                   isSelected && "ring-4 ring-primary/40 scale-110 shadow-glow"
                 )}
@@ -49,17 +65,19 @@ export function PhaseTimeline({ currentPhase, status, activePhase, onPhaseClick 
               </div>
               <span className={cn(
                 "text-[10px] mt-1.5 text-center leading-tight max-w-[70px] transition-colors group-hover:text-primary",
-                isFinalPhase && (isVerified || isClosed) ? "text-success font-bold" :
+                isFinalPhase && isPhase6Completed ? "text-success font-bold" :
+                isCurrent && isFinalPhase ? "text-amber-700 font-bold" :
                 isSelected ? "text-primary font-bold" :
                 isCurrent ? "text-primary font-semibold" : "text-muted-foreground"
               )}>
-                {phaseLabels[phase]}
+                {phase === 6 && isPhase6Ready && !isPhase6Completed ? "Ready for QA" : phaseLabels[phase]}
+                {isFinalPhase && isPhase6Completed && " ✓"}
               </span>
             </button>
             {i < phases.length - 1 && (
               <div className={cn(
                 "h-0.5 flex-1 mx-1 rounded-full md:mt-[-22px] hidden md:block",
-                (phase < currentPhase || (phase === 5 && (isVerified || isClosed))) ? (phase === 5 && (isVerified || isClosed) ? "bg-success" : "gradient-primary") : "bg-border"
+                (phase < currentPhase || (phase === 5 && isPhase6Completed)) ? (phase === 5 && isPhase6Completed ? "bg-success" : "gradient-primary") : "bg-border"
               )} />
             )}
           </div>

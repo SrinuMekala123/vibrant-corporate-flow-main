@@ -88,6 +88,17 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     },
 });
 
+if (import.meta.env.DEV) {
+  const originalWarn = console.warn;
+  console.warn = (...args: any[]) => {
+    const message = typeof args[0] === 'string' ? args[0] : '';
+    if (message.includes('WebSocket connection') || message.includes('transportConnect')) {
+      return;
+    }
+    originalWarn.apply(console, args);
+  };
+}
+
 export const resolveSupabaseUrl = (url: any): string => {
   if (!url) return "";
   let target = "";

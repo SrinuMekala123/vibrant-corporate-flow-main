@@ -19,6 +19,7 @@ import { compressVideoForUpload } from "@/lib/videoCompression";
 import { notificationService } from "@/services/notificationService";
 import DatePicker from "react-datepicker";
 import "react-datepicker/dist/react-datepicker.css";
+import { formatFullCustomerAddress } from "@/lib/utils";
 
 const formatDateToYYYYMMDD = (d: Date | null) => {
   if (!d) return null;
@@ -724,11 +725,29 @@ const ComplaintEdit = () => {
         const locations = data || [];
         setCustomerLocations(locations);
 
-        // Auto-select primary location if available
-        const primary = locations.find((loc: any) => loc.is_primary);
-        if (primary) {
-          setSelectedLocationId(primary.id);
-          setForm(prev => ({ ...prev, locationId: primary.id, location: [primary.address, primary.city, primary.state, primary.pincode].filter(Boolean).join(", ") }));
+        // Auto-select primary location if available, or first contact address
+        const defaultLoc = locations.find((loc: any) => loc.is_primary) || locations[0];
+        if (defaultLoc) {
+          setSelectedLocationId(defaultLoc.id);
+          const fullAddr = formatFullCustomerAddress(defaultLoc);
+          setForm(prev => ({ 
+            ...prev, 
+            locationId: defaultLoc.id, 
+            location: fullAddr || defaultLoc.location_name || prev.location 
+          }));
+        } else if (directCust) {
+          // If customer has no records in customer_locations, fallback to customer's registered address
+          const { data: custWithAddr } = await supabase
+            .from('customers')
+            .select('address')
+            .eq('id', directCust.id)
+            .maybeSingle();
+          if (custWithAddr?.address) {
+            setForm(prev => ({
+              ...prev,
+              location: custWithAddr.address
+            }));
+          }
         }
       } catch (err) {
         console.error("Error fetching customer locations:", err);
@@ -789,39 +808,11 @@ const ComplaintEdit = () => {
   }, []);
   const isAutoCompletingRef = useRef(false);
 
-  // Forward geocoding: address -> GPS coordinates
-  useEffect(() => {
-    if (isAutoCompletingRef.current) {
-      isAutoCompletingRef.current = false;
-      return;
-    }
-    if (!form.location || form.location.trim().length < 5) return;
-
-    const delayDebounceFn = setTimeout(async () => {
-      try {
-        const response = await fetch(
-          `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(form.location)}`
-        );
-        if (response.ok) {
-          const data = await response.json();
-          if (data && data.length > 0) {
-            const lat = parseFloat(data[0].lat);
-            const lng = parseFloat(data[0].lon);
-            setForm(prev => ({
-              ...prev,
-              customerLat: lat,
-              customerLng: lng
-            }));
-            toast.success("Location coordinates resolved!");
-          }
-        }
-      } catch (e) {
-        console.warn("Geocoding failed:", e);
-      }
-    }, 1200);
-
-    return () => clearTimeout(delayDebounceFn);
-  }, [form.location]);
+  // India bounding box coordinate validation (rejects bogus/foreign coordinates like Cincinnati OH)
+  const isValidIndiaCoords = (lat?: number | null, lng?: number | null) => {
+    return typeof lat === 'number' && typeof lng === 'number' &&
+      lat >= 6 && lat <= 38 && lng >= 68 && lng <= 98;
+  };
 
   useEffect(() => {
     if (user?.id) {
@@ -1179,10 +1170,6 @@ const ComplaintEdit = () => {
         toast.error("Please enter a valid 10-digit Indian mobile number (e.g., +91 9876543210)");
         return;
       }
-      if (!form.location || form.location.trim() === "") {
-        toast.error("Please provide the service site address / location");
-        return;
-      }
       if (matchedCustomer && !overrideDuplicateCustomer) {
         toast.error(`⚠️ Customer with this phone number already exists: ${matchedCustomer.full_name}. Please use existing customer.`, {
           duration: 6000
@@ -1190,6 +1177,12 @@ const ComplaintEdit = () => {
         setShowMatchAlert(true);
         return;
       }
+    }
+    
+    // Mandatory Location Check for ALL complaints (Existing or New Customer)
+    if (!form.location || form.location.trim() === "") {
+      toast.error("Location / site address must be filled");
+      return;
     }
     
     if (!form.fieldOfWork || form.fieldOfWork.trim() === "") {
@@ -1427,8 +1420,8 @@ const ComplaintEdit = () => {
           current_phase: phase,
           resolution: null,
           complaint_images: evidenceUrls.length > 0 ? evidenceUrls : null,
-          customer_lat: form.customerLat,
-          customer_lng: form.customerLng,
+          customer_lat: isValidIndiaCoords(form.customerLat, form.customerLng) ? form.customerLat : null,
+          customer_lng: isValidIndiaCoords(form.customerLat, form.customerLng) ? form.customerLng : null,
           target_end_time: form.targetEndTime ? new Date(form.targetEndTime).toISOString() : null,
           scheduled_date: null,
           scheduled_time: null,
@@ -1585,8 +1578,8 @@ const ComplaintEdit = () => {
           supervisor_notes: form.supervisor_notes || null,
           complaint_images: evidenceUrls.length > 0 ? evidenceUrls : null,
           current_phase: nextPhase,
-          customer_lat: form.customerLat,
-          customer_lng: form.customerLng,
+          customer_lat: isValidIndiaCoords(form.customerLat, form.customerLng) ? form.customerLat : null,
+          customer_lng: isValidIndiaCoords(form.customerLat, form.customerLng) ? form.customerLng : null,
           target_end_time: form.targetEndTime ? new Date(form.targetEndTime).toISOString() : null,
           scheduled_date: formatDateToYYYYMMDD(form.scheduledDate),
           scheduled_time: form.scheduledTime || null,
@@ -1908,7 +1901,7 @@ const ComplaintEdit = () => {
                             setForm(prev => ({
                               ...prev,
                               locationId: v,
-                              location: loc ? [loc.address, loc.city, loc.state, loc.pincode].filter(Boolean).join(", ") : prev.location,
+                              location: loc ? formatFullCustomerAddress(loc) : prev.location,
                             }));
                           }}
                           disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
@@ -1922,7 +1915,7 @@ const ComplaintEdit = () => {
                                 <div className="flex flex-col text-left py-0.5 max-w-full">
                                   <span className="font-semibold break-words">{loc.location_name}</span>
                                   <span className="text-xs text-muted-foreground break-words whitespace-normal leading-relaxed mt-0.5">
-                                    {[loc.address, loc.city, loc.state, loc.pincode].filter(Boolean).join(", ")}
+                                    {formatFullCustomerAddress(loc)}
                                     {loc.is_primary && " • Primary"}
                                   </span>
                                 </div>

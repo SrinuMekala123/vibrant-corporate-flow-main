@@ -31,9 +31,26 @@ export function usePWAInstall() {
     const checkInstalled = () => {
       const standalone =
         window.matchMedia('(display-mode: standalone)').matches ||
+        window.matchMedia('(display-mode: window-controls-overlay)').matches ||
         (window.navigator as any).standalone === true;
       const wasInstalled = localStorage.getItem('pwa_installed_on_device') === 'true';
-      setIsInstalled(standalone || wasInstalled);
+      if (standalone || wasInstalled) {
+        setIsInstalled(true);
+        return;
+      }
+
+      if ('getInstalledRelatedApps' in window.navigator) {
+        try {
+          (window.navigator as any).getInstalledRelatedApps().then((relatedApps: any[]) => {
+            if (relatedApps && relatedApps.length > 0) {
+              setIsInstalled(true);
+              localStorage.setItem('pwa_installed_on_device', 'true');
+            }
+          }).catch(() => {});
+        } catch {
+          // ignore
+        }
+      }
     };
 
     checkInstalled();

@@ -248,7 +248,7 @@ const AppRoutes = () => {
           <Route
             path="/installations/:id"
             element={
-              <ProtectedRoute roles={["admin", "supervisor", "technician"]}>
+              <ProtectedRoute roles={["admin", "supervisor", "technician", "customer"]}>
                 <AppLayout>
                   <InstallationDetail />
                 </AppLayout>

@@ -737,6 +737,17 @@ export default function UsersPage() {
       return;
     }
     try {
+      // 1. Pre-clean foreign key references that prevent deleting this user profile
+      await Promise.allSettled([
+        supabase.from('complaints').update({ assigned_to: null }).eq('assigned_to', profileId),
+        supabase.from('complaints').update({ pir_approved_by: null }).eq('pir_approved_by', profileId),
+        supabase.from('complaint_technicians').delete().eq('technician_id', profileId),
+        supabase.from('installation_technicians').delete().eq('technician_id', profileId),
+        supabase.from('installations').update({ lead_technician_id: null }).eq('lead_technician_id', profileId),
+        supabase.from('notifications').delete().eq('user_id', profileId),
+        supabase.from('customers').update({ user_id: null }).eq('user_id', profileId),
+      ]);
+
       const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/delete-user`, {
         method: 'POST',
         headers: {
@@ -807,13 +818,25 @@ export default function UsersPage() {
 
     setIsBulkDeleting(true);
     try {
+      const idsArray = Array.from(selectedUserIds);
+      // Pre-clean foreign key references before deleting users
+      await Promise.allSettled([
+        supabase.from('complaints').update({ assigned_to: null }).in('assigned_to', idsArray),
+        supabase.from('complaints').update({ pir_approved_by: null }).in('pir_approved_by', idsArray),
+        supabase.from('complaint_technicians').delete().in('technician_id', idsArray),
+        supabase.from('installation_technicians').delete().in('technician_id', idsArray),
+        supabase.from('installations').update({ lead_technician_id: null }).in('lead_technician_id', idsArray),
+        supabase.from('notifications').delete().in('user_id', idsArray),
+        supabase.from('customers').update({ user_id: null }).in('user_id', idsArray),
+      ]);
+
       const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/bulk-delete-users`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session?.access_token}`,
         },
-        body: JSON.stringify({ ids: Array.from(selectedUserIds) }),
+        body: JSON.stringify({ ids: idsArray }),
       });
 
       if (!response.ok) {

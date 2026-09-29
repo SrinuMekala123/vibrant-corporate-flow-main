@@ -7,7 +7,7 @@ import { toast } from 'sonner';
 import SignatureCanvas from 'react-signature-canvas';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { DateTimePicker } from '@/components/ui/datetime-picker';
 import {
   ArrowLeft,
@@ -36,7 +36,9 @@ import {
   Eye,
   History,
   Crown,
-  Users
+  Users,
+  Play,
+  Loader2
 } from 'lucide-react';
 import { installationService, formatInstallationTicketId } from '@/services/installationService';
 import { Button } from '@/components/ui/button';
@@ -98,6 +100,7 @@ const saveLocalInstallationData = (instId: string, data: any) => {
 export default function InstallationDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [installation, setInstallation] = useState<any>(null);
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [currentPhase, setCurrentPhase] = useState(1);
@@ -164,7 +167,8 @@ export default function InstallationDetail() {
     const workflowToAdminStatus: Record<string, string> = {
       unassigned: 'Unassigned',
       assigned: 'Assigned',
-      en_route: 'Assigned',
+      en_route: 'Dispatched',
+      'en route': 'Dispatched',
       dispatched: 'Dispatched',
       arrived: 'In Progress',
       in_progress: 'In Progress',
@@ -223,7 +227,7 @@ export default function InstallationDetail() {
     if (!installation) return null;
     const isClosed = currentStatusLower === 'verified' || currentStatusLower === 'force_closed' || installation?.force_closed || currentStatusLower === 'closed';
     if (!isClosed) return null;
-    const closedDateStr = installation.verified_at || installation.force_closed_at || installation.updated_at;
+    const closedDateStr = installation.verified_at || installation.force_closed || installation.updated_at;
     if (!closedDateStr) return 48;
     const closedDate = new Date(closedDateStr).getTime();
     if (isNaN(closedDate)) return null;
@@ -237,7 +241,7 @@ export default function InstallationDetail() {
     if (!isAdmin && !isSupervisor) return false;
     const isClosed = currentStatusLower === 'verified' || currentStatusLower === 'force_closed' || installation?.force_closed || currentStatusLower === 'closed';
     if (!isClosed) return true;
-    const closedDateStr = installation.verified_at || installation.force_closed_at || installation.updated_at;
+    const closedDateStr = installation.verified_at || installation.force_closed || installation.updated_at;
     if (!closedDateStr) return true;
     const closedDate = new Date(closedDateStr).getTime();
     if (isNaN(closedDate)) return true;
@@ -267,15 +271,56 @@ export default function InstallationDetail() {
         is_lead: tid === reassignLeadTechId,
       }));
 
+      console.log('[InstallationDetail] Installation Reassignment Payload:', {
+        installationId: id,
+        techPayload,
+        reason: reassignReason,
+      });
+
       await installationService.reassignTechnicians(id!, techPayload, reassignReason);
 
-      toast.success("Installation reassigned successfully! Status set to Assigned.");
+      toast.success("Installation reassigned successfully! Status set to Phase 2: Assigned.");
       setShowReassignModal(false);
       setReassignReason('');
       setReassignSelectedTechs([]);
       setReassignLeadTechId(null);
       setReassignSearchTerm('');
+      setCurrentPhase(2);
+      setActivePhase(2);
+      queryClient.invalidateQueries({ queryKey: ['installation-detail', id] });
+      queryClient.invalidateQueries({ queryKey: ['installations-list'] });
       fetchInstallation();
+
+      // Send notifications to reassigned technicians and customer
+      try {
+        const ticketDisplayId = formatInstallationTicketId(installation);
+        const leadTechObj = allTechnicians.find((t: any) => t.id === reassignLeadTechId);
+        const leadName = leadTechObj?.full_name || 'Lead Technician';
+
+        for (const tid of reassignSelectedTechs) {
+          notificationService.insertNotification({
+            userId: tid,
+            type: 'assignment',
+            title: 'Installation Reassigned',
+            message: `You have been assigned to Installation #${ticketDisplayId}. Lead: ${leadName}.`,
+            phase: 2,
+            actionUrl: `/installations/${id}`,
+          });
+        }
+
+        if (installation?.customer?.id) {
+          notificationService.insertNotification({
+            userId: installation.customer.id,
+            type: 'assignment',
+            title: 'Technician Reassigned',
+            message: `Lead Technician ${leadName} has been assigned for your installation #${ticketDisplayId}.`,
+            phase: 2,
+            actionUrl: `/installations/${id}`,
+          });
+        }
+      } catch (notifErr) {
+        console.warn('Reassign notification error:', notifErr);
+      }
     } catch (err: any) {
       toast.error(err.message || "Failed to reassign installation");
     } finally {
@@ -527,7 +572,70 @@ export default function InstallationDetail() {
     }
   };
 
-  // 1. FIX GPS PERMISSION ISSUE WITH HIGH ACCURACY & EXPLICIT ERROR MAPPING
+  const [isStartingJourney, setIsStartingJourney] = useState(false);
+
+  // 1. START JOURNEY: TRANSITIONS TICKET FROM PHASE 2 (ASSIGNED) TO PHASE 3 (DISPATCHED)
+  const handleStartJourney = async () => {
+    if (!id) return;
+    setIsStartingJourney(true);
+    toast.loading("Starting journey to installation site...", { id: "start-journey" });
+    const nowIso = new Date().toISOString();
+
+    try {
+      const payload = {
+        status: 'Dispatched',
+        current_phase: 3,
+        dispatched_at: nowIso,
+        updated_at: nowIso,
+      };
+      console.log('[InstallationDetail] handleStartJourney payload:', payload);
+      
+      const { error } = await supabase
+        .from('installations')
+        .update(payload)
+        .eq('id', id);
+
+      if (error) throw error;
+
+      toast.success("🚀 Journey started! Status updated to Phase 3: Dispatched.", { id: "start-journey" });
+      setCurrentPhase(3);
+      setActivePhase(3);
+
+      setInstallation((prev: any) => prev ? {
+        ...prev,
+        status: 'Dispatched',
+        current_phase: 3,
+        dispatched_at: nowIso,
+      } : prev);
+
+      queryClient.invalidateQueries({ queryKey: ['installation-detail', id] });
+      queryClient.invalidateQueries({ queryKey: ['installations-list'] });
+      fetchInstallation();
+
+      // Trigger notification for customer
+      try {
+        const ticketDisplayId = formatInstallationTicketId(installation);
+        if (installation?.customer?.id) {
+          notificationService.insertNotification({
+            userId: installation.customer.id,
+            title: "Technician Dispatched",
+            message: `Lead Technician ${leadTechnicianInfo?.full_name || 'is'} en route for your installation #${ticketDisplayId}.`,
+            type: "installation",
+            actionUrl: `/installations/${id}`,
+          });
+        }
+      } catch (notifErr) {
+        console.warn("Notification insert error on dispatch:", notifErr);
+      }
+    } catch (err: any) {
+      console.error('Error starting journey:', err);
+      toast.error(err.message || 'Failed to start journey', { id: "start-journey" });
+    } finally {
+      setIsStartingJourney(false);
+    }
+  };
+
+  // 2. FIX GPS PERMISSION ISSUE WITH HIGH ACCURACY & EXPLICIT ERROR MAPPING (PHASE 4: EXECUTION)
   const handleArrivedGPS = async () => {
     if (!navigator.geolocation) {
       toast.error('Geolocation is not supported by your browser');
@@ -562,22 +670,28 @@ export default function InstallationDetail() {
         );
       });
 
+      const nowIso = new Date().toISOString();
+      const arrivalPayload = {
+        current_phase: 4,
+        arrival_gps_lat: position.coords.latitude,
+        arrival_gps_lng: position.coords.longitude,
+        arrival_time: nowIso,
+        dispatched_at: installation?.dispatched_at || nowIso,
+        status: 'In Progress',
+        updated_at: nowIso,
+      };
+      console.log('[InstallationDetail] handleArrivedGPS payload:', arrivalPayload);
+      
       const { error } = await supabase
         .from('installations')
-        .update({
-          current_phase: 4,
-          arrival_gps_lat: position.coords.latitude,
-          arrival_gps_lng: position.coords.longitude,
-          arrival_time: new Date().toISOString(),
-          status: 'In Progress',
-          updated_at: new Date().toISOString()
-        })
+        .update(arrivalPayload)
         .eq('id', id);
 
       if (error) throw error;
       
-      toast.success('GPS arrival recorded successfully! Status updated to In Progress.');
+      toast.success('GPS arrival recorded successfully! Status updated to Phase 4: In Progress.');
       setCurrentPhase(4);
+      setActivePhase(4);
       fetchInstallation();
     } catch (error) {
       console.error('GPS Error:', error);
@@ -585,17 +699,20 @@ export default function InstallationDetail() {
       
       // Resilient fallback so field technician is never blocked from marking arrival
       try {
+        const fallbackNowIso = new Date().toISOString();
         await supabase
           .from('installations')
           .update({
             current_phase: 4,
-            arrival_time: new Date().toISOString(),
+            arrival_time: fallbackNowIso,
+            dispatched_at: installation?.dispatched_at || fallbackNowIso,
             status: 'In Progress',
-            updated_at: new Date().toISOString()
+            updated_at: fallbackNowIso,
           })
           .eq('id', id);
-        toast.info('Arrival marked successfully (without GPS coordinates).');
+        toast.info('Arrival marked successfully (without GPS coordinates). Proceeding to Phase 4.');
         setCurrentPhase(4);
+        setActivePhase(4);
         fetchInstallation();
       } catch (fallbackErr) {
         console.error('Fallback arrival update error:', fallbackErr);
@@ -1042,7 +1159,6 @@ export default function InstallationDetail() {
         force_close_reason: forceCloseReason,
         force_close_comments: formattedComments || null,
         force_closed_by: adminName,
-        force_closed_at: nowIso,
         updated_at: nowIso
       };
 
@@ -1062,8 +1178,7 @@ export default function InstallationDetail() {
             force_closed: true,
             force_close_reason: forceCloseReason,
             force_close_comments: formattedComments || null,
-            force_closed_by: adminName,
-            force_closed_at: nowIso
+            force_closed_by: adminName
           })
           .eq('id', id);
       }
@@ -1161,7 +1276,7 @@ export default function InstallationDetail() {
       toast.error('No address available for navigation');
       return;
     }
-    window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(siteAddress)}`, '_blank');
+    window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(siteAddress)}&travelmode=driving`, '_blank');
   };
 
   const copyAddress = () => {
@@ -1221,6 +1336,7 @@ export default function InstallationDetail() {
 
   const canClickArrived = [
     'assigned',
+    'dispatched',
     'en_route',
     'en route',
     'in_progress',
@@ -1468,15 +1584,55 @@ export default function InstallationDetail() {
             >
               <Navigation className="w-4 h-4" /> Navigate
             </button>
-            <button 
-              type="button"
-              onClick={handleArrivedGPS} 
-              disabled={!canClickArrived}
-              className="bg-amber-600 hover:bg-amber-700 active:scale-95 transition-all text-white py-3 px-4 rounded-xl font-semibold flex items-center justify-center gap-2 text-xs shadow-sm disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-            >
-              <MapPin className="w-4 h-4" /> 
-              {getInstallationStatusLabel(installation?.status || '') === 'In Progress' && installation?.arrival_time ? 'Arrived (GPS) ✓' : 'I Arrived (GPS)'}
-            </button>
+            {(() => {
+              const isDispatched = Boolean(
+                installation?.dispatched_at ||
+                currentPhase >= 3 ||
+                ['dispatched', 'in progress', 'site completed and handed over', 'verified'].includes(
+                  getInstallationStatusLabel(installation?.status || '').toLowerCase()
+                )
+              );
+              const hasArrived = Boolean(
+                installation?.arrival_time ||
+                currentPhase >= 4 ||
+                ['in progress', 'site completed and handed over', 'verified'].includes(
+                  getInstallationStatusLabel(installation?.status || '').toLowerCase()
+                )
+              );
+
+              if (hasArrived) {
+                return (
+                  <div className="bg-emerald-700/90 text-white py-3 px-4 rounded-xl font-semibold flex items-center justify-center gap-2 text-xs shadow-sm border border-emerald-500/50">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-300" /> Arrived (GPS) ✓
+                  </div>
+                );
+              }
+
+              if (!isDispatched) {
+                return (
+                  <button 
+                    type="button"
+                    onClick={handleStartJourney}
+                    disabled={isStartingJourney}
+                    className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 active:scale-95 transition-all text-white py-3 px-4 rounded-xl font-semibold flex items-center justify-center gap-2 text-xs shadow-sm cursor-pointer disabled:opacity-50"
+                  >
+                    {isStartingJourney ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+                    Start Journey (Dispatch)
+                  </button>
+                );
+              }
+
+              return (
+                <button 
+                  type="button"
+                  onClick={handleArrivedGPS} 
+                  disabled={!canClickArrived}
+                  className="bg-amber-600 hover:bg-amber-700 active:scale-95 transition-all text-white py-3 px-4 rounded-xl font-semibold flex items-center justify-center gap-2 text-xs shadow-sm disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                >
+                  <MapPin className="w-4 h-4" /> I Arrived (GPS)
+                </button>
+              );
+            })()}
           </div>
           
           <div className="p-3 bg-slate-800/90 rounded-xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border border-slate-700">
@@ -1505,7 +1661,7 @@ export default function InstallationDetail() {
             onClick={() => {
               const address = siteAddress === 'N/A' ? '' : siteAddress;
               if (address) {
-                window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`, '_blank');
+                window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(address)}&travelmode=driving`, '_blank');
               } else {
                 toast.error('No address available for navigation');
               }
@@ -1528,10 +1684,41 @@ export default function InstallationDetail() {
             { num: 5, label: 'Completion' },
             { num: 6, label: 'Verification' }
           ].map(phase => {
-            const isCompleted = currentPhase > phase.num;
+            const isPhase5Completed = isPhase5ReadyForVerification || isClosedOrVerified || currentPhase >= 6;
+            const isPhase6Completed = isClosedOrVerified;
+            
+            const isCompleted = phase.num < 5
+              ? currentPhase > phase.num
+              : phase.num === 5
+                ? isPhase5Completed
+                : isPhase6Completed;
+
             const isSelected = activePhase === phase.num;
-            const isPhase6Ready = phase.num === 6 && isPhase5ReadyForVerification;
-            const isPhaseActive = currentPhase >= phase.num || isPhase6Ready;
+            const isPhase6Ready = phase.num === 6 && isPhase5ReadyForVerification && !isClosedOrVerified;
+            const isCurrent = !isCompleted && (currentPhase === phase.num || isPhase6Ready);
+            const isFinalPhase = phase.num === 6;
+
+            let circleClass = 'border-slate-300 bg-white text-slate-500 group-hover:border-slate-400';
+            if (isCompleted) {
+              if (isFinalPhase) {
+                // Completed Phase 6 is GREEN with checkmark
+                circleClass = 'border-emerald-600 bg-emerald-600 text-white shadow-md shadow-emerald-500/30';
+              } else {
+                circleClass = 'border-primary bg-primary text-white shadow-xs';
+              }
+            } else if (isPhase6Ready) {
+              // Phase 6 waiting for admin verification: outlined/ready, NOT solid blue
+              circleClass = isSelected
+                ? 'border-amber-500 bg-amber-500 text-white shadow-md ring-2 ring-amber-400/50 scale-110'
+                : 'border-amber-500 bg-amber-50 text-amber-700 ring-2 ring-amber-400/40 font-bold';
+            } else if (isCurrent) {
+              circleClass = isSelected
+                ? 'border-primary bg-primary text-white shadow-md scale-110'
+                : 'border-primary bg-primary text-white shadow-xs';
+            } else if (isSelected) {
+              circleClass = 'border-primary bg-primary text-white shadow-md scale-110';
+            }
+
             return (
               <button
                 key={phase.num}
@@ -1539,25 +1726,28 @@ export default function InstallationDetail() {
                 onClick={() => setActivePhase(activePhase === phase.num ? null : phase.num)}
                 className={`flex flex-col items-center flex-1 min-w-[75px] cursor-pointer transition-all duration-200 group focus:outline-none p-1.5 rounded-xl ${
                   isSelected ? 'bg-primary/10 ring-2 ring-primary/40' : 'hover:bg-slate-100/80'
-                } ${isPhaseActive ? 'text-primary font-bold' : 'text-slate-400'}`}
+                } ${isCompleted || isCurrent ? 'text-primary font-bold' : 'text-slate-400'}`}
                 title={`Click to view Phase ${phase.num}: ${phase.label} details`}
               >
-                <div className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold border-2 transition-all ${
-                  isSelected
-                    ? 'border-primary bg-primary text-white shadow-md scale-110'
-                    : isPhaseActive
-                      ? 'border-primary bg-primary text-white shadow-xs group-hover:scale-105' 
-                      : 'border-slate-300 bg-white text-slate-500 group-hover:border-slate-400'
-                }`}>
+                <div className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold border-2 transition-all ${circleClass}`}>
                   {isCompleted ? '✓' : phase.num}
                 </div>
                 <span className={`text-[11px] mt-1.5 text-center leading-tight transition-colors ${
-                  isSelected ? 'text-primary font-extrabold underline underline-offset-2' : ''
+                  isFinalPhase && isPhase6Completed 
+                    ? 'text-emerald-600 font-extrabold' 
+                    : isPhase6Ready
+                      ? 'text-amber-700 font-bold'
+                      : isSelected 
+                        ? 'text-primary font-extrabold underline underline-offset-2' 
+                        : isCompleted || isCurrent 
+                          ? 'text-primary font-bold' 
+                          : 'text-slate-500'
                 }`}>
                   {phase.label}
+                  {isFinalPhase && isPhase6Completed && " ✓"}
                 </span>
                 <span className="text-[9px] text-muted-foreground mt-0.5 opacity-75">
-                  {isSelected ? '▲ close' : '▼ click details'}
+                  {isPhase6Ready && !isSelected ? '⏳ ready' : isSelected ? '▲ close' : '▼ click details'}
                 </span>
               </button>
             );
@@ -1675,40 +1865,125 @@ export default function InstallationDetail() {
                     <p className="font-medium text-slate-800 bg-white/70 p-2 rounded-lg border border-blue-200 mt-1">{installation.notes}</p>
                   </div>
                 )}
+
+                {/* Lead Tech Action in Phase 2: Dispatch / Start Journey */}
+                {currentPhase === 2 && isLeadTechnician && isTechnician && (
+                  <div className="bg-blue-50/90 border border-blue-200 rounded-xl p-3 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mt-3 shadow-xs">
+                    <div>
+                      <p className="font-bold text-blue-900 text-xs flex items-center gap-1.5">
+                        <Play className="w-3.5 h-3.5 text-blue-600" />
+                        Ready to head to customer site?
+                      </p>
+                      <p className="text-[11px] text-blue-700">
+                        Click Start Journey to dispatch team and notify the customer that you are en route (transitions to Phase 3: Dispatch).
+                      </p>
+                    </div>
+                    <Button
+                      size="sm"
+                      onClick={handleStartJourney}
+                      disabled={isStartingJourney}
+                      className="bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs shrink-0 shadow-xs"
+                    >
+                      {isStartingJourney ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> : <Play className="w-3.5 h-3.5 mr-1.5" />}
+                      Start Journey (Dispatch)
+                    </Button>
+                  </div>
+                )}
               </div>
             )}
 
             {/* Phase 3 Content */}
             {activePhase === 3 && (
-              <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3 text-xs text-slate-800">
-                <div>
-                  <span className="text-muted-foreground font-semibold block">Scheduled Visit Date:</span>
-                  <p className="font-bold text-slate-900">
-                    {installation.scheduled_date 
-                      ? new Date(`${installation.scheduled_date}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) 
-                      : 'Pending Schedule'}
-                  </p>
+              <div className="space-y-3 text-xs text-slate-800">
+                <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3">
+                  <div>
+                    <span className="text-muted-foreground font-semibold block">Scheduled Visit Date:</span>
+                    <p className="font-bold text-slate-900">
+                      {installation.scheduled_date 
+                        ? new Date(`${installation.scheduled_date}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) 
+                        : 'Pending Schedule'}
+                    </p>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground font-semibold block">Scheduled Visit Time:</span>
+                    <p className="font-bold text-slate-900">{installation.scheduled_time ? installation.scheduled_time.slice(0, 5) : 'N/A'}</p>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground font-semibold block">Dispatch Status:</span>
+                    <span className="font-bold text-slate-900 uppercase">{installation.status || 'Assigned'}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground font-semibold block">Lead Technician:</span>
+                    <p className="font-bold text-slate-900">{leadTechnicianInfo?.full_name || 'Assigned Lead'}</p>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground font-semibold block">Tech Contact Phone:</span>
+                    <p className="font-bold text-slate-900">{leadTechnicianInfo?.phone || 'N/A'}</p>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground font-semibold block">Dispatched Timestamp:</span>
+                    <p className="font-bold text-slate-900">{installation.dispatched_at ? formatDate(installation.dispatched_at) : (currentPhase >= 3 ? 'Dispatched' : 'Pending')}</p>
+                  </div>
                 </div>
-                <div>
-                  <span className="text-muted-foreground font-semibold block">Scheduled Visit Time:</span>
-                  <p className="font-bold text-slate-900">{installation.scheduled_time ? installation.scheduled_time.slice(0, 5) : 'N/A'}</p>
-                </div>
-                <div>
-                  <span className="text-muted-foreground font-semibold block">Dispatch Status:</span>
-                  <span className="font-bold text-slate-900 uppercase">{installation.status || 'Assigned'}</span>
-                </div>
-                <div>
-                  <span className="text-muted-foreground font-semibold block">Lead Technician:</span>
-                  <p className="font-bold text-slate-900">{leadTechnicianInfo?.full_name || 'Assigned Lead'}</p>
-                </div>
-                <div>
-                  <span className="text-muted-foreground font-semibold block">Tech Contact Phone:</span>
-                  <p className="font-bold text-slate-900">{leadTechnicianInfo?.phone || 'N/A'}</p>
-                </div>
-                <div>
-                  <span className="text-muted-foreground font-semibold block">Dispatched Timestamp:</span>
-                  <p className="font-bold text-slate-900">{installation.dispatched_at ? formatDate(installation.dispatched_at) : (currentPhase >= 3 ? 'Dispatched' : 'Pending')}</p>
-                </div>
+
+                {/* Phase 3 Action Banner */}
+                {isLeadTechnician && isTechnician && (
+                  <>
+                    {currentPhase < 3 && (
+                      <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+                        <div>
+                          <p className="font-bold text-blue-900 text-xs flex items-center gap-1.5">
+                            <Play className="w-3.5 h-3.5 text-blue-600" />
+                            Awaiting Dispatch (Phase 2 Completed)
+                          </p>
+                          <p className="text-[11px] text-blue-700">
+                            Technicians have been assigned. Click Start Journey to activate Phase 3 (Dispatch).
+                          </p>
+                        </div>
+                        <Button
+                          size="sm"
+                          onClick={handleStartJourney}
+                          disabled={isStartingJourney}
+                          className="bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs shrink-0 shadow-xs"
+                        >
+                          {isStartingJourney ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> : <Play className="w-3.5 h-3.5 mr-1.5" />}
+                          Start Journey
+                        </Button>
+                      </div>
+                    )}
+
+                    {currentPhase === 3 && (
+                      <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+                        <div>
+                          <p className="font-bold text-amber-900 text-xs flex items-center gap-1.5">
+                            <MapPin className="w-3.5 h-3.5 text-amber-600" />
+                            En Route to Installation Site (Phase 3 Active)
+                          </p>
+                          <p className="text-[11px] text-amber-700">
+                            Team is dispatched. When you reach the customer location, click below to verify GPS coordinates and transition to Phase 4 (Execution).
+                          </p>
+                        </div>
+                        <Button
+                          size="sm"
+                          onClick={handleArrivedGPS}
+                          disabled={!canClickArrived}
+                          className="bg-amber-600 hover:bg-amber-700 text-white font-semibold text-xs shrink-0 shadow-xs"
+                        >
+                          <MapPin className="w-3.5 h-3.5 mr-1.5" /> I Arrived (GPS)
+                        </Button>
+                      </div>
+                    )}
+
+                    {currentPhase >= 4 && (
+                      <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center gap-2 text-emerald-800">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                        <span className="font-medium text-xs">
+                          Phase 3 (Dispatch) completed. Team arrived on site at {installation.arrival_time ? formatDate(installation.arrival_time) : 'customer location'}.
+                        </span>
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
             )}
 
@@ -1881,7 +2156,7 @@ export default function InstallationDetail() {
                 <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3">
                   <div>
                     <span className="text-muted-foreground font-semibold block">Verified Date:</span>
-                    <p className="font-bold text-slate-900">{formatDate(installation.verified_at || installation.force_closed_at || 'Pending')}</p>
+                     <p className="font-bold text-slate-900">{formatDate(installation.verified_at || installation.updated_at || 'Pending')}</p>
                   </div>
                   <div>
                     <span className="text-muted-foreground font-semibold block">Happiness Code Status:</span>
@@ -2265,7 +2540,7 @@ export default function InstallationDetail() {
             <div>
               <span className="text-amber-800 font-semibold block">Closed By & Date:</span>
               <p className="font-medium text-slate-800 mt-0.5">
-                {installation.force_closed_by || 'Admin'} on {formatDate(installation.force_closed_at || installation.verified_at)}
+                {installation.force_closed_by || 'Admin'} on {formatDate(installation.verified_at || installation.updated_at)}
               </p>
             </div>
             {installation.force_close_comments && (
@@ -2962,6 +3237,13 @@ export default function InstallationDetail() {
               >
                 {isReassigning ? 'Reassigning...' : `Confirm Reassignment (${reassignSelectedTechs.length})`}
               </Button>
+              
+              {/* Debug helper - remove in production */}
+              {process.env.NODE_ENV === 'development' && (
+                <div className="text-[10px] text-slate-400 mt-1 p-2 bg-slate-50 rounded border">
+                  <div>Selected: {reassignSelectedTechs.length} | Lead: {reassignLeadTechId || 'none'} | Reason: {reassignReason.trim().length}/10</div>
+                </div>
+              )}
             </DialogFooter>
           </div>
         </DialogContent>

@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { Phone, MessageCircle, MapPin, Navigation, CheckCircle2, Loader2, Copy, ExternalLink, ShieldCheck } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { Phone, MessageCircle, MapPin, Navigation, CheckCircle2, Loader2, Copy, ExternalLink, ShieldCheck, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/lib/supabase";
 import { toast } from "sonner";
@@ -20,6 +20,10 @@ interface TechnicianMissionControlProps {
   isLeadOrAdmin?: boolean;
   onArrivalLogged?: (lat: number, lng: number, timestamp: string) => void;
   complaint?: any;
+  currentPhase?: number;
+  status?: string;
+  dispatchedAt?: string | null;
+  onDispatched?: () => void;
 }
 
 export const TechnicianMissionControl: React.FC<TechnicianMissionControlProps> = ({
@@ -37,6 +41,10 @@ export const TechnicianMissionControl: React.FC<TechnicianMissionControlProps> =
   isLeadOrAdmin = true,
   onArrivalLogged,
   complaint,
+  currentPhase,
+  status,
+  dispatchedAt,
+  onDispatched,
 }) => {
   const [isLoggingArrival, setIsLoggingArrival] = useState(false);
   const [loggedArrival, setLoggedArrival] = useState<{ lat: number; lng: number; time: string } | null>(
@@ -45,6 +53,40 @@ export const TechnicianMissionControl: React.FC<TechnicianMissionControlProps> =
       : null
   );
   const [arrivedWithoutGps, setArrivedWithoutGps] = useState(false);
+
+  // Check if ticket has already started journey (Phase >= 4 or start timestamp exists)
+  const isInitiallyDispatched = Boolean(
+    dispatchedAt ||
+    complaint?.start_journey_timestamp ||
+    (currentPhase && currentPhase >= 4) ||
+    (status && [
+      'dispatched',
+      'en_route',
+      'en route',
+      'in_progress',
+      'in progress',
+      'arrived',
+      'completed',
+      'site completed and handed over',
+      'verified',
+      'closed',
+    ].includes(status.toLowerCase())) ||
+    (complaint?.status && [
+      'dispatched',
+      'arrived',
+      'completed',
+      'closed'
+    ].includes(complaint.status.toLowerCase()))
+  );
+
+  const [isDispatched, setIsDispatched] = useState(isInitiallyDispatched);
+  const [isStartingJourney, setIsStartingJourney] = useState(false);
+
+  useEffect(() => {
+    if (isInitiallyDispatched) {
+      setIsDispatched(true);
+    }
+  }, [isInitiallyDispatched]);
 
   // Robust Fallback: Pull from complaint object if Walk-in / non-linked
   const rawPhone = 
@@ -79,13 +121,57 @@ export const TechnicianMissionControl: React.FC<TechnicianMissionControlProps> =
 
   // Google Maps Navigation URL
   const getNavigationUrl = () => {
-    if (effLat && effLng) {
+    const hasValidCoords =
+      typeof effLat === 'number' && typeof effLng === 'number' &&
+      effLat >= 6 && effLat <= 38 && effLng >= 68 && effLng <= 98;
+    if (cleanAddress && cleanAddress !== "Site address not specified" && cleanAddress.toLowerCase() !== "on-site") {
+      return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(cleanAddress)}&travelmode=driving`;
+    }
+    if (hasValidCoords) {
       return `https://www.google.com/maps/dir/?api=1&destination=${effLat},${effLng}&travelmode=driving`;
     }
-    if (cleanAddress && cleanAddress !== "Site address not specified" && cleanAddress.toLowerCase() !== "on-site") {
-      return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(cleanAddress)}`;
-    }
     return "#";
+  };
+
+  // Handle Start Journey (Transitions to Phase 3: Dispatched)
+  const handleStartJourney = async () => {
+    setIsStartingJourney(true);
+    toast.loading("Starting journey to site...", { id: "start-journey" });
+    const nowIso = new Date().toISOString();
+
+    try {
+      if (ticketType === "installation") {
+        const { error } = await supabase
+          .from("installations")
+          .update({
+            status: "Dispatched",
+            current_phase: 3,
+            dispatched_at: nowIso,
+            updated_at: nowIso,
+          })
+          .eq("id", ticketId);
+        if (error) throw error;
+        toast.success("🚀 Journey started! Status updated to Phase 3: Dispatched.", { id: "start-journey" });
+      } else {
+        const { error } = await supabase
+          .from("complaints")
+          .update({
+            status: "dispatched",
+            current_phase: 3,
+            start_journey_timestamp: nowIso,
+          })
+          .eq("id", ticketId);
+        if (error) throw error;
+        toast.success("🚀 Journey started! Technician dispatched to site.", { id: "start-journey" });
+      }
+      setIsDispatched(true);
+      if (onDispatched) onDispatched();
+    } catch (err: any) {
+      console.error("Start journey error:", err);
+      toast.error(err.message || "Failed to start journey", { id: "start-journey" });
+    } finally {
+      setIsStartingJourney(false);
+    }
   };
 
   // Handle GPS Arrival Capture (Resilient to permission denied or timeout)
@@ -102,6 +188,7 @@ export const TechnicianMissionControl: React.FC<TechnicianMissionControlProps> =
             status: "in-progress",
             current_phase: 4,
             arrival_timestamp: nowIso,
+            start_journey_timestamp: complaint?.start_journey_timestamp || nowIso,
           };
           if (lat != null && lng != null) {
             payload.arrival_lat = lat;
@@ -115,9 +202,10 @@ export const TechnicianMissionControl: React.FC<TechnicianMissionControlProps> =
           if (error) throw error;
         } else {
           const payload: any = {
-            status: "arrived",
+            status: "In Progress",
             current_phase: 4,
             arrival_time: nowIso,
+            dispatched_at: dispatchedAt || nowIso,
             updated_at: nowIso,
           };
           if (lat != null && lng != null) {
@@ -267,7 +355,7 @@ export const TechnicianMissionControl: React.FC<TechnicianMissionControlProps> =
           </button>
         )}
 
-        {/* 4. "I Arrived" (GPS Log) */}
+        {/* 4. "Start Journey" (Phase 3) or "I Arrived" (Phase 4 GPS Log) */}
         {loggedArrival ? (
           <div className="flex flex-col items-center justify-center py-2 px-3 rounded-xl bg-slate-800 border border-emerald-500/40 text-center">
             <span className="text-[11px] font-bold text-emerald-400 flex items-center gap-1">
@@ -284,6 +372,23 @@ export const TechnicianMissionControl: React.FC<TechnicianMissionControlProps> =
             </span>
             <span className="text-[10px] text-slate-500 font-mono">No GPS coordinates</span>
           </div>
+        ) : !isDispatched ? (
+          <Button
+            type="button"
+            onClick={handleStartJourney}
+            disabled={isStartingJourney || !isLeadOrAdmin}
+            className="flex items-center justify-center gap-2 h-auto py-3.5 px-3 rounded-xl font-bold text-xs sm:text-sm text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 active:scale-95 transition-all shadow-md border-0"
+          >
+            {isStartingJourney ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" /> Dispatching...
+              </>
+            ) : (
+              <>
+                <Play className="w-4 h-4" /> Start Journey
+              </>
+            )}
+          </Button>
         ) : (
           <Button
             type="button"

@@ -360,9 +360,17 @@ export default function LiveRouteTrackingModal({
                   size="sm"
                   className="w-full gradient-primary text-white font-semibold text-xs mt-2"
                   onClick={() => {
-                    const destination = (ticket.customer_lat && ticket.customer_lng)
-                      ? `${ticket.customer_lat},${ticket.customer_lng}`
-                      : encodeURIComponent(ticket.location?.trim() || "");
+                    const cleanLoc = ticket.location?.trim();
+                    const hasValidCoords =
+                      typeof ticket.customer_lat === 'number' && typeof ticket.customer_lng === 'number' &&
+                      ticket.customer_lat >= 6 && ticket.customer_lat <= 38 && ticket.customer_lng >= 68 && ticket.customer_lng <= 98;
+                    const destination = cleanLoc
+                      ? encodeURIComponent(cleanLoc)
+                      : (hasValidCoords ? `${ticket.customer_lat},${ticket.customer_lng}` : null);
+                    if (!destination) {
+                      toast.error("Customer location not available");
+                      return;
+                    }
                     const mapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${destination}&travelmode=driving`;
                     window.open(mapsUrl, "_blank");
                   }}

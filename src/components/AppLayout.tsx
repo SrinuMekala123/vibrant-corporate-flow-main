@@ -329,7 +329,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           {/* User Info & Logout */}
           <div className="p-4 border-t border-slate-200 bg-slate-100/30">
             {/* PWA Install Button in Sidebar */}
-            {!sidebarCollapsed && <PWAInstallButton variant="sidebar" className="mb-2.5" />}
+            {!sidebarCollapsed && user?.role !== 'technician' && <PWAInstallButton variant="sidebar" className="mb-2.5" />}
 
             {/* User card link to Profile & Settings */}
             <Link 
@@ -410,16 +410,14 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           </div>
         </Link>
 
-        {/* Right: PWA Install + Notification Center */}
+        {/* Right: Notification Center */}
         <div className="flex items-center gap-2 pr-1 sm:pr-2">
-          <PWAInstallButton variant="nav" />
           <NotificationCenter />
         </div>
       </header>
 
-      {/* 🖥️ Desktop Notification Center & PWA Install - Positioned comfortably in top-right with safe margins */}
+      {/* 🖥️ Desktop Notification Center - Positioned comfortably in top-right with safe margins */}
       <div className="hidden md:flex items-center gap-2.5 fixed top-4 right-8 lg:right-10 z-40">
-        <PWAInstallButton variant="nav" />
         <NotificationCenter />
       </div>
 

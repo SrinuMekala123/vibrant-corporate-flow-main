@@ -69,56 +69,43 @@ const formatIndianDateTime = (dateString?: string) => {
 const getEffectivePhase = (t: any): number => {
   if (!t) return 1;
   const raw = Number(t.current_phase) || 1;
-  const status = t.status || "";
+  const status = (t.status || "").toLowerCase();
 
-  // Phase 6: QA Verification & Closure
+  if (raw === 3 || status === "assigned" || status === "dispatched") {
+    return 3;
+  }
+
+  if (raw === 4 || status === "arrived") {
+    return 4;
+  }
+
+  if (raw === 2 || status === "triage" || status === "triaged") {
+    return 2;
+  }
+
+  if (raw === 1 || status === "unassigned" || status === "pending" || status === "open") {
+    return 1;
+  }
+
+  if (status === "rework_required" || status === "rework") {
+    return 3;
+  }
+
   if (
     status === "closed" ||
-    status === "completed" ||
-    status === "resolved" ||
-    status === "Next Steps / Closure" ||
-    status === "awaiting_verification" ||
-    status === "resolution_submitted" ||
-    raw === 6 ||
-    (Boolean(t.signature_url || t.signoff_timestamp) && Boolean(t.resolution || t.resolution_notes))
+    status === "verified" ||
+    status === "qa_verified" ||
+    raw === 6
   ) {
-    return Math.max(raw, 6);
+    return 6;
   }
 
-  // Phase 5: Resolution Notes & Customer Sign-Off
   if (
     raw === 5 ||
-    status === "Resolution & Sign-off" ||
-    status === "resolution_pending" ||
-    status === "awaiting_signoff" ||
-    (Boolean(t.pir_findings) && !t.signoff_timestamp && raw >= 5)
+    status === "pending_verification" ||
+    status === "resolution_submitted"
   ) {
-    return Math.max(raw, 5);
-  }
-
-  // Phase 4: Site Visit & PIR Diagnosis
-  if (
-    raw === 4 ||
-    status === "arrived"
-  ) {
-    return Math.max(raw, 4);
-  }
-
-  // Phase 3: Technician Assignment & Journey
-  if (
-    raw === 3 ||
-    status === "assigned" ||
-    status === "dispatched"
-  ) {
-    return Math.max(raw, 3);
-  }
-
-  // Phase 2: Telephonic Triage
-  if (
-    raw === 2 ||
-    status === "triage"
-  ) {
-    return Math.max(raw, 2);
+    return 5;
   }
 
   return raw;
@@ -221,6 +208,8 @@ const ComplaintDetail = () => {
   const [reassignLeadTechId, setReassignLeadTechId] = useState<string | null>(null);
   const [reassignReason, setReassignReason] = useState("");
   const [reassignSearchTerm, setReassignSearchTerm] = useState("");
+  const [reassignScheduledDate, setReassignScheduledDate] = useState<string>("");
+  const [reassignScheduledTime, setReassignScheduledTime] = useState<string>("10:00:00");
   const [isReassigning, setIsReassigning] = useState(false);
 
   // Field Visit Assignment Modal (Phase 2 -> Phase 3)
@@ -509,13 +498,13 @@ const ComplaintDetail = () => {
       if (isRemoteFix && isFieldVisit) {
         setResolutionNote("");
       } else {
-        setResolutionNote(prev => prev || ticket.resolution || "");
+        setResolutionNote(ticket.resolution || "");
       }
-      setPirFindings(prev => prev || ticket.pir_findings || "");
-      setPirAudioUrl(prev => prev || ticket.pir_audio_url || "");
-      setPirEvidenceUrls(prev => prev.length > 0 ? prev : (ticket.technician_evidence || []));
-      setResolutionEvidenceUrls(prev => prev.length > 0 ? prev : []);
-      setEvidenceUrls(prev => prev.length > 0 ? prev : (ticket.technician_evidence || []));
+      setPirFindings(ticket.pir_findings || "");
+      setPirAudioUrl(ticket.pir_audio_url || "");
+      setPirEvidenceUrls(ticket.technician_evidence || []);
+      setResolutionEvidenceUrls([]);
+      setEvidenceUrls(ticket.technician_evidence || []);
       
       if (ticket.pir_findings_severity) setPirSeverityInput(ticket.pir_findings_severity);
       if (ticket.supervisor_severity) setSupSeverityInput(ticket.supervisor_severity);
@@ -537,6 +526,7 @@ const ComplaintDetail = () => {
       }
     }
   }, [ticket]);
+
 
   useEffect(() => {
     const fetchCustomerPhone = async () => {
@@ -1052,19 +1042,27 @@ const ComplaintDetail = () => {
 
   const currentPhase = getEffectivePhase(ticket);
 
+  console.log('[ComplaintDetail] Phase Detection Debug:', {
+    ticketStatus: ticket.status,
+    current_phase: ticket.current_phase,
+    effectivePhase: currentPhase,
+    hasSignature: Boolean(ticket.signature_url),
+    hasResolution: Boolean(ticket.resolution),
+  });
+
   const isPhase6ClosedOrVerified = Boolean(
-    ticket && (
-      ticket.status === 'closed' || 
-      ticket.status === 'verified' || 
-      ticket.status === 'Closed' || 
-      ticket.status === 'Resolved' ||
-      Boolean(ticket.closed_at) || 
-      Boolean(ticket.closure_timestamp)
-    )
+    ticket &&
+    (ticket.status === 'closed' || 
+     ticket.status === 'verified' || 
+     ticket.status === 'Closed' || 
+     ticket.status === 'qa_verified'
+    ) &&
+    Boolean(ticket.verified_at) &&
+    Boolean(ticket.happiness_code_verified)
   );
 
   const canVerify = isSupervisorOrAdmin &&
-    (ticket.status === "completed" || ticket.status === "Resolution & Sign-off" || ticket.status === "awaiting_signoff" || currentPhase === 6 || ticket.status === "closed" || ticket.status === "verified");
+    (ticket.status === "completed" || ticket.status === "Resolution & Sign-off" || ticket.status === "awaiting_signoff" || currentPhase === 6 || ticket.status === "closed" || ticket.status === "verified" || ticket.status === "pending_verification" || ticket.status === "resolution_submitted");
 
   const canEdit = isRole("admin", "supervisor");
 
@@ -1072,11 +1070,11 @@ const ComplaintDetail = () => {
     if (!ticket) return false;
     if (!isRole("admin", "supervisor")) return false;
     
-    const isClosed = ticket.status === 'closed' || ticket.status === 'Closed' || ticket.status === 'Resolved' || ticket.status === 'resolved' || Boolean(ticket.closed_at) || Boolean(ticket.closure_timestamp);
+    const isClosed = ticket.status === 'closed' || ticket.status === 'Closed' || ticket.status === 'Resolved' || ticket.status === 'resolved' || Boolean(ticket.closure_timestamp) || Boolean(ticket.closed_at);
     if (!isClosed) return true;
     
-    // For verified tickets, allow reassignment within 48 hours from the closure timestamp onwards
-    const closedDateStr = ticket.closed_at || ticket.closure_timestamp || ticket.feedback_timestamp || ticket.updated_at;
+    // For verified/closed tickets, allow reassignment within 48 hours from the closure timestamp
+    const closedDateStr = ticket.closure_timestamp || ticket.closed_at || ticket.feedback_timestamp || ticket.updated_at;
     if (!closedDateStr) return true;
     
     const closedDate = new Date(closedDateStr).getTime();
@@ -1089,9 +1087,9 @@ const ComplaintDetail = () => {
 
   const getReassignRemainingHours = (): number | null => {
     if (!ticket) return null;
-    const isClosed = ticket.status === 'closed' || ticket.status === 'Closed' || ticket.status === 'Resolved' || ticket.status === 'resolved' || Boolean(ticket.closed_at) || Boolean(ticket.closure_timestamp);
+    const isClosed = ticket.status === 'closed' || ticket.status === 'Closed' || ticket.status === 'Resolved' || ticket.status === 'resolved' || Boolean(ticket.closure_timestamp) || Boolean(ticket.closed_at);
     if (!isClosed) return null;
-    const closedDateStr = ticket.closed_at || ticket.closure_timestamp || ticket.feedback_timestamp || ticket.updated_at;
+    const closedDateStr = ticket.closure_timestamp || ticket.closed_at || ticket.feedback_timestamp || ticket.updated_at;
     if (!closedDateStr) return 48;
     const closedDate = new Date(closedDateStr).getTime();
     if (isNaN(closedDate)) return null;
@@ -1100,6 +1098,8 @@ const ComplaintDetail = () => {
     if (hoursSinceClosed > 48) return null;
     return Math.max(0, Math.round((48 - hoursSinceClosed) * 10) / 10);
   };
+
+  const isReassigned = Boolean(ticket.reassigned_at) && ticket.status === 'assigned' && !ticket.happiness_code;
 
   const handleConfirmReassign = async () => {
     if (!reassignReason.trim() || reassignReason.trim().length < 10) {
@@ -1114,6 +1114,10 @@ const ComplaintDetail = () => {
       toast.error("Please designate exactly one Lead Technician (click the Crown icon 👑).");
       return;
     }
+    if (!reassignScheduledDate) {
+      toast.error("Please select a scheduled visit date for the technician.");
+      return;
+    }
 
     setIsReassigning(true);
     try {
@@ -1122,7 +1126,13 @@ const ComplaintDetail = () => {
         is_lead: tid === reassignLeadTechId,
       }));
 
-      await complaintService.reassignTechnicians(ticket.id, techPayload, reassignReason);
+      await complaintService.reassignTechnicians(
+        ticket.id,
+        techPayload,
+        reassignReason,
+        reassignScheduledDate,
+        reassignScheduledTime || null
+      );
 
       // 🔔 WhatsApp Dispatch on Reassignment
       const recipientPhone = customerPhone || ticket.customer_phone || ticket.profiles?.phone;
@@ -1139,8 +1149,8 @@ const ComplaintDetail = () => {
               name: recipientName,
               ticketId: slicedId,
               technicianName: leadName,
-              date: ticket.scheduled_date || "the scheduled date",
-              time: ticket.scheduled_time ? ticket.scheduled_time.slice(0, 5) : "",
+              date: reassignScheduledDate || ticket.scheduled_date || "the scheduled date",
+              time: reassignScheduledTime ? reassignScheduledTime.slice(0, 5) : (ticket.scheduled_time ? ticket.scheduled_time.slice(0, 5) : ""),
               event_type: "reassignment"
             }
           });
@@ -1149,9 +1159,40 @@ const ComplaintDetail = () => {
         }
       }
 
-      toast.success("Technicians reassigned successfully! Status set to Assigned.");
+      // 🔔 In-App Notifications for Reassigned Technicians & Customer
+      try {
+        for (const techId of reassignSelectedTechs) {
+          await notificationService.insertNotification(
+            techId,
+            ticket.id,
+            "assignment",
+            "Complaint Reassigned",
+            `You have been assigned to Complaint #${slicedId} (${ticket.title || 'Service Ticket'}). Lead: ${leadName}.`,
+            3,
+            `/complaints/${ticket.id}`,
+            user?.id
+          );
+        }
+        if (ticket.customer_id) {
+          await notificationService.insertNotification(
+            ticket.customer_id,
+            ticket.id,
+            "assignment",
+            "Technician Reassigned",
+            `Technician ${leadName} has been assigned to your complaint #${slicedId}.`,
+            3,
+            `/complaints/${ticket.id}`,
+            user?.id
+          );
+        }
+      } catch (notifErr) {
+        console.warn("Reassign notification skipped:", notifErr);
+      }
+
+      toast.success("Technicians reassigned successfully! Ticket dispatched to site in Phase 3.");
       setShowReassignModal(false);
       setReassignReason("");
+      setActivePhase(3);
       queryClient.invalidateQueries({ queryKey: ['complaint', id] });
       queryClient.invalidateQueries({ queryKey: ['complaints'] });
       refetch();
@@ -1380,8 +1421,8 @@ const ComplaintDetail = () => {
     const generatedHpCode = ticket.happiness_code || Math.floor(10000 + Math.random() * 90000).toString();
 
     updateMutation.mutate({
-      status: 'completed',
-      current_phase: 6,
+      status: 'pending_verification',
+      current_phase: 5,
       triage_outcome: 'remote_fixed',
       resolution: remoteResolutionNotes.trim(),
       resolution_notes: remoteResolutionNotes.trim(),
@@ -1509,12 +1550,37 @@ const ComplaintDetail = () => {
     }
   };
 
+  const getValidIndianCoords = (lat?: number | null, lng?: number | null) => {
+    if (typeof lat === 'number' && typeof lng === 'number' && lat >= 6 && lat <= 38 && lng >= 68 && lng <= 98) {
+      return { lat, lng };
+    }
+    return null;
+  };
+
+  const getDestinationParam = (ticketObj: any): string | null => {
+    const cleanAddress = (
+      ticketObj?.location || 
+      ticketObj?.address || 
+      ticketObj?.site_address || 
+      ticketObj?.customer_locations?.address || 
+      ticketObj?.profiles?.address || 
+      ""
+    ).trim();
+    // Prioritize clean customer address (which Google Maps resolves with high precision in India)
+    if (cleanAddress && cleanAddress !== "Site address not specified" && cleanAddress.toLowerCase() !== "on-site") {
+      return encodeURIComponent(cleanAddress);
+    }
+    const validCoords = getValidIndianCoords(ticketObj?.customer_lat, ticketObj?.customer_lng);
+    if (validCoords) {
+      return `${validCoords.lat},${validCoords.lng}`;
+    }
+    return null;
+  };
+
   const confirmStartJourneyWithCoords = async (lat: number, lng: number) => {
     const startLocJson = JSON.stringify({ lat, lng });
 
-    const destination = (ticket.customer_lat && ticket.customer_lng)
-      ? `${ticket.customer_lat},${ticket.customer_lng}`
-      : ticket.location ? encodeURIComponent(ticket.location) : null;
+    const destination = getDestinationParam(ticket);
 
     if (destination) {
       const mapsUrl = `https://www.google.com/maps/dir/?api=1&origin=${lat},${lng}&destination=${destination}&travelmode=driving`;
@@ -1621,9 +1687,7 @@ const ComplaintDetail = () => {
       }
     }
 
-    const destination = (ticket.customer_lat && ticket.customer_lng)
-      ? `${ticket.customer_lat},${ticket.customer_lng}`
-      : ticket.location ? encodeURIComponent(ticket.location) : null;
+    const destination = getDestinationParam(ticket);
 
     if (destination) {
       let mapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${destination}&travelmode=driving`;
@@ -2024,8 +2088,8 @@ const ComplaintDetail = () => {
       const generatedHappinessCode = Math.floor(10000 + Math.random() * 90000).toString();
 
       await updateMutation.mutateAsync({
-        status: "completed",
-        current_phase: 6,
+        status: "pending_verification",
+        current_phase: 5,
         resolution: resolutionNote.trim(),
         signature_url: signatureUrl,
         technician_evidence: resolutionEvidenceUrls.length > 0 ? resolutionEvidenceUrls : null,
@@ -2247,8 +2311,7 @@ const ComplaintDetail = () => {
         current_phase: 6,
         closed_at: nowIso,
         closure_timestamp: nowIso,
-        closed_by: currentUserFullName || user?.email || "Admin (Force Close)",
-        force_closed: true
+        closed_by: currentUserFullName || user?.email || "Admin (Force Close)"
       };
 
       // If feedback was entered in the form, also save it alongside force closure
@@ -2336,9 +2399,8 @@ const ComplaintDetail = () => {
         }
 
         await updateMutation.mutateAsync({
-          status: "verified",
+          status: "closed",
           current_phase: 6,
-          closed_at: new Date().toISOString(),
           closure_timestamp: new Date().toISOString(),
           closed_by: currentUserFullName || user?.email || "Supervisor"
         } as any);
@@ -2520,7 +2582,7 @@ const ComplaintDetail = () => {
     }
 
     updateMutation.mutate({
-      status: "verified",
+      status: "closed",
       current_phase: 6,
       closure_timestamp: new Date().toISOString(),
       closed_by: currentUserFullName
@@ -2570,7 +2632,12 @@ const ComplaintDetail = () => {
       }
     }
 
-    updateMutation.mutate({ status: "verified", current_phase: 6 } as any);
+    updateMutation.mutate({
+      status: "closed",
+      current_phase: 6,
+      closure_timestamp: new Date().toISOString(),
+      closed_by: currentUserFullName
+    } as any);
     setShowVerification(false);
   };
 
@@ -2665,13 +2732,11 @@ const ComplaintDetail = () => {
   };
 
   const openNavigation = () => {
-    if ((!ticket.location || !ticket.location.trim()) && (!ticket.customer_lat || !ticket.customer_lng)) {
+    const destination = getDestinationParam(ticket);
+    if (!destination) {
       toast.error("❌ Customer location details not available");
       return;
     }
-    const destination = (ticket.customer_lat && ticket.customer_lng)
-      ? `${ticket.customer_lat},${ticket.customer_lng}`
-      : encodeURIComponent(ticket.location.trim());
 
     // Omit origin so Google Maps automatically routes from user's current location.
     // This avoids frontend location prompt delays and async popup blocker issues.
@@ -3435,6 +3500,8 @@ const ComplaintDetail = () => {
                 const initialLead = ticket.complaint_technicians?.find((ct: any) => ct.is_lead)?.technician_id || initialIds[0] || null;
                 setReassignLeadTechId(initialLead);
                 setReassignReason(ticket.reassignment_reason || "");
+                setReassignScheduledDate(ticket.scheduled_date || new Date().toISOString().split("T")[0]);
+                setReassignScheduledTime(ticket.scheduled_time || "10:00:00");
                 setShowReassignModal(true);
               }}
             >
@@ -3500,16 +3567,13 @@ const ComplaintDetail = () => {
           </p>
           <button 
             onClick={() => {
-              const address = ticket.location || (ticket as any).address || "";
-              const lat = ticket.customer_lat;
-              const lng = ticket.customer_lng;
-              let url = "#";
-              if (lat && lng) {
-                url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving`;
-              } else if (address) {
-                url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`;
+              const destination = getDestinationParam(ticket);
+              if (!destination) {
+                toast.error("Site address not available");
+                return;
               }
-              if (url !== "#") window.open(url, '_blank');
+              const url = `https://www.google.com/maps/dir/?api=1&destination=${destination}&travelmode=driving`;
+              window.open(url, '_blank');
             }}
             className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl font-semibold flex items-center justify-center gap-2"
           >
@@ -4179,9 +4243,47 @@ const ComplaintDetail = () => {
                   </span>
                 </div>
               </div>
-
+              
+              {/* Reassignment Notice - Show previous data for reference */}
+              {isReassigned && (
+                <div className="p-4 rounded-xl bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 text-xs space-y-3">
+                  <p className="font-bold text-amber-800 dark:text-amber-300 flex items-center gap-1.5">
+                    <RotateCcw className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                    Reassigned Ticket - Previous Work Reference
+                  </p>
+                  <p className="text-amber-900 dark:text-amber-100">
+                    This ticket was reassigned on <strong>{new Date(ticket.reassigned_at).toLocaleString()}</strong>. 
+                    The previous technician's work is shown below for reference. Please review before proceeding.
+                  </p>
+                  
+                  {(ticket.pir_findings || ticket.resolution || ticket.resolution_notes) && (
+                    <div className="space-y-2">
+                      {ticket.pir_findings && (
+                        <div className="bg-white/50 dark:bg-slate-900/50 p-3 rounded-lg border border-amber-200 dark:border-amber-700">
+                          <p className="text-[10px] font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wider mb-1">Previous PIR Findings</p>
+                          <p className="text-xs text-slate-700 dark:text-slate-300 whitespace-pre-wrap">{ticket.pir_findings}</p>
+                        </div>
+                      )}
+                      {(ticket.resolution || ticket.resolution_notes) && (
+                        <div className="bg-white/50 dark:bg-slate-900/50 p-3 rounded-lg border border-amber-200 dark:border-amber-700">
+                          <p className="text-[10px] font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wider mb-1">Previous Resolution Notes</p>
+                          <p className="text-xs text-slate-700 dark:text-slate-300 whitespace-pre-wrap">{ticket.resolution || ticket.resolution_notes}</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  
+                  {ticket.reassignment_reason && (
+                    <div className="bg-white/50 dark:bg-slate-900/50 p-3 rounded-lg border border-amber-200 dark:border-amber-700">
+                      <p className="text-[10px] font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wider mb-1">Reassignment Reason</p>
+                      <p className="text-xs text-slate-700 dark:text-slate-300 whitespace-pre-wrap">{ticket.reassignment_reason}</p>
+                    </div>
+                  )}
+                </div>
+              )}
+              
               {/* PIR Summary Card */}
-              {ticket.pir_findings && (
+              {ticket.pir_findings && !isReassigned && (
                 <div className="p-3.5 rounded-lg bg-emerald-50/70 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800 text-xs space-y-1.5">
                   <div className="flex items-center gap-2 text-emerald-800 dark:text-emerald-300 font-semibold">
                     <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
@@ -4226,7 +4328,26 @@ const ComplaintDetail = () => {
               )}
 
               {isLeadTechnician ? (
-                !showResolution && !ticket.signoff_timestamp ? (
+                ticket.status === 'pending_verification' || ticket.status === 'resolution_submitted' ? (
+                  <div className="p-6 bg-green-50 border-2 border-green-300 rounded-xl text-center">
+                    <CheckCircle2 className="w-16 h-16 text-green-600 mx-auto mb-4" />
+                    <h3 className="text-xl font-bold text-green-900 mb-2">
+                      Resolution Submitted Successfully!
+                    </h3>
+                    <p className="text-green-700">
+                      Your resolution has been submitted and is awaiting admin verification.
+                      Phase 5 is complete.
+                    </p>
+                    <div className="mt-4 p-3 bg-white/50 rounded-lg">
+                      <p className="text-sm text-green-800">
+                        <strong>Status:</strong> Pending Verification
+                      </p>
+                      <p className="text-sm text-green-800">
+                        <strong>Submitted:</strong> {new Date(ticket.updated_at).toLocaleString()}
+                      </p>
+                    </div>
+                  </div>
+                ) : !showResolution && !ticket.signoff_timestamp ? (
                   /* Primary Add/Update Resolution Action Card - ONLY visible to Lead Technician */
                   <div className="flex flex-col sm:flex-row items-center justify-between gap-4 p-4 rounded-xl bg-white dark:bg-slate-900 border border-success/30 shadow-xs">
                     <div>
@@ -4514,22 +4635,34 @@ const ComplaintDetail = () => {
                   <span>⚠️ Only the Lead Technician ({leadTechnicianName}) can submit the resolution.</span>
                 </div>
               ) : (
-                /* Admin / Supervisor see read-only status card */
-                <div className="p-4 rounded-xl bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 text-blue-800 dark:text-blue-300 text-sm font-medium flex items-center gap-3">
-                  <Clock className="w-5 h-5 text-blue-600 dark:text-blue-400 shrink-0" />
-                  <div>
-                    <p className="font-semibold text-foreground text-sm">⏳ Awaiting technician resolution submission.</p>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      Assigned to Lead Technician: <strong>{leadTechnicianName}</strong>. The resolution form is strictly accessible only to the Lead Technician.
-                    </p>
+                /* Admin / Supervisor view in Phase 5 */
+                ticket.status === 'pending_verification' || ticket.status === 'resolution_submitted' ? (
+                  <div className="p-4 rounded-xl bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300 text-sm font-medium flex items-center gap-3">
+                    <Clock className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0" />
+                    <div>
+                      <p className="font-semibold text-foreground text-sm">Resolution submitted. Awaiting admin verification.</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Lead Technician <strong>{leadTechnicianName}</strong> has submitted the final resolution and customer sign-off. Please proceed to Phase 6 to verify and close the ticket.
+                      </p>
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <div className="p-4 rounded-xl bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 text-blue-800 dark:text-blue-300 text-sm font-medium flex items-center gap-3">
+                    <Clock className="w-5 h-5 text-blue-600 dark:text-blue-400 shrink-0" />
+                    <div>
+                      <p className="font-semibold text-foreground text-sm">⏳ Awaiting technician resolution submission.</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Assigned to Lead Technician: <strong>{leadTechnicianName}</strong>. The resolution form is strictly accessible only to the Lead Technician.
+                      </p>
+                    </div>
+                  </div>
+                )
               )}
             </motion.div>
           )}
 
           {/* Phase 6: QA Verification, Customer Satisfaction & Final Closure */}
-          {currentPhase === 6 && (
+          {(currentPhase === 6 || ticket.status === 'pending_verification' || ticket.status === 'resolution_submitted') && (
             <motion.div
               id="phase-6-verification-section"
               initial={{ opacity: 0, y: 10 }}
@@ -4593,22 +4726,26 @@ const ComplaintDetail = () => {
               )}
 
               {/* 48-Hour Post-Closure Reassignment Action Strip (Admin / Supervisor) */}
-              {isSupervisorOrAdmin && (ticket.status === 'closed' || Boolean(ticket.closed_at)) && (
+              {isSupervisorOrAdmin && (isPhase6ClosedOrVerified || ticket.status === 'closed' || Boolean(ticket.closure_timestamp) || Boolean(ticket.closed_at)) && (
                 <div className="p-3.5 rounded-xl border border-primary/30 bg-primary/5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-xs">
                   <div className="flex items-center gap-2.5">
                     <div className="p-1.5 rounded-lg bg-primary/10 text-primary shrink-0">
                       <RotateCcw className="w-4 h-4" />
                     </div>
                     <div>
-                      <span className="font-semibold text-foreground">48-Hour Post-Closure Reassignment Window:</span>{" "}
-                      {getReassignRemainingHours() !== null ? (
-                        <span className="text-primary font-bold">{getReassignRemainingHours()} hours remaining from closure time</span>
+                      <span className="font-semibold text-foreground">48-Hour Post-Closure Reassignment:</span>{" "}
+                      {canReassign() ? (
+                        getReassignRemainingHours() !== null ? (
+                          <span className="text-primary font-bold">{getReassignRemainingHours()} hours remaining to reassign this ticket after closure</span>
+                        ) : (
+                          <span className="text-muted-foreground">Reassignment available for 48 hours after closure</span>
+                        )
                       ) : (
-                        <span className="text-muted-foreground">Reassignment available for 48 hours after closure</span>
+                        <span className="text-destructive font-medium">The 48-hour post-closure reassignment window has expired. Reassignment is locked.</span>
                       )}
                     </div>
                   </div>
-                  {canReassign() && (
+                  {canReassign() ? (
                     <Button
                       size="sm"
                       onClick={() => {
@@ -4619,12 +4756,18 @@ const ComplaintDetail = () => {
                         const initialLead = ticket.complaint_technicians?.find((ct: any) => ct.is_lead)?.technician_id || initialIds[0] || null;
                         setReassignLeadTechId(initialLead);
                         setReassignReason(ticket.reassignment_reason || "");
+                        setReassignScheduledDate(ticket.scheduled_date || new Date().toISOString().split("T")[0]);
+                        setReassignScheduledTime(ticket.scheduled_time || "10:00:00");
                         setShowReassignModal(true);
                       }}
                       className="gradient-primary text-white font-semibold text-xs h-8 px-3.5 shrink-0"
                     >
                       <RotateCcw className="w-3.5 h-3.5 mr-1.5" /> Reassign Technicians
                     </Button>
+                  ) : (
+                    <span className="text-xs text-muted-foreground bg-muted px-2.5 py-1 rounded-md border font-medium shrink-0">
+                      🔒 Window Expired
+                    </span>
                   )}
                 </div>
               )}
@@ -5042,6 +5185,7 @@ const ComplaintDetail = () => {
         <PhaseTimeline 
           currentPhase={currentPhase as any || 1} 
           status={ticket.status} 
+          isPhase6Verified={isPhase6ClosedOrVerified}
           activePhase={activePhase}
           onPhaseClick={(phase) => setActivePhase(phase)}
         />
@@ -5795,7 +5939,7 @@ const ComplaintDetail = () => {
             </DialogHeader>
 
             {/* 48h Post-Closure Notice Banner */}
-            {(ticket?.status === 'closed' || ticket?.status === 'resolved' || ticket?.status === 'qa_verified' || ticket?.closed_at) && (
+            {(isPhase6ClosedOrVerified || ticket?.status === 'closed' || Boolean(ticket?.closure_timestamp) || Boolean(ticket?.closed_at)) && (
               <div className="mt-3 p-3 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-300 text-xs flex items-start gap-2">
                 <Clock className="w-4 h-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
                 <div>
@@ -5803,9 +5947,30 @@ const ComplaintDetail = () => {
                   {getReassignRemainingHours() !== null ? (
                     <span><strong>{getReassignRemainingHours()} hours remaining</strong> to reassign this ticket after closure. Once 48 hours pass, reassignment will be locked.</span>
                   ) : (
-                    <span>Ticket was previously closed. Reassignment is available within 48 hours of closure.</span>
+                    <span>Ticket was previously closed. Reassignment is available for 48 hours after closure.</span>
                   )}
                 </div>
+              </div>
+            )}
+
+            {/* Reference: PIR & Resolution Notes for Reassignment */}
+            {(ticket.pir_findings || ticket.resolution || ticket.resolution_notes) && (
+              <div className="mt-4 p-4 rounded-xl border border-slate-200 bg-slate-50/80 space-y-3">
+                <p className="text-xs font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+                  <FileText className="w-3.5 h-3.5 text-slate-500" /> Reference: Previous PIR & Resolution Notes
+                </p>
+                {ticket.pir_findings && (
+                  <div className="bg-white rounded-lg p-3 border border-slate-200">
+                    <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">PIR Findings</p>
+                    <p className="text-xs text-slate-700 whitespace-pre-wrap break-words">{ticket.pir_findings}</p>
+                  </div>
+                )}
+                {(ticket.resolution || ticket.resolution_notes) && (
+                  <div className="bg-white rounded-lg p-3 border border-slate-200">
+                    <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Resolution Notes</p>
+                    <p className="text-xs text-slate-700 whitespace-pre-wrap break-words">{ticket.resolution || ticket.resolution_notes}</p>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -6037,6 +6202,43 @@ const ComplaintDetail = () => {
               </div>
             </div>
 
+            {/* Scheduled Visit Date & Time for Reassigned Team */}
+            <div className="p-3.5 rounded-xl border bg-muted/20 space-y-3">
+              <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                <Calendar className="w-3.5 h-3.5 text-primary" /> Scheduled Visit Schedule <span className="text-destructive">*</span>
+              </span>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-semibold text-muted-foreground">Visit Date <span className="text-destructive">*</span></label>
+                  <Input
+                    type="date"
+                    value={reassignScheduledDate}
+                    onChange={(e) => setReassignScheduledDate(e.target.value)}
+                    min={new Date().toISOString().split("T")[0]}
+                    className="text-xs h-9 bg-card"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-semibold text-muted-foreground">Visit Time Slot</label>
+                  <Select
+                    value={reassignScheduledTime}
+                    onValueChange={(val) => setReassignScheduledTime(val)}
+                  >
+                    <SelectTrigger className="text-xs h-9 bg-card">
+                      <SelectValue placeholder="Select visit time slot" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="09:00:00">09:00 AM - 11:00 AM (Morning)</SelectItem>
+                      <SelectItem value="11:00:00">11:00 AM - 01:00 PM (Mid-Day)</SelectItem>
+                      <SelectItem value="14:00:00">02:00 PM - 04:00 PM (Afternoon)</SelectItem>
+                      <SelectItem value="16:00:00">04:00 PM - 06:00 PM (Evening)</SelectItem>
+                      <SelectItem value="18:00:00">06:00 PM - 08:00 PM (Late Evening)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            </div>
+
             {/* Reassignment Reason with Quick Presets */}
             <div className="space-y-2">
               <div className="flex items-center justify-between">
@@ -6106,7 +6308,8 @@ const ComplaintDetail = () => {
                 isReassigning ||
                 reassignReason.trim().length < 10 ||
                 reassignSelectedTechs.length === 0 ||
-                !reassignLeadTechId
+                !reassignLeadTechId ||
+                !reassignScheduledDate
               }
             >
               {isReassigning ? (

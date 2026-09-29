@@ -314,13 +314,15 @@ const TechnicianDashboard = () => {
 
   const handleOpenMap = (e: React.MouseEvent, locationAddress?: string, lat?: number | null, lng?: number | null) => {
     e.stopPropagation();
-    if ((!locationAddress || !locationAddress.trim()) && (!lat || !lng)) {
-      toast.error("Customer location coordinates not available");
+    const cleanAddress = locationAddress?.trim();
+    const hasValidCoords =
+      typeof lat === 'number' && typeof lng === 'number' &&
+      lat >= 6 && lat <= 38 && lng >= 68 && lng <= 98;
+    if (!cleanAddress && !hasValidCoords) {
+      toast.error("Customer location not available");
       return;
     }
-    const destination = (lat && lng)
-      ? `${lat},${lng}`
-      : encodeURIComponent(locationAddress?.trim() || "");
+    const destination = cleanAddress ? encodeURIComponent(cleanAddress) : `${lat},${lng}`;
     const mapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${destination}&travelmode=driving`;
     window.open(mapsUrl, "_blank");
     toast.success("Opening Google Maps navigation...");
@@ -367,7 +369,6 @@ const TechnicianDashboard = () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-            <PWAInstallButton variant="inline" className="h-10 text-xs shadow-sm bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white" />
             <Button
               onClick={() => navigate("/daily-schedule")}
               className="gradient-primary text-white hover:opacity-95 rounded-xl h-10 px-4 gap-2 font-bold shadow-glow text-xs"
@@ -979,7 +980,16 @@ const TechnicianDashboard = () => {
                   customerPhone={custPhone}
                   locationAddress={fullAddress}
                   isLeadOrAdmin={isLead}
+                  currentPhase={inst.current_phase}
+                  status={inst.status}
+                  dispatchedAt={inst.dispatched_at}
+                  arrivalTimestamp={inst.arrival_time}
+                  arrivalLat={inst.arrival_gps_lat}
+                  arrivalLng={inst.arrival_gps_lng}
                   onArrivalLogged={() => {
+                    queryClient.invalidateQueries({ queryKey: ["technician-installations"] });
+                  }}
+                  onDispatched={() => {
                     queryClient.invalidateQueries({ queryKey: ["technician-installations"] });
                   }}
                 />

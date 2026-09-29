@@ -59,6 +59,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { formatFullCustomerAddress } from "@/lib/utils";
 
 type LocationDraft = {
   location_name: string;
@@ -390,9 +391,9 @@ export default function Customers() {
 
    const primaryLocationAddress = useMemo(() => {
      const primary =
-       locationDrafts.find((d) => d.is_primary && d.location_name.trim()) ||
-       locationDrafts.find((d) => d.location_name.trim());
-     return primary?.address?.trim() || "";
+       locationDrafts.find((d) => d.is_primary && (d.location_name.trim() || d.address.trim() || d.city.trim() || d.pincode.trim())) ||
+       locationDrafts.find((d) => d.location_name.trim() || d.address.trim() || d.city.trim() || d.pincode.trim());
+     return formatFullCustomerAddress(primary) || primary?.address?.trim() || "";
    }, [locationDrafts]);
 
    const updateLocationDraft = (index: number, patch: Partial<LocationDraft>) => {
@@ -528,13 +529,19 @@ export default function Customers() {
   }, [selectedCustomer?.id, modalMode]);
 
   const saveCustomerLocations = async (customerId: string) => {
-     const filled = locationDrafts
-       .filter((d) => d.location_name.trim())
-       .map((d) => ({ ...d }));
+    const filled = locationDrafts
+      .filter((d) => d.location_name.trim() || d.address.trim() || d.city.trim() || d.pincode.trim())
+      .map((d, index) => {
+        const locName = d.location_name.trim() || (d.is_primary ? "Primary Address" : `Address ${index + 1}`);
+        return {
+          ...d,
+          location_name: locName,
+        };
+      });
 
-     if (!customerId || filled.length === 0) {
-       return false;
-     }
+    if (!customerId || filled.length === 0) {
+      return false;
+    }
 
      if (!filled.some((d) => d.is_primary)) {
        filled[0].is_primary = true;
@@ -798,8 +805,10 @@ export default function Customers() {
        if (!customerId) {
          toast.warning("Customer saved, but could not determine customer ID for locations.");
        } else {
-         const hasNamedLocation = locationDrafts.some((d) => d.location_name.trim());
-         if (hasNamedLocation) {
+         const hasAnyLocationData = locationDrafts.some(
+           (d) => d.location_name.trim() || d.address.trim() || d.city.trim() || d.pincode.trim()
+         );
+         if (hasAnyLocationData) {
            await saveCustomerLocations(customerId);
          }
        }

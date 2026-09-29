@@ -401,14 +401,38 @@ export default function Installations() {
     if (customerId) {
       const fetchLocations = async () => {
         setIsLoadingLocations(true);
-        const { data, error } = await supabase
-          .from('customer_locations')
-          .select('id, location_name, city')
-          .eq('customer_id', customerId)
-          .order('location_name');
-        console.log("Fetched Locations:", data, "Error:", error);
-        if (data) setLocations(data || []);
-        setIsLoadingLocations(false);
+        try {
+          const targetIds: string[] = [customerId];
+          const { data: custRecord } = await supabase
+            .from('customers')
+            .select('id, user_id')
+            .eq('id', customerId)
+            .maybeSingle();
+          if (custRecord?.user_id && !targetIds.includes(custRecord.user_id)) {
+            targetIds.push(custRecord.user_id);
+          }
+          const { data, error } = await supabase
+            .from('customer_locations')
+            .select('id, location_name, address, city, state, pincode, is_primary')
+            .in('customer_id', targetIds)
+            .order('is_primary', { ascending: false })
+            .order('location_name');
+          console.log("Fetched Locations:", data, "Error:", error);
+          if (data && data.length > 0) {
+            setLocations(data);
+            const primary = data.find((l: any) => l.is_primary) || data[0];
+            if (primary) {
+              setSelectedLocationId(primary.id);
+            }
+          } else {
+            setLocations([]);
+          }
+        } catch (err) {
+          console.error("Error fetching locations:", err);
+          setLocations([]);
+        } finally {
+          setIsLoadingLocations(false);
+        }
       };
       fetchLocations();
     } else {
@@ -507,6 +531,10 @@ export default function Installations() {
     if (customerType === "Existing BTL Customer") {
       if (!selectedCustomerId) {
         toast.error("Please select a customer");
+        return;
+      }
+      if (locations.length > 0 && !selectedLocationId) {
+        toast.error("Please select a service site location for this customer");
         return;
       }
     } else {
@@ -616,7 +644,7 @@ export default function Installations() {
       // 🔔 Stage 1 App Notification on Installation Creation
       try {
         const custObj = customers.find((c: any) => c.id === selectedCustomerId);
-        const recipientId = customerType === "Existing BTL Customer" ? custObj?.id : null;
+        const recipientId = customerType === "Existing BTL Customer" ? (custObj?.user_id || custObj?.id) : null;
         const instTicketId = created.ticket_id || formatInstallationTicketId(created) || "Installation";
         const adminIds = await notificationService.getAdminUserIds();
 
@@ -813,9 +841,11 @@ export default function Installations() {
           );
         }
 
-        if (instObj?.customer_id) {
+        const custObj = customers.find((c: any) => c.id === instObj?.customer_id) || (instObj as any)?.customer;
+        const recipientCustId = custObj?.user_id || instObj?.customer_id;
+        if (recipientCustId) {
           await notificationService.insertNotification(
-            instObj.customer_id,
+            recipientCustId,
             assignInstallationId,
             "assignment",
             "Technician Assigned",
@@ -1707,9 +1737,10 @@ export default function Installations() {
                       {filteredInstallations.map((item) => {
                         const custName = item.customer?.full_name || item.non_btl_customer_name || "N/A";
                         const siteAddress =
+                          [item.location?.address, item.location?.city, item.location?.state, item.location?.pincode].filter(Boolean).join(", ") ||
                           item.location?.location_name ||
-                          item.location?.address ||
                           item.non_btl_address ||
+                          (item.customer as any)?.address ||
                           "Site address not specified";
 
                         const assignedTechs = (item.installation_technicians || []).map((it: any) => {
@@ -1881,7 +1912,7 @@ export default function Installations() {
                                   <Button
                                     variant="outline"
                                     size="sm"
-                                    onClick={() => window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(siteAddress)}`, '_blank')}
+                                    onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(siteAddress)}&travelmode=driving`, '_blank')}
                                     title="Navigate with Google Maps"
                                     className="h-8 px-2 text-xs text-emerald-700 border-emerald-200 bg-emerald-50/50 hover:bg-emerald-100/70 gap-1 font-semibold"
                                   >
@@ -1918,9 +1949,10 @@ export default function Installations() {
                 {filteredInstallations.map((item) => {
                   const custName = item.customer?.full_name || item.non_btl_customer_name || "N/A";
                   const siteAddress =
+                    [item.location?.address, item.location?.city, item.location?.state, item.location?.pincode].filter(Boolean).join(", ") ||
                     item.location?.location_name ||
-                    item.location?.address ||
                     item.non_btl_address ||
+                    (item.customer as any)?.address ||
                     "Site address not specified";
 
                   const assignedTechs = (item.installation_technicians || []).map((it: any) => {
@@ -2073,7 +2105,7 @@ export default function Installations() {
                             <Button
                               variant="outline"
                               size="sm"
-                              onClick={() => window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(siteAddress)}`, '_blank')}
+                              onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(siteAddress)}&travelmode=driving`, '_blank')}
                               className="h-7 px-2 text-xs text-emerald-700 border-emerald-200 bg-emerald-50/50 hover:bg-emerald-100/70"
                             >
                               <Navigation className="w-3 h-3 text-emerald-600" />
@@ -2219,11 +2251,15 @@ export default function Installations() {
                     className="w-full h-10 px-3 py-2 text-sm bg-white border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary text-slate-800 disabled:bg-slate-100 disabled:cursor-not-allowed"
                   >
                     <option value="">-- Select Location --</option>
-                    {locations.map((l: any) => (
-                      <option key={l.id} value={l.id}>
-                        {l.location_name}{l.city ? ` - ${l.city}` : ""}
-                      </option>
-                    ))}
+                    {locations.map((l: any) => {
+                      const fullAddr = [l.address, l.city, l.state, l.pincode].filter(Boolean).join(", ");
+                      return (
+                        <option key={l.id} value={l.id}>
+                          {l.location_name ? `${l.location_name} - ` : ""}{fullAddr || l.city || "Location"}
+                          {l.is_primary ? " (Primary)" : ""}
+                        </option>
+                      );
+                    })}
                   </select>
                   {selectedCustomerId && locations.length === 0 && !isLoadingLocations && (
                     <p className="text-[11px] text-muted-foreground">
@@ -2504,7 +2540,16 @@ export default function Installations() {
                     customerPhone={viewInstallation.customer?.phone || viewInstallation.non_btl_contact_number || ""}
                     locationAddress={viewInstallation.location?.address || viewInstallation.non_btl_address || ""}
                     isLeadOrAdmin={true}
+                    currentPhase={viewInstallation.current_phase}
+                    status={viewInstallation.status}
+                    dispatchedAt={viewInstallation.dispatched_at}
+                    arrivalTimestamp={viewInstallation.arrival_time}
+                    arrivalLat={viewInstallation.arrival_gps_lat}
+                    arrivalLng={viewInstallation.arrival_gps_lng}
                     onArrivalLogged={() => {
+                      queryClient.invalidateQueries({ queryKey: ["installations-list"] });
+                    }}
+                    onDispatched={() => {
                       queryClient.invalidateQueries({ queryKey: ["installations-list"] });
                     }}
                   />
@@ -2609,7 +2654,7 @@ export default function Installations() {
                               type="button"
                               size="sm"
                               onClick={() => {
-                                const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(resolvedAddress)}`;
+                                const mapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(resolvedAddress)}&travelmode=driving`;
                                 window.open(mapsUrl, "_blank");
                                 toast.success("Opening Google Maps Navigation...");
                               }}

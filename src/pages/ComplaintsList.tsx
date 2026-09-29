@@ -183,19 +183,37 @@ const ComplaintsList = () => {
       let allComplaints = await complaintService.getAll();
 
       if (isRole("customer")) {
-        allComplaints = allComplaints.filter(t => t.customer_id === user?.id);
-      } else if (isRole("technician")) {
+        const { data: custRec } = await supabase
+          .from('customers')
+          .select('id')
+          .eq('user_id', user?.id)
+          .maybeSingle();
+        const custTableId = custRec?.id;
+
         allComplaints = allComplaints.filter(t =>
-          t.assigned_technician === user?.name
+          t.customer_id === user?.id ||
+          (custTableId && t.customer_id === custTableId) ||
+          (user?.email && t.customer_email?.toLowerCase() === user.email.toLowerCase())
         );
+      } else if (isRole("technician")) {
+        const techName = user?.name?.toLowerCase().trim() || "";
+        allComplaints = allComplaints.filter(t => {
+          if (t.assigned_to === user?.id) return true;
+          if (techName && t.assigned_technician && t.assigned_technician.toLowerCase().includes(techName)) return true;
+          if (t.assigned_technician === user?.id) return true;
+          if (t.complaint_technicians && t.complaint_technicians.some((ct: any) => ct.technician_id === user?.id)) return true;
+          return false;
+        });
       } else if (isRole("supervisor")) {
         const { data: profile } = await supabase
           .from('profiles')
           .select('full_name')
           .eq('id', user?.id)
           .single();
-        const supervisorName = profile?.full_name || '';
-        allComplaints = allComplaints.filter(t => t.assigned_supervisor === supervisorName);
+        const supervisorName = (profile?.full_name || user?.name || '').toLowerCase().trim();
+        allComplaints = allComplaints.filter(t => 
+          t.assigned_supervisor && t.assigned_supervisor.toLowerCase().includes(supervisorName)
+        );
       }
       return allComplaints;
     },
@@ -1073,9 +1091,11 @@ const ComplaintsList = () => {
                                   size="sm"
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    const dest = ticket.customer_lat && ticket.customer_lng
-                                      ? `${ticket.customer_lat},${ticket.customer_lng}`
-                                      : encodeURIComponent(ticket.location?.trim() || '');
+                                    const cleanLoc = ticket.location?.trim();
+                                    const hasCoords =
+                                      typeof ticket.customer_lat === 'number' && typeof ticket.customer_lng === 'number' &&
+                                      ticket.customer_lat >= 6 && ticket.customer_lat <= 38 && ticket.customer_lng >= 68 && ticket.customer_lng <= 98;
+                                    const dest = cleanLoc ? encodeURIComponent(cleanLoc) : (hasCoords ? `${ticket.customer_lat},${ticket.customer_lng}` : '');
                                     if (dest) {
                                       window.open(`https://www.google.com/maps/dir/?api=1&destination=${dest}&travelmode=driving`, '_blank');
                                     }
@@ -1233,9 +1253,11 @@ const ComplaintsList = () => {
                              type="button"
                              onClick={(e) => {
                                e.stopPropagation();
-                               const dest = ticket.customer_lat && ticket.customer_lng
-                                 ? `${ticket.customer_lat},${ticket.customer_lng}`
-                                 : encodeURIComponent(ticket.location?.trim() || '');
+                               const cleanLoc = ticket.location?.trim();
+                               const hasCoords =
+                                 typeof ticket.customer_lat === 'number' && typeof ticket.customer_lng === 'number' &&
+                                 ticket.customer_lat >= 6 && ticket.customer_lat <= 38 && ticket.customer_lng >= 68 && ticket.customer_lng <= 98;
+                               const dest = cleanLoc ? encodeURIComponent(cleanLoc) : (hasCoords ? `${ticket.customer_lat},${ticket.customer_lng}` : '');
                                if (dest) {
                                  window.open(`https://www.google.com/maps/dir/?api=1&destination=${dest}&travelmode=driving`, '_blank');
                                }

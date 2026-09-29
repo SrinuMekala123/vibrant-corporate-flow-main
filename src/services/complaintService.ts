@@ -1038,9 +1038,11 @@ export const complaintService = {
             'Assigned': 'in-progress',
             'completed': 'resolved',
             'resolved': 'resolved',
-            'closed': 'closed'
+            'closed': 'closed',
+            'verified': 'closed',
+            'qa_verified': 'closed'
           };
-          const fallbackStatus = legacyStatusMap[payload.status] || (payload.status === 'closed' ? 'closed' : 'in-progress');
+          const fallbackStatus = legacyStatusMap[payload.status] || (payload.status === 'closed' || payload.status === 'verified' || payload.status === 'qa_verified' ? 'closed' : 'in-progress');
           if (fallbackStatus && fallbackStatus !== payload.status) {
             console.warn(`Falling back status from '${payload.status}' to '${fallbackStatus}' due to check constraint`);
             payload.status = fallbackStatus;
@@ -1153,7 +1155,7 @@ export const complaintService = {
     }
 
     const complaintUpdates: any = {
-      status: "in-progress",
+      status: "assigned",
       current_phase: 3,
       assigned_to: leadTechId,
       ...(leadTechName ? { assigned_technician: leadTechName } : {}),
@@ -1161,13 +1163,31 @@ export const complaintService = {
       ...(scheduledTime ? { scheduled_time: scheduledTime } : {}),
       ...(supervisorNotes ? { supervisor_notes: supervisorNotes } : {}),
       triage_outcome: "field_required",
+      closure_timestamp: null,
+      closed_at: null,
+      closed_by: null,
+      signature_url: null,
+      signoff_timestamp: null,
       resolution: null,
       resolution_notes: null,
+      pir_findings: null,
+      pir_audio_url: null,
+      technician_evidence: null,
       resolved_remotely: false,
       resolution_type: null,
       resolved_at: null,
       resolved_by: null,
-      signoff_timestamp: null,
+      happiness_code: null,
+      happiness_code_sent_at: null,
+      happiness_code_verified: false,
+      customer_satisfaction: null,
+      feedback_comments: null,
+      feedback_timestamp: null,
+      feedback_collected: false,
+      start_journey_timestamp: null,
+      arrival_timestamp: null,
+      arrival_lat: null,
+      arrival_lng: null,
       updated_at: new Date().toISOString(),
     };
 
@@ -1209,7 +1229,9 @@ export const complaintService = {
   reassignTechnicians: async (
     complaintId: string,
     technicianInput: Array<string | { technician_id: string; is_lead?: boolean }>,
-    reason: string
+    reason: string,
+    scheduledDate?: string | null,
+    scheduledTime?: string | null
   ): Promise<void> => {
     if (!reason.trim() || reason.trim().length < 10) {
       throw new Error("Reassignment reason must be at least 10 characters");
@@ -1239,16 +1261,49 @@ export const complaintService = {
 
     const updates: any = {
       reassignment_reason: reason.trim(),
+      reassigned_at: new Date().toISOString(),
       assigned_to: leadTechId,
       ...(leadTechName ? { assigned_technician: leadTechName } : {}),
       status: "assigned",
       current_phase: 3,
+      triage_outcome: "field_required",
+      start_journey_timestamp: null,
+      arrival_timestamp: null,
+      arrival_lat: null,
+      arrival_lng: null,
+      closure_timestamp: null,
+      closed_at: null,
+      closed_by: null,
+      verified_by: null,
+      verified_at: null,
+      force_closed: false,
+      force_closed_by: null,
+      force_close_reason: null,
+      force_close_comments: null,
+      customer_satisfaction: null,
+      feedback_comments: null,
+      feedback_contact_method: null,
+      feedback_timestamp: null,
       happiness_code: null,
       happiness_code_sent_at: null,
       happiness_code_verified: false,
       feedback_collected: false,
+      signature_url: null,
+      signoff_timestamp: null,
+      resolution: null,
+      resolution_notes: null,
+      pir_findings: null,
+      pir_audio_url: null,
+      technician_evidence: null,
+      resolved_remotely: false,
+      resolution_type: null,
+      resolved_at: null,
+      resolved_by: null,
       updated_at: new Date().toISOString(),
     };
+
+    if (scheduledDate) updates.scheduled_date = scheduledDate;
+    if (scheduledTime) updates.scheduled_time = scheduledTime;
 
     try {
       const { error: updateError } = await supabase.from("complaints").update(updates).eq("id", complaintId);
@@ -1257,6 +1312,7 @@ export const complaintService = {
       if (err?.message?.includes("column") || err?.code === "42703" || err?.code === "PGRST204") {
         const stripped = { ...updates };
         delete stripped.reassignment_reason;
+        delete stripped.reassigned_at;
         delete stripped.closed_at;
         delete stripped.closure_timestamp;
         delete stripped.happiness_code;
@@ -1266,6 +1322,12 @@ export const complaintService = {
         delete stripped.feedback_comments;
         delete stripped.feedback_contact_method;
         delete stripped.feedback_timestamp;
+        delete stripped.verified_by;
+        delete stripped.verified_at;
+        delete stripped.force_closed;
+        delete stripped.force_closed_by;
+        delete stripped.force_close_reason;
+        delete stripped.force_close_comments;
         const { error: retryErr } = await supabase.from("complaints").update(stripped).eq("id", complaintId);
         if (retryErr) throw retryErr;
       } else {

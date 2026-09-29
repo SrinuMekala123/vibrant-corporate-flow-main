@@ -58,11 +58,11 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
       )}
 
       {variant === 'sidebar' && (
-        <div className={`px-1 py-1.5 ${className}`}>
+        <div className={`px-1 py-1.5 relative group/container ${className}`}>
           <button
             type="button"
             onClick={installApp}
-            className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl bg-gradient-to-r from-[#0083a2]/10 to-cyan-50 border border-[#0083a2]/30 text-[#0083a2] hover:bg-[#0083a2]/20 transition-all text-xs font-bold shadow-xs group"
+            className="w-full flex items-center gap-2.5 px-3 py-2.5 pr-8 rounded-xl bg-gradient-to-r from-[#0083a2]/10 to-cyan-50 border border-[#0083a2]/30 text-[#0083a2] hover:bg-[#0083a2]/20 transition-all text-xs font-bold shadow-xs group"
           >
             <div className="w-7 h-7 rounded-lg bg-[#0083a2] text-white flex items-center justify-center shrink-0 shadow-xs group-hover:scale-105 transition-transform">
               {isDesktop ? <Laptop className="w-4 h-4" /> : <Smartphone className="w-4 h-4" />}
@@ -72,6 +72,17 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
               <p className="text-[10px] text-slate-500 font-normal truncate">{isDesktop ? 'Pin to Taskbar & Desktop' : 'Add to Home Screen'}</p>
             </div>
             <Download className="w-3.5 h-3.5 text-[#0083a2] opacity-70 group-hover:translate-y-0.5 transition-transform" />
+          </button>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              markAsInstalled();
+            }}
+            className="absolute top-3.5 right-2 p-1 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-200/80 transition-all"
+            title="Already installed on this device? Click to dismiss"
+          >
+            <X className="w-3.5 h-3.5" />
           </button>
         </div>
       )}

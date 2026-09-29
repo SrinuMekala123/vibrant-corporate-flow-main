@@ -29,6 +29,7 @@ export interface Installation {
   arrival_gps_lat?: number | null;
   arrival_gps_lng?: number | null;
   arrival_time?: string | null;
+  dispatched_at?: string | null;
   completed_at?: string | null;
   verified_at?: string | null;
   verified_by?: string | null;
@@ -56,6 +57,8 @@ export interface Installation {
     location_name: string;
     address: string;
     city?: string;
+    state?: string | null;
+    pincode?: string | null;
   } | null;
   installation_technicians?: {
     id: string;
@@ -152,29 +155,28 @@ export const generateInstallationTicketId = async (): Promise<string> => {
   let maxNumber = 0;
 
   try {
-    const { data: existingInstallations } = await supabase
+    const { data: latestRow } = await supabase
       .from('installations')
-      .select('id, ticket_id, created_at');
+      .select('ticket_id')
+      .ilike('ticket_id', `${prefix}%`)
+      .order('ticket_id', { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
-    if (existingInstallations && existingInstallations.length > 0) {
-      existingInstallations.forEach((installation) => {
-        if (installation.ticket_id && typeof installation.ticket_id === "string" && installation.ticket_id.startsWith(prefix)) {
-          const numericPart = installation.ticket_id.replace(prefix, "");
-          const num = parseInt(numericPart, 10);
-          if (!isNaN(num) && num > maxNumber) {
-            maxNumber = num;
-          }
-        }
-      });
-
-      if (maxNumber === 0) {
-        const thisYear = existingInstallations.filter(
-          (inst) => !inst.created_at || new Date(inst.created_at).getFullYear() === currentYear
-        );
-        if (thisYear.length > maxNumber) {
-          maxNumber = thisYear.length;
-        }
+    if (latestRow?.ticket_id) {
+      const numericPart = latestRow.ticket_id.replace(prefix, "");
+      const num = parseInt(numericPart, 10);
+      if (!isNaN(num) && num > maxNumber) {
+        maxNumber = num;
       }
+    }
+
+    const { count } = await supabase
+      .from('installations')
+      .select('*', { count: 'exact', head: true });
+
+    if (typeof count === 'number' && count > maxNumber) {
+      maxNumber = count;
     }
   } catch (error) {
     console.error('Error fetching existing installation tickets:', error);
@@ -561,7 +563,7 @@ export const installationService = {
         'service_charge',
         'payment_status',
         'force_closed',
-        'force_closed_at',
+        'force_closed',
         'force_closed_by',
         'force_close_reason',
         'force_close_comments',
@@ -700,6 +702,18 @@ export const installationService = {
       happiness_code: null,
       happiness_code_sent_at: null,
       happiness_code_verified: false,
+      verified_at: null,
+      verified_by: null,
+      force_closed: false,
+      force_closed_by: null,
+      customer_satisfaction: null,
+      customer_feedback_comments: null,
+      customer_signature: null,
+      completed_at: null,
+      arrival_time: null,
+      arrival_gps_lat: null,
+      arrival_gps_lng: null,
+      dispatched_at: null,
       updated_at: new Date().toISOString(),
     };
 
