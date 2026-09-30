@@ -1737,10 +1737,9 @@ export default function Installations() {
                       {filteredInstallations.map((item) => {
                         const custName = item.customer?.full_name || item.non_btl_customer_name || "N/A";
                         const siteAddress =
+                          [item.installation_site_address, item.site_address, item.non_btl_address, item.customer?.address].filter(Boolean).join(", ") ||
                           [item.location?.address, item.location?.city, item.location?.state, item.location?.pincode].filter(Boolean).join(", ") ||
                           item.location?.location_name ||
-                          item.non_btl_address ||
-                          (item.customer as any)?.address ||
                           "Site address not specified";
 
                         const assignedTechs = (item.installation_technicians || []).map((it: any) => {
@@ -3122,39 +3121,32 @@ export default function Installations() {
       {/* Delete Confirmation Dialog (Admin)                   */}
       {/* ==================================================== */}
       <Dialog open={!!deleteConfirmId} onOpenChange={(open) => !open && setDeleteConfirmId(null)}>
-        <DialogContent className="max-w-md p-6 rounded-2xl border border-slate-200 shadow-2xl bg-white">
+        <DialogContent>
           <DialogHeader>
-            <DialogTitle className="text-base font-bold text-rose-600 flex items-center gap-2">
-              <AlertTriangle className="w-5 h-5 text-rose-600" /> Confirm Deletion
-            </DialogTitle>
-            <DialogDescription className="text-xs text-slate-600 mt-2">
-              Are you sure you want to delete this installation record? This will also remove any assigned technician linkages. This action cannot be undone.
+            <DialogTitle>Delete Installation</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete this installation? This action cannot be undone.
             </DialogDescription>
           </DialogHeader>
-          <DialogFooter className="pt-4 flex items-center justify-end gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setDeleteConfirmId(null)}
-              className="text-xs"
-            >
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteConfirmId(null)} disabled={isDeleting}>
               Cancel
             </Button>
             <Button
-              type="button"
               variant="destructive"
-              size="sm"
-              disabled={isDeleting}
               onClick={handleDeleteInstallation}
-              className="text-xs font-semibold"
+              disabled={isDeleting}
             >
               {isDeleting ? (
                 <>
-                  <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> Deleting...
+                  <Loader2 className="w-4 h-4 animate-spin mr-1.5" />
+                  Deleting...
                 </>
               ) : (
-                "Yes, Delete Record"
+                <>
+                  <Trash2 className="w-4 h-4 mr-1.5" />
+                  Delete
+                </>
               )}
             </Button>
           </DialogFooter>

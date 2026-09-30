@@ -234,56 +234,45 @@ export const installationService = {
   getAll: async (): Promise<Installation[]> => {
     const { data, error } = await supabase
       .from("installations")
-      .select(`
-        *,
-        customer:customers (
-          id,
-          full_name,
-          phone,
-          email
-        ),
-        location:customer_locations (
-          id,
-          location_name,
-          address,
-          city
-        ),
-        installation_technicians (
-          id,
-          technician_id,
-          technician:profiles!installation_technicians_technician_id_fkey (
-            id,
-            full_name,
-            email,
-            phone,
-            role,
-            expertise
-          )
-        )
-      `)
+      .select("*")
       .order("created_at", { ascending: false });
 
     if (error) {
       console.error("Error fetching installations from Supabase:", error);
-      // Fallback: try querying without the explicit foreign key alias if relation naming differs
-      const { data: fallbackData, error: fallbackError } = await supabase
-        .from("installations")
-        .select(`
-          *,
-          customer:customers(id, full_name, phone, email),
-          location:customer_locations(id, location_name, address, city),
-          installation_technicians(*)
-        `)
-        .order("created_at", { ascending: false });
-
-      if (fallbackError) {
-        console.error("Fallback query also failed:", fallbackError);
-        throw fallbackError;
-      }
-      return enrichInstallationsWithTicketIds((fallbackData as Installation[]) || []);
+      return [];
     }
 
-    return enrichInstallationsWithTicketIds((data as Installation[]) || []);
+    const rows = enrichInstallationsWithTicketIds((data as Installation[]) || []);
+    if (rows.length === 0) return rows;
+
+    try {
+      const installationIds = rows.map((r: any) => r.id);
+      const { data: itRows, error: itError } = await supabase
+        .from("installation_technicians")
+        .select("installation_id, technician_id, technician:profiles!installation_technicians_technician_id_fkey (id, full_name, email, phone, role, expertise)")
+        .in("installation_id", installationIds);
+
+      if (itError) {
+        console.warn("installation_technicians join skipped:", itError);
+        return rows;
+      }
+
+      if (itRows && itRows.length > 0) {
+        const itMap = new Map<string, any[]>();
+        itRows.forEach((it: any) => {
+          const list = itMap.get(it.installation_id) || [];
+          list.push(it);
+          itMap.set(it.installation_id, list);
+        });
+        rows.forEach((r: any) => {
+          r.installation_technicians = itMap.get(r.id) || [];
+        });
+      }
+    } catch (itErr) {
+      console.warn("Fallback installation_technicians load skipped:", itErr);
+    }
+
+    return rows;
   },
 
   // Get installation by ID

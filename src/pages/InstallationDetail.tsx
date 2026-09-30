@@ -38,7 +38,8 @@ import {
   Crown,
   Users,
   Play,
-  Loader2
+  Loader2,
+  Upload
 } from 'lucide-react';
 import { installationService, formatInstallationTicketId } from '@/services/installationService';
 import { Button } from '@/components/ui/button';
@@ -120,6 +121,9 @@ export default function InstallationDetail() {
   const [uploadedPhotos, setUploadedPhotos] = useState<any[]>([]);
   const [signatureCaptured, setSignatureCaptured] = useState(false);
   const [signatureData, setSignatureData] = useState<string | null>(null);
+  const [signatureMode, setSignatureMode] = useState<"draw" | "upload">("draw");
+  const [uploadedSignatureUrl, setUploadedSignatureUrl] = useState<string | null>(null);
+  const [uploadedSignaturePreview, setUploadedSignaturePreview] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   
   // Material Shortage State
@@ -819,18 +823,76 @@ export default function InstallationDetail() {
     sigRef.current?.clear();
     setSignatureCaptured(false);
     setSignatureData(null);
+    setUploadedSignatureUrl(null);
+    setUploadedSignaturePreview(null);
   };
 
-  const handleSignatureUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setSignatureData(reader.result as string);
-        setSignatureCaptured(true);
-      };
-      reader.readAsDataURL(file);
+  const uploadToSupabase = async (file: File, folder: string): Promise<string> => {
+    try {
+      let fileToUpload = file;
+      if (file.type.startsWith('image/') || /\.(jpe?g|png|webp|heic|bmp)$/i.test(file.name)) {
+        try {
+          fileToUpload = await compressImageForUpload(file, {
+            maxSizeMB: 0.25,
+            maxWidthOrHeight: 1600,
+            useWebWorker: true,
+          });
+        } catch (err) {
+          console.warn('Image compression fallback to original:', err);
+        }
+      }
+
+      const fileExt = fileToUpload.name.split('.').pop();
+      const fileName = `${folder}/${Date.now()}-${Math.random().toString(36).substring(2)}.${fileExt}`;
+      const { data, error } = await supabase.storage
+        .from('installation-evidence')
+        .upload(fileName, fileToUpload, {
+          cacheControl: '3600',
+          upsert: false,
+          contentType: fileToUpload.type || (fileExt === 'mp4' ? 'video/mp4' : fileExt === 'webm' ? 'video/webm' : undefined)
+        });
+      if (error) throw error;
+      const { data: { publicUrl } } = supabase.storage
+        .from('installation-evidence')
+        .getPublicUrl(fileName);
+      return publicUrl;
+    } catch (error: any) {
+      console.error('Signature upload error:', error);
+      toast.error(`Upload failed: ${error.message || 'Unknown error'}`);
+      throw error;
     }
+  };
+
+  const handleSignatureUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      toast.error("Please upload an image file (PNG, JPG, JPEG)");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error("Signature image must be less than 5MB");
+      return;
+    }
+    try {
+      const previewUrl = URL.createObjectURL(file);
+      setUploadedSignaturePreview(previewUrl);
+      const url = await uploadToSupabase(file, 'signatures');
+      setUploadedSignatureUrl(url);
+      setSignatureCaptured(true);
+      toast.success("Signature uploaded successfully!");
+    } catch (err) {
+      console.error('Signature upload failed:', err);
+      toast.error("Failed to upload signature");
+      setUploadedSignaturePreview(null);
+      setUploadedSignatureUrl(null);
+    }
+  };
+
+  const clearUploadedSignature = () => {
+    setUploadedSignatureUrl(null);
+    setUploadedSignaturePreview(null);
+    toast.info("Uploaded signature cleared");
   };
 
   // SEND HAPPINESS CODE WHATSAPP IMMEDIATELY AFTER TECHNICIAN SUBMITS
@@ -846,16 +908,31 @@ export default function InstallationDetail() {
       // Generate 5-digit Happiness Code
       const happinessCode = Math.floor(10000 + Math.random() * 90000).toString();
       
-      let finalSignature = signatureData;
-      if (sigRef.current && !sigRef.current.isEmpty()) {
+      let finalSignature: string | null = null;
+
+      if (signatureMode === "draw") {
+        if (!sigRef.current || sigRef.current.isEmpty()) {
+          toast.error("Please draw the customer signature in the canvas.");
+          setIsSubmitting(false);
+          return;
+        }
         try {
           const canvasData = sigRef.current.toDataURL('image/png');
           if (canvasData) {
-            finalSignature = canvasData;
+            const blob = await fetch(canvasData).then(res => res.blob());
+            finalSignature = await uploadToSupabase(new File([blob], 'signature.png', { type: 'image/png' }), 'signatures');
           }
         } catch (sigErr) {
           console.warn("Signature canvas export:", sigErr);
         }
+      } else if (signatureMode === "upload") {
+        finalSignature = uploadedSignatureUrl;
+      }
+
+      if (!finalSignature) {
+        toast.error("Please provide a customer signature (draw or upload)");
+        setIsSubmitting(false);
+        return;
       }
 
       // Clean photos array to prevent non-serializable File objects
@@ -2385,33 +2462,94 @@ export default function InstallationDetail() {
                   )}
                </div>
 
-               {/* Customer Signature */}
-               <div>
-                 <label className="block text-xs font-semibold text-slate-700 mb-1.5">Customer Sign-Off *</label>
-                 <div className="border border-slate-300 rounded-xl overflow-hidden bg-white shadow-inner">
-                   <SignatureCanvas
-                     ref={sigRef}
-                     canvasProps={{ className: 'signature-pad w-full h-32 bg-white' }}
-                     onEnd={() => setSignatureCaptured(true)}
-                   />
-                 </div>
-                 <div className="flex flex-wrap items-center gap-2 mt-2">
-                   <button 
-                     type="button"
-                     onClick={clearSignature} 
-                     className="px-3 py-1 border border-slate-300 hover:bg-slate-50 rounded-md text-xs font-medium text-slate-700"
-                   >
-                     Clear Signature
-                   </button>
-                   <span className="text-xs text-muted-foreground">OR upload signature image:</span>
-                   <input type="file" accept="image/*" onChange={handleSignatureUpload} className="text-xs" />
-                 </div>
-                 {signatureCaptured && (
-                   <p className="text-emerald-600 font-semibold text-xs mt-1.5 flex items-center gap-1">
-                     <CheckCircle2 className="w-3.5 h-3.5" /> ✓ Signature captured
-                   </p>
-                 )}
-               </div>
+                {/* Customer Signature */}
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1.5">Customer Sign-Off *</label>
+                  <div className="flex flex-col sm:flex-row gap-2 border-b border-slate-200 mb-2">
+                    <button
+                      type="button"
+                      onClick={() => setSignatureMode("draw")}
+                      className={`flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${signatureMode === "draw" ? "text-primary border-b-2 border-primary font-semibold" : "text-muted-foreground hover:text-foreground"}`}
+                    >
+                      <Edit3 className="w-4 h-4" /> ✍️ Draw Signature
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSignatureMode("upload")}
+                      className={`flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${signatureMode === "upload" ? "text-primary border-b-2 border-primary font-semibold" : "text-muted-foreground hover:text-foreground"}`}
+                    >
+                      <ImageIcon className="w-4 h-4" /> 📸 Upload Signature Photo
+                    </button>
+                  </div>
+
+                  {signatureMode === "draw" && (
+                    <div className="space-y-2">
+                      <div className="border border-slate-300 rounded-xl overflow-hidden bg-white shadow-inner">
+                        <SignatureCanvas
+                          ref={sigRef}
+                          canvasProps={{ className: 'signature-pad w-full h-32 bg-white' }}
+                          onEnd={() => setSignatureCaptured(true)}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between text-xs text-muted-foreground">
+                        <span>Please ask the customer to draw their signature in the box above</span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={clearSignature}
+                          className="text-xs h-7"
+                        >
+                          Clear Signature
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {signatureMode === "upload" && (
+                    <div className="space-y-2">
+                      <div className="border-2 border-dashed border-slate-300 rounded-xl p-4 bg-white text-center">
+                        {uploadedSignaturePreview ? (
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-center">
+                              <img src={uploadedSignaturePreview} alt="Uploaded Signature Preview" className="max-h-32 border rounded bg-white p-1 shadow-xs" />
+                            </div>
+                            <div className="flex items-center justify-between max-w-sm mx-auto">
+                              <p className="text-xs text-emerald-600 font-medium">✓ Signature uploaded successfully</p>
+                              <Button variant="ghost" size="sm" onClick={clearUploadedSignature} className="text-xs text-destructive h-7">
+                                <X className="w-3.5 h-3.5 mr-1" /> Remove
+                              </Button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="py-3">
+                            <ImageIcon className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
+                            <p className="text-sm font-medium text-foreground mb-1">Upload Customer Signature Image</p>
+                            <p className="text-xs text-muted-foreground mb-3">Upload a photo or scanned copy of customer's signed work report</p>
+                            <input
+                              id="installation-signature-upload-input"
+                              type="file"
+                              accept="image/png,image/jpeg,image/jpg"
+                              onChange={handleSignatureUpload}
+                              className="hidden"
+                            />
+                            <label
+                              htmlFor="installation-signature-upload-input"
+                              className="inline-flex items-center gap-2 px-4 py-2 bg-primary/10 text-primary font-semibold rounded-lg cursor-pointer hover:bg-primary/20 transition-colors text-xs"
+                            >
+                              <Upload className="w-4 h-4" /> Browse Signature Image
+                            </label>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {signatureCaptured && (
+                    <p className="text-emerald-600 font-semibold text-xs mt-1.5 flex items-center gap-1">
+                      <CheckCircle2 className="w-3.5 h-3.5" /> ✓ Signature captured
+                    </p>
+                  )}
+                </div>
 
                  {/* Complete Button */}
                  <button

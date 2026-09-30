@@ -177,7 +177,6 @@ import { Button } from "@/components/ui/button";
 import { motion, AnimatePresence } from "framer-motion";
 import { NotificationCenter } from "./NotificationCenter";
 import { PWAInstallButton } from "./PWAInstallButton";
-import { PWAInstallBanner } from "./PWAInstallBanner";
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
   const { user, signOut } = useAuth();
@@ -427,9 +426,6 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       }`}>
         {children}
       </main>
-
-      {/* 📱 Floating Mobile Install Banner */}
-      <PWAInstallBanner />
     </div>
   );
 }

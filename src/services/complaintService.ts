@@ -417,65 +417,47 @@ export const formatComplaintTicketId = (ticket?: { ticket_id?: string | null; id
 export const complaintService = {
   // Get all complaints
   getAll: async (): Promise<Complaint[]> => {
+    const { data, error } = await supabase
+      .from("complaints")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("Error fetching all complaints:", error);
+      return [];
+    }
+
+    const rows = enrichComplaintsWithTicketIds(data || []);
+    if (rows.length === 0) return rows;
+
     try {
-      const { data, error } = await supabase
-        .from("complaints")
-        .select(`
-          *,
-          profiles:customer_id (
-            full_name,
-            email,
-            phone
-          ),
-          complaint_technicians (
-            id,
-            technician_id,
-            is_lead,
-            technician:profiles!complaint_technicians_technician_id_fkey (
-              id,
-              full_name,
-              email,
-              phone
-            )
-          )
-        `)
-        .order("created_at", { ascending: false });
+      const complaintIds = rows.map((r: any) => r.id);
+      const { data: ctRows, error: ctError } = await supabase
+        .from("complaint_technicians")
+        .select("complaint_id, technician_id, is_lead, technician:profiles!complaint_technicians_technician_id_fkey (id, full_name, email, phone)")
+        .in("complaint_id", complaintIds);
 
-      if (error) throw error;
-      return enrichComplaintsWithTicketIds(data || []);
-    } catch (err) {
-      console.warn("getAll fallback:", err);
-      const { data } = await supabase
-        .from("complaints")
-        .select("*")
-        .order("created_at", { ascending: false });
-      const rows = enrichComplaintsWithTicketIds(data || []);
-      if (rows.length === 0) return rows;
-
-      try {
-        const complaintIds = rows.map((r: any) => r.id);
-        const { data: ctRows } = await supabase
-          .from("complaint_technicians")
-          .select("complaint_id, technician_id, is_lead, technician:profiles!complaint_technicians_technician_id_fkey (id, full_name, email, phone)")
-          .in("complaint_id", complaintIds);
-
-        if (ctRows && ctRows.length > 0) {
-          const ctMap = new Map<string, any[]>();
-          ctRows.forEach((ct: any) => {
-            const list = ctMap.get(ct.complaint_id) || [];
-            list.push(ct);
-            ctMap.set(ct.complaint_id, list);
-          });
-          rows.forEach((r: any) => {
-            r.complaint_technicians = ctMap.get(r.id) || [];
-          });
-        }
-      } catch (ctErr) {
-        console.warn("Fallback complaint_technicians load skipped:", ctErr);
+      if (ctError) {
+        console.warn("complaint_technicians join skipped:", ctError);
+        return rows;
       }
 
-      return rows;
+      if (ctRows && ctRows.length > 0) {
+        const ctMap = new Map<string, any[]>();
+        ctRows.forEach((ct: any) => {
+          const list = ctMap.get(ct.complaint_id) || [];
+          list.push(ct);
+          ctMap.set(ct.complaint_id, list);
+        });
+        rows.forEach((r: any) => {
+          r.complaint_technicians = ctMap.get(r.id) || [];
+        });
+      }
+    } catch (ctErr) {
+      console.warn("Fallback complaint_technicians load skipped:", ctErr);
     }
+
+    return rows;
   },
 
   // Fetch technicians for a complaint with graceful fallback if table missing
