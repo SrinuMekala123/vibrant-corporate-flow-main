@@ -159,8 +159,9 @@ export interface Complaint {
   resolved_by?: string;
   pir_findings?: string;
   pir_audio_url?: string;
-  complaint_images?: string[];      // Initial images (Before)
-  technician_evidence?: string[];   // Technician images (After)
+  evidence_urls?: string[];         // Diagnostic / PIR evidence (Before)
+  complaint_images?: string[];      // Initial images (Customer - Phase 1)
+  technician_evidence?: string[];   // Technician images (Resolution - After - Phase 5)
   signature_url?: string;
   triage_outcome?: 'remote_fixed' | 'field_required';
   pir_decision_tree?: string;
@@ -212,6 +213,7 @@ export interface Complaint {
   force_closed?: boolean;
   force_closed_by?: string | null;
   force_closure_reason?: string | null;
+  force_close_reason?: string | null;
   
   closed_at?: string | null;
   reassigned_at?: string | null;
@@ -246,6 +248,20 @@ export interface Complaint {
     email: string;
     phone?: string;
   };
+
+  complaint_assets?: ComplaintAsset[];
+}
+
+export interface ComplaintAsset {
+  id?: string;
+  complaint_id: string;
+  asset_type: string;
+  asset_name: string;
+  reported_issue?: string | null;
+  warranty_status?: 'Active' | 'Expired' | 'Not Applicable' | string;
+  is_chargeable?: boolean;
+  service_charge?: number;
+  created_at?: string;
 }
 
 export const getTicketIdMap = (): Record<string, string> => {
@@ -457,6 +473,25 @@ export const complaintService = {
       console.warn("Fallback complaint_technicians load skipped:", ctErr);
     }
 
+    rows.forEach((r: any) => {
+      if (
+        r.force_closed ||
+        r.resolution_type === 'force_closed' ||
+        r.feedback_comments?.includes('[Force Closed - ') ||
+        (r.status === 'closed' && !r.happiness_code_verified && !r.resolved_remotely && r.resolution_type !== 'telephonic_triage' && r.triage_outcome !== 'remote_fixed')
+      ) {
+        r.force_closed = true;
+        if (!r.force_close_reason) {
+          if (r.feedback_comments?.includes('[Force Closed - ')) {
+            const match = r.feedback_comments.match(/\[Force Closed - ([^\]]+)\]/);
+            if (match) r.force_close_reason = match[1];
+          } else if (r.resolution_notes && r.resolution_type === 'force_closed') {
+            r.force_close_reason = r.resolution_notes;
+          }
+        }
+      }
+    });
+
     return rows;
   },
 
@@ -525,7 +560,99 @@ export const complaintService = {
       console.warn("complaint_technicians junction not loaded:", e);
     }
 
+    if (data) {
+      if (
+        data.force_closed ||
+        data.resolution_type === 'force_closed' ||
+        data.feedback_comments?.includes('[Force Closed - ') ||
+        (data.status === 'closed' && !data.happiness_code_verified && !data.resolved_remotely && data.resolution_type !== 'telephonic_triage' && data.triage_outcome !== 'remote_fixed')
+      ) {
+        data.force_closed = true;
+        if (!data.force_close_reason) {
+          if (data.feedback_comments?.includes('[Force Closed - ')) {
+            const match = data.feedback_comments.match(/\[Force Closed - ([^\]]+)\]/);
+            if (match) data.force_close_reason = match[1];
+          } else if (data.resolution_notes && data.resolution_type === 'force_closed') {
+            data.force_close_reason = data.resolution_notes;
+          }
+        }
+      }
+
+      // Load complaint_assets
+      try {
+        const { data: caRows } = await supabase
+          .from("complaint_assets")
+          .select("*")
+          .eq("complaint_id", id)
+          .order("created_at", { ascending: true });
+        if (caRows) {
+          data.complaint_assets = caRows as ComplaintAsset[];
+        }
+      } catch (caErr) {
+        console.warn("complaint_assets junction not loaded:", caErr);
+      }
+    }
+
     return data;
+  },
+
+  // Fetch assets for a complaint
+  getAssetsByComplaintId: async (complaintId: string): Promise<ComplaintAsset[]> => {
+    try {
+      const { data, error } = await supabase
+        .from('complaint_assets')
+        .select('*')
+        .eq('complaint_id', complaintId)
+        .order('created_at', { ascending: true });
+      if (error) {
+        console.warn("Error fetching complaint_assets:", error);
+        return [];
+      }
+      return (data as ComplaintAsset[]) || [];
+    } catch (e) {
+      console.warn("Exception fetching complaint_assets:", e);
+      return [];
+    }
+  },
+
+  // Sync / replace assets for a complaint
+  syncComplaintAssets: async (complaintId: string, assets: any[]): Promise<ComplaintAsset[]> => {
+    if (!complaintId) return [];
+    try {
+      const { error: delErr } = await supabase
+        .from('complaint_assets')
+        .delete()
+        .eq('complaint_id', complaintId);
+      if (delErr) {
+        console.warn("Error deleting old complaint_assets:", delErr);
+      }
+
+      if (!assets || assets.length === 0) return [];
+
+      const assetsToInsert = assets.map(a => ({
+        complaint_id: complaintId,
+        asset_type: (a.asset_type || '').trim(),
+        asset_name: (a.asset_name || '').trim(),
+        reported_issue: (a.reported_issue || '').trim(),
+        warranty_status: a.warranty_status || 'Active',
+        is_chargeable: Boolean(a.is_chargeable),
+        service_charge: a.is_chargeable ? (Number(a.service_charge) || 0) : 0
+      }));
+
+      const { data, error: insErr } = await supabase
+        .from('complaint_assets')
+        .insert(assetsToInsert)
+        .select();
+
+      if (insErr) {
+        console.error("Error inserting complaint_assets:", insErr);
+        throw insErr;
+      }
+      return (data as ComplaintAsset[]) || [];
+    } catch (e) {
+      console.error("Exception in syncComplaintAssets:", e);
+      throw e;
+    }
   },
 
   // Create new complaint with auto-generated ticket_id & multi-technicians

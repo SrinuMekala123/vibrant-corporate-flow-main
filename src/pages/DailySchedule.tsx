@@ -176,10 +176,10 @@ const generateComplaintPrintHtml = (c: any, item: UnifiedScheduleTask, techList:
     techHtml = `<div>${escapeHtml(item.technician_name || "Unassigned")} ${item.technician_id_display ? `<span style="font-family:monospace; color:#64748b;">[${escapeHtml(item.technician_id_display)}]</span>` : ""}</div>`;
   }
 
-  // PIR images: complaint_images or evidence_urls
-  const pirImages: string[] = Array.isArray(c.complaint_images) && c.complaint_images.length > 0
-    ? c.complaint_images
-    : (Array.isArray(c.evidence_urls) ? c.evidence_urls : []);
+  // PIR images: evidence_urls or complaint_images
+  const pirImages: string[] = Array.isArray(c.evidence_urls) && c.evidence_urls.length > 0
+    ? c.evidence_urls
+    : (Array.isArray(c.complaint_images) ? c.complaint_images : []);
 
   // Resolution images: technician_evidence
   const resImages: string[] = Array.isArray(c.technician_evidence) && c.technician_evidence.length > 0
@@ -194,6 +194,64 @@ const generateComplaintPrintHtml = (c: any, item: UnifiedScheduleTask, techList:
     (typeof c.status === "string" && c.status.toLowerCase().trim() === "verified") ||
     c.feedback_collected === true
   );
+
+  // Multi-asset line items table
+  const complaintAssets: any[] = Array.isArray(c.complaint_assets) ? c.complaint_assets : [];
+  const totalAssetCharge = complaintAssets.reduce(
+    (sum: number, a: any) => sum + (a.is_chargeable ? (Number(a.service_charge) || 0) : 0),
+    0
+  );
+
+  let assetsTableHtml = "";
+  if (complaintAssets.length > 0) {
+    assetsTableHtml = `
+    <!-- Assets & Line Items Table (Multi-Asset) -->
+    <div class="section-card">
+      <div class="section-header" style="display: flex; justify-content: space-between; align-items: center;">
+        <span>Assets & Line Items to Service (${complaintAssets.length})</span>
+        <span style="font-size: 9px; font-weight: normal; color: #475569;">Multi-Asset Service Breakdown</span>
+      </div>
+      <div class="section-body" style="padding: 0;">
+        <table style="width: 100%; border-collapse: collapse; font-size: 9.5px;">
+          <thead>
+            <tr style="background: #f8fafc; border-bottom: 1.5px solid #cbd5e1; text-align: left;">
+              <th style="padding: 5px 8px; width: 28px; text-align: center;">#</th>
+              <th style="padding: 5px 8px;">Asset Name</th>
+              <th style="padding: 5px 8px; width: 85px;">Type</th>
+              <th style="padding: 5px 8px;">Reported Issue</th>
+              <th style="padding: 5px 8px; width: 140px; text-align: center;">Warranty Status</th>
+              <th style="padding: 5px 8px; width: 80px; text-align: right;">Charge (₹)</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${complaintAssets.map((a: any, idx: number) => {
+              const isExpired = a.warranty_status === "Expired" || Boolean(a.is_chargeable);
+              const charge = a.service_charge ? Number(a.service_charge) : 0;
+              const badgeText = isExpired
+                ? `[Expired - ₹${charge.toLocaleString("en-IN")}]`
+                : `[Active - Under Warranty]`;
+              return `
+                <tr style="border-bottom: 1px solid #e2e8f0;">
+                  <td style="padding: 5px 8px; text-align: center; color: #64748b; font-family: monospace;">${idx + 1}</td>
+                  <td style="padding: 5px 8px; font-weight: 600; color: #0f172a;">${escapeHtml(a.asset_name || "Asset #" + (idx + 1))}</td>
+                  <td style="padding: 5px 8px; color: #475569;">${escapeHtml(a.asset_type || "General")}</td>
+                  <td style="padding: 5px 8px; color: #334155;">${escapeHtml(a.reported_issue || "No specific issue noted")}</td>
+                  <td style="padding: 5px 8px; text-align: center; font-weight: 600; color: ${isExpired ? '#c2410c' : '#15803d'}; font-family: monospace;">${escapeHtml(badgeText)}</td>
+                  <td style="padding: 5px 8px; text-align: right; font-family: monospace; font-weight: 600;">${isExpired && charge > 0 ? "₹" + charge.toLocaleString("en-IN") : "—"}</td>
+                </tr>
+              `;
+            }).join("")}
+            <tr style="background: #f1f5f9; border-top: 1.5px solid #cbd5e1; font-weight: bold;">
+              <td colspan="5" style="padding: 6px 8px; text-align: right;">Total Chargeable Amount:</td>
+              <td style="padding: 6px 8px; text-align: right; font-family: monospace; color: #0f172a;">
+                ₹${totalAssetCharge.toLocaleString("en-IN")}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+  }
 
   return `<!DOCTYPE html>
 <html>
@@ -519,6 +577,8 @@ const generateComplaintPrintHtml = (c: any, item: UnifiedScheduleTask, techList:
         </div>
       </div>
     </div>
+
+    ${assetsTableHtml}
 
     <!-- Assignment -->
     <div class="section-card">

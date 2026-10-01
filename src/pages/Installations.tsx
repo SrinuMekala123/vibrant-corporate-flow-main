@@ -1522,38 +1522,45 @@ export default function Installations() {
               <label className="text-xs font-semibold text-slate-700 block">
                 Scheduled Date & Time <span className="text-destructive">*</span>
               </label>
-              <Input
-                type="datetime-local"
-                required
-                value={(() => {
-                  if (!scheduledDate) return "";
-                  const d = new Date(scheduledDate);
-                  if (isNaN(d.getTime())) return "";
-                  const pad = (n: number) => String(n).padStart(2, '0');
-                  const yyyy = d.getFullYear();
-                  const mm = pad(d.getMonth() + 1);
-                  const dd = pad(d.getDate());
-                  const time = scheduledTime ? (scheduledTime.length === 5 ? scheduledTime : scheduledTime.slice(0, 5)) : "09:00";
-                  return `${yyyy}-${mm}-${dd}T${time}`;
-                })()}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  if (!val) {
-                    setScheduledDate(null);
-                    setScheduledTime("");
-                    return;
-                  }
-                  const [datePart, timePart] = val.split("T");
-                  if (datePart) {
-                    const [y, m, d] = datePart.split("-").map(Number);
-                    setScheduledDate(new Date(y, m - 1, d));
-                  }
-                  if (timePart) {
-                    setScheduledTime(timePart);
-                  }
-                }}
-                className="w-full bg-white border-slate-200 h-10 text-sm"
-              />
+              <div className="flex items-center">
+                <Input
+                  type="datetime-local"
+                  required
+                  value={(() => {
+                    if (!scheduledDate) return "";
+                    const d = new Date(scheduledDate);
+                    if (isNaN(d.getTime())) return "";
+                    const pad = (n: number) => String(n).padStart(2, '0');
+                    const yyyy = d.getFullYear();
+                    const mm = pad(d.getMonth() + 1);
+                    const dd = pad(d.getDate());
+                    const time = scheduledTime ? (scheduledTime.length === 5 ? scheduledTime : scheduledTime.slice(0, 5)) : "09:00";
+                    return `${yyyy}-${mm}-${dd}T${time}`;
+                  })()}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (!val) {
+                      setScheduledDate(null);
+                      setScheduledTime("");
+                      return;
+                    }
+                    const [datePart, timePart] = val.split("T");
+                    if (datePart) {
+                      const [y, m, d] = datePart.split("-").map(Number);
+                      setScheduledDate(new Date(y, m - 1, d));
+                    }
+                    if (timePart) {
+                      setScheduledTime(timePart);
+                    }
+                  }}
+                  className="w-full sm:w-auto min-w-[260px] max-w-[320px] bg-white border-slate-200 h-10 text-sm datetime-compact-input [&::-webkit-datetime-edit]:flex-none [&::-webkit-datetime-edit]:max-w-fit [&::-webkit-calendar-picker-indicator]:[margin-inline-start:8px] [&::-webkit-calendar-picker-indicator]:ml-2 [&::-webkit-calendar-picker-indicator]:cursor-pointer cursor-pointer"
+                  onClick={(e) => {
+                    try {
+                      (e.target as any).showPicker?.();
+                    } catch {}
+                  }}
+                />
+              </div>
             </div>
 
             {/* 5. Reassignment Reason */}
@@ -1737,9 +1744,15 @@ export default function Installations() {
                       {filteredInstallations.map((item) => {
                         const custName = item.customer?.full_name || item.non_btl_customer_name || "N/A";
                         const siteAddress =
-                          [item.installation_site_address, item.site_address, item.non_btl_address, item.customer?.address].filter(Boolean).join(", ") ||
-                          [item.location?.address, item.location?.city, item.location?.state, item.location?.pincode].filter(Boolean).join(", ") ||
+                          item.site_address ||
+                          item.installation_site_address ||
+                          item.non_btl_address ||
+                          (item.location?.address
+                            ? [item.location.address, item.location.city, item.location.state, item.location.pincode].filter(Boolean).join(", ")
+                            : null) ||
+                          item.location?.address ||
                           item.location?.location_name ||
+                          item.customer?.address ||
                           "Site address not specified";
 
                         const assignedTechs = (item.installation_technicians || []).map((it: any) => {
@@ -1804,9 +1817,22 @@ export default function Installations() {
                                   </span>
                                 )}
                               </div>
-                               <p className="text-slate-500 text-[11px] break-words mt-0.5" title={siteAddress}>
-                                 <MapPin className="w-3 h-3 inline mr-1 text-slate-400 shrink-0" />
-                                 {siteAddress}
+                               <p className="text-slate-500 text-[11px] break-words mt-0.5 flex items-center gap-1" title={siteAddress}>
+                                 <MapPin className={`w-3 h-3 inline mr-1 shrink-0 ${siteAddress !== "Site address not specified" ? "text-emerald-600" : "text-slate-400"}`} />
+                                 {siteAddress !== "Site address not specified" ? (
+                                   <a
+                                     href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(siteAddress)}&travelmode=driving`}
+                                     target="_blank"
+                                     rel="noopener noreferrer"
+                                     onClick={(e) => e.stopPropagation()}
+                                     className="hover:text-emerald-700 hover:underline"
+                                     title="Open in Google Maps"
+                                   >
+                                     {siteAddress}
+                                   </a>
+                                 ) : (
+                                   <span>{siteAddress}</span>
+                                 )}
                                </p>
                             </td>
 
@@ -1948,10 +1974,15 @@ export default function Installations() {
                 {filteredInstallations.map((item) => {
                   const custName = item.customer?.full_name || item.non_btl_customer_name || "N/A";
                   const siteAddress =
-                    [item.location?.address, item.location?.city, item.location?.state, item.location?.pincode].filter(Boolean).join(", ") ||
-                    item.location?.location_name ||
+                    item.site_address ||
+                    item.installation_site_address ||
                     item.non_btl_address ||
-                    (item.customer as any)?.address ||
+                    (item.location?.address
+                      ? [item.location.address, item.location.city, item.location.state, item.location.pincode].filter(Boolean).join(", ")
+                      : null) ||
+                    item.location?.address ||
+                    item.location?.location_name ||
+                    item.customer?.address ||
                     "Site address not specified";
 
                   const assignedTechs = (item.installation_technicians || []).map((it: any) => {
@@ -2626,7 +2657,17 @@ export default function Installations() {
 
                   {/* Site Location & Turn-by-Turn GPS Card */}
                   {(() => {
-                    const resolvedAddress = viewInstallation.location?.address || viewInstallation.non_btl_address || "";
+                    const resolvedAddress =
+                      viewInstallation.site_address ||
+                      viewInstallation.installation_site_address ||
+                      viewInstallation.non_btl_address ||
+                      (viewInstallation.location?.address
+                        ? [viewInstallation.location.address, viewInstallation.location.city, viewInstallation.location.state, viewInstallation.location.pincode].filter(Boolean).join(", ")
+                        : null) ||
+                      viewInstallation.location?.address ||
+                      viewInstallation.location?.location_name ||
+                      viewInstallation.customer?.address ||
+                      "";
                     const resolvedLocName = viewInstallation.location?.location_name || "";
                     const fullAddressDisplay = [resolvedLocName, resolvedAddress].filter(Boolean).join(" — ") || "No site address specified";
 

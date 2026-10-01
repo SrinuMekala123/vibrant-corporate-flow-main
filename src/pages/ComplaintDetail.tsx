@@ -2,7 +2,7 @@ import { useParams, Link, useNavigate } from "react-router-dom";
 import { useState, useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowLeft, Edit, Phone, MapPin, Clock, User, Users, Wrench, FileText, ShieldCheck, CheckCircle, CheckCircle2, XCircle, X, Loader2, Play, CheckSquare, Upload, PenTool, Image as ImageIcon, AlertTriangle, MessageSquare, Star, Crown, ThumbsUp, ThumbsDown, RotateCcw, ZoomIn, Download, Calendar, Navigation, HelpCircle, PlusCircle, Search, Sparkles, AlertCircle, MessageCircle, Camera, Zap } from "lucide-react";
+import { ArrowLeft, Edit, Phone, MapPin, Clock, User, Users, Wrench, FileText, ShieldCheck, CheckCircle, CheckCircle2, XCircle, X, Loader2, Play, CheckSquare, Upload, PenTool, Image as ImageIcon, AlertTriangle, MessageSquare, Star, Crown, ThumbsUp, ThumbsDown, RotateCcw, ZoomIn, Download, Calendar, Navigation, HelpCircle, PlusCircle, Search, Sparkles, AlertCircle, MessageCircle, Camera, Zap, Package } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
@@ -357,6 +357,29 @@ const ComplaintDetail = () => {
     enabled: !!user,
   });
 
+  // Fetch line-item assets for multi-asset complaints
+  const { data: complaintAssets = [] } = useQuery({
+    queryKey: ['complaint-assets', id],
+    queryFn: async () => {
+      if (!id) return [];
+      const { data, error } = await supabase
+        .from('complaint_assets')
+        .select('*')
+        .eq('complaint_id', id)
+        .order('created_at', { ascending: true });
+      if (error) {
+        console.warn("Error fetching complaint_assets:", error);
+        return [];
+      }
+      return data || [];
+    },
+    enabled: !!id,
+  });
+
+  const assetsToService = (complaintAssets && complaintAssets.length > 0)
+    ? complaintAssets
+    : (ticket?.complaint_assets || []);
+
   // Automated background GPS tracking for technicians on active journeys
   useEffect(() => {
     if (!id || !ticket || ticket.status !== 'in-progress' || ticket.current_phase !== 4 || !isRole('technician')) {
@@ -502,9 +525,15 @@ const ComplaintDetail = () => {
       }
       setPirFindings(ticket.pir_findings || "");
       setPirAudioUrl(ticket.pir_audio_url || "");
-      setPirEvidenceUrls(ticket.technician_evidence || []);
-      setResolutionEvidenceUrls([]);
-      setEvidenceUrls(ticket.technician_evidence || []);
+      const resolvedPirUrls = (ticket.evidence_urls && ticket.evidence_urls.length > 0)
+        ? ticket.evidence_urls
+        : (ticket.technician_evidence && !ticket.resolution ? ticket.technician_evidence : []);
+      setPirEvidenceUrls(resolvedPirUrls);
+      const resolvedResUrls = (ticket.resolution || ticket.signoff_timestamp)
+        ? (ticket.technician_evidence || [])
+        : [];
+      setResolutionEvidenceUrls(resolvedResUrls);
+      setEvidenceUrls(resolvedPirUrls);
       
       if (ticket.pir_findings_severity) setPirSeverityInput(ticket.pir_findings_severity);
       if (ticket.supervisor_severity) setSupSeverityInput(ticket.supervisor_severity);
@@ -829,6 +858,13 @@ const ComplaintDetail = () => {
   const uploadToSupabase = async (file: File, folder: string): Promise<string> => {
     setIsUploading(true);
     try {
+      // Early validation for maximum allowed file size (100MB) before any compression attempt
+      if (file.size > 100 * 1024 * 1024) {
+        const errorMsg = "File is too large (Max 100MB). Please select a smaller file.";
+        toast.error(errorMsg);
+        throw new Error(errorMsg);
+      }
+
       let fileToUpload = file;
       if (file.type.startsWith('image/') || /\.(jpe?g|png|webp|heic|bmp)$/i.test(file.name)) {
         setUploadProgressText(`Compressing photo (${(file.size / 1024).toFixed(0)}KB -> ~250KB)...`);
@@ -849,15 +885,19 @@ const ComplaintDetail = () => {
           fileToUpload = await compressVideoForUpload(file, (prog) => {
             setUploadProgressText(prog.message);
           });
-        } catch (err) {
-          console.warn('Video compression failed, using original:', err);
+        } catch (err: any) {
+          console.warn('Video compression failed, checking size:', err);
+          if (err?.message?.includes("Max 100MB")) {
+            toast.error(err.message);
+            throw err;
+          }
         }
       }
 
       // Enforce 50MB file upload limit to prevent Supabase timeout/size limit rejection
       if (fileToUpload.size > 50 * 1024 * 1024) {
-        toast.error(`File is ${(fileToUpload.size / 1024 / 1024).toFixed(1)}MB. Supabase limit is 50MB. Please choose a smaller file.`);
-        throw new Error("File size exceeds 50MB limit");
+        toast.error(`Video is ${(fileToUpload.size / 1024 / 1024).toFixed(1)}MB. Video is too large. Please compress it or upload a shorter clip.`);
+        throw new Error("File size exceeds storage limit");
       }
 
       setUploadProgressText(`Uploading ${(fileToUpload.size / (1024 * 1024)).toFixed(1)}MB to cloud...`);
@@ -877,8 +917,18 @@ const ComplaintDetail = () => {
       return publicUrl;
     } catch (error: any) {
       console.error('Detailed Upload error in Detail page:', error);
-      const errorMsg = error.message || error.error_description || 'Unknown error occurred during upload.';
-      toast.error(`Upload failed: ${errorMsg}. (Ensure the 'complaint-media' storage bucket exists and policies allow uploads to folder '${folder}/')`);
+      const rawMsg = error.message || error.error_description || '';
+      const isSizeError = rawMsg.toLowerCase().includes("payload too large") ||
+                          rawMsg.toLowerCase().includes("entity too large") ||
+                          rawMsg.toLowerCase().includes("exceeds") ||
+                          rawMsg.toLowerCase().includes("size limit") ||
+                          error?.statusCode === 413 ||
+                          error?.status === 413;
+      if (isSizeError) {
+        toast.error("Video is too large. Please compress it or upload a shorter clip.");
+      } else {
+        toast.error(`Upload failed: ${rawMsg || 'Unknown error occurred during upload.'}`);
+      }
       throw error;
     } finally {
       setIsUploading(false);
@@ -1050,15 +1100,25 @@ const ComplaintDetail = () => {
     hasResolution: Boolean(ticket.resolution),
   });
 
+  // Phase 6 is completed if: standard verified (happiness code), force closed by admin, or closed status
   const isPhase6ClosedOrVerified = Boolean(
     ticket &&
-    (ticket.status === 'closed' || 
-     ticket.status === 'verified' || 
-     ticket.status === 'Closed' || 
-     ticket.status === 'qa_verified'
-    ) &&
-    Boolean(ticket.verified_at) &&
-    Boolean(ticket.happiness_code_verified)
+    (
+      // Standard verified flow (happiness code verified)
+      (
+        (ticket.status === 'closed' || 
+         ticket.status === 'verified' || 
+         ticket.status === 'Closed' || 
+         ticket.status === 'qa_verified'
+        ) &&
+        Boolean(ticket.verified_at) &&
+        Boolean(ticket.happiness_code_verified)
+      ) ||
+      // Force closed by admin (bypasses happiness code)
+      Boolean(ticket.force_closed) ||
+      // Closed with closure timestamp (covers force close path)
+      (ticket.status === 'closed' && Boolean(ticket.closure_timestamp || ticket.closed_at))
+    )
   );
 
   const canVerify = isSupervisorOrAdmin &&
@@ -1785,6 +1845,7 @@ const ComplaintDetail = () => {
         pir_findings: pirFindings,
         pir_audio_url: pirAudioUrl || null,
         technician_evidence: finalPirEvidence,
+        evidence_urls: finalPirEvidence,
         arrival_timestamp: ticket.arrival_timestamp || nowIso,
         arrival_lat: gps?.lat || ticket.arrival_lat || null,
         arrival_lng: gps?.lng || ticket.arrival_lng || null,
@@ -2093,6 +2154,9 @@ const ComplaintDetail = () => {
         resolution: resolutionNote.trim(),
         signature_url: signatureUrl,
         technician_evidence: resolutionEvidenceUrls.length > 0 ? resolutionEvidenceUrls : null,
+        evidence_urls: (ticket.evidence_urls && ticket.evidence_urls.length > 0)
+          ? ticket.evidence_urls
+          : (pirEvidenceUrls.length > 0 ? pirEvidenceUrls : null),
         signoff_timestamp: new Date().toISOString(),
         happiness_code: generatedHappinessCode,
         happiness_code_sent_at: new Date().toISOString(),
@@ -2300,25 +2364,36 @@ const ComplaintDetail = () => {
 
   // Force Close Complaint (Admin / Supervisor bypasses happiness code)
   const handleForceCloseTicket = async () => {
-    if (!window.confirm("⚡ Confirm Force Closure of this ticket?\nThis will immediately close the complaint without requiring customer Happiness Code verification.")) {
-      return;
-    }
+    const reasonInput = window.prompt(
+      "⚡ Enter reason for Force Closing this ticket (Happiness Code bypass):",
+      "Customer unreachable after 3 attempts"
+    );
+    if (reasonInput === null) return;
+    const finalReason = reasonInput.trim() || "Customer unreachable after 3 attempts";
+
     setIsForceClosing(true);
     try {
       const nowIso = new Date().toISOString();
+      const feedbackCommentValue = feedbackComments.trim() 
+        ? `[Force Closed - ${finalReason}] ${feedbackComments.trim()}`
+        : `[Force Closed - ${finalReason}]`;
+
       const payload: any = {
         status: "closed",
         current_phase: 6,
         closed_at: nowIso,
         closure_timestamp: nowIso,
-        closed_by: currentUserFullName || user?.email || "Admin (Force Close)"
+        closed_by: currentUserFullName || user?.email || "Admin (Force Close)",
+        resolution_type: 'force_closed',
+        resolution_notes: finalReason,
+        feedback_comments: feedbackCommentValue,
+        happiness_code_verified: false,
       };
 
       // If feedback was entered in the form, also save it alongside force closure
       if (feedbackSatisfaction) {
         payload.feedback_collected = true;
         payload.customer_satisfaction = feedbackSatisfaction;
-        payload.feedback_comments = feedbackComments.trim() || undefined;
         payload.feedback_timestamp = nowIso;
         payload.feedback_contact_method = 'phone';
       }
@@ -3329,24 +3404,46 @@ const ComplaintDetail = () => {
             </div>
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3">
-              {ticket.technician_evidence && ticket.technician_evidence.length > 0 && (
-                <div className="bg-white p-3 rounded-lg border">
-                  <span className="text-xs text-muted-foreground block mb-2 font-medium">✅ Technician's Resolution Evidence (After):</span>
-                  {renderEvidenceFiles(ticket.technician_evidence)}
-                </div>
-              )}
-              {ticket.signature_url && (
-                <div className="bg-white p-3 rounded-lg border flex flex-col justify-between">
-                  <div>
-                    <span className="text-xs text-muted-foreground block mb-2 font-medium">✍️ Customer Signature:</span>
-                    <img src={resolveSupabaseUrl(ticket.signature_url)} alt="Customer Signature" className="max-h-16 border rounded bg-white p-1" />
-                  </div>
-                  <span className="text-[10px] text-muted-foreground mt-2 block">
-                    Signed Off At: {ticket.signoff_timestamp ? formatIndianDateTime(ticket.signoff_timestamp) : 'N/A'}
-                  </span>
-                </div>
-              )}
+              {/* Box 1: Technician's Diagnostic Evidence (Before) / PIR */}
+              <div className="bg-white dark:bg-slate-900 p-3.5 rounded-lg border space-y-2">
+                <span className="text-xs text-muted-foreground block font-semibold">
+                  📸 Technician's Diagnostic Evidence (Before) / PIR:
+                </span>
+                {((ticket.evidence_urls && ticket.evidence_urls.length > 0) || (pirEvidenceUrls && pirEvidenceUrls.length > 0)) ? (
+                  renderEvidenceFiles(ticket.evidence_urls && ticket.evidence_urls.length > 0 ? ticket.evidence_urls : pirEvidenceUrls)
+                ) : (
+                  <p className="text-xs text-muted-foreground italic bg-slate-50 dark:bg-slate-800/50 p-3 rounded border border-dashed text-center">
+                    No diagnostic images provided
+                  </p>
+                )}
+              </div>
+
+              {/* Box 2: Technician's Resolution Evidence (After) */}
+              <div className="bg-white dark:bg-slate-900 p-3.5 rounded-lg border space-y-2">
+                <span className="text-xs text-muted-foreground block font-semibold">
+                  ✅ Technician's Resolution Evidence (After):
+                </span>
+                {ticket.technician_evidence && ticket.technician_evidence.length > 0 ? (
+                  renderEvidenceFiles(ticket.technician_evidence)
+                ) : (
+                  <p className="text-xs text-muted-foreground italic bg-slate-50 dark:bg-slate-800/50 p-3 rounded border border-dashed text-center">
+                    No resolution images provided
+                  </p>
+                )}
+              </div>
             </div>
+
+            {ticket.signature_url && (
+              <div className="bg-white dark:bg-slate-900 p-3.5 rounded-lg border flex flex-col sm:flex-row sm:items-center justify-between gap-3 mt-3">
+                <div>
+                  <span className="text-xs text-muted-foreground block mb-2 font-medium">✍️ Customer Signature:</span>
+                  <img src={resolveSupabaseUrl(ticket.signature_url)} alt="Customer Signature" className="max-h-16 border rounded bg-white p-1" />
+                </div>
+                <span className="text-[10px] text-muted-foreground mt-2 block sm:mt-0 sm:text-right">
+                  Signed Off At: {ticket.signoff_timestamp ? formatIndianDateTime(ticket.signoff_timestamp) : 'N/A'}
+                </span>
+              </div>
+            )}
           </div>
         );
 
@@ -4243,6 +4340,79 @@ const ComplaintDetail = () => {
                   </span>
                 </div>
               </div>
+
+              {/* Assets to Service Checklist Card (Multi-Asset Phase 3) */}
+              {assetsToService && assetsToService.length > 0 && (
+                <div className="p-4 sm:p-5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs space-y-3">
+                  <div className="flex items-center justify-between border-b pb-2.5">
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center font-bold text-xs">
+                        <Package className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h4 className="font-semibold text-foreground text-sm sm:text-base">
+                          Assets to Service
+                        </h4>
+                        <p className="text-[11px] text-muted-foreground">
+                          {assetsToService.length} item{assetsToService.length > 1 ? "s" : ""} assigned for service & resolution
+                        </p>
+                      </div>
+                    </div>
+                    <span className="text-xs font-medium px-2.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                      {assetsToService.filter((a: any) => a.warranty_status === "Active" || (!a.is_chargeable && a.warranty_status !== "Expired")).length} Active • {assetsToService.filter((a: any) => a.warranty_status === "Expired" || a.is_chargeable).length} Chargeable
+                    </span>
+                  </div>
+
+                  <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {assetsToService.map((asset: any, idx: number) => {
+                      const isExpired = asset.warranty_status === "Expired" || Boolean(asset.is_chargeable);
+                      const chargeAmt = asset.service_charge ? Number(asset.service_charge) : 0;
+
+                      return (
+                        <div
+                          key={asset.id || idx}
+                          className="py-3 first:pt-1 last:pb-1 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                        >
+                          <div className="space-y-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-xs sm:text-sm font-semibold text-foreground">
+                                {idx + 1}. {asset.asset_name || `Asset #${idx + 1}`}
+                              </span>
+                              {asset.asset_type && (
+                                <span className="text-[10px] uppercase font-semibold px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">
+                                  {asset.asset_type}
+                                </span>
+                              )}
+                            </div>
+                            {asset.reported_issue ? (
+                              <p className="text-xs text-muted-foreground">
+                                <span className="font-medium text-slate-700 dark:text-slate-300">Reported Issue:</span>{" "}
+                                {asset.reported_issue}
+                              </p>
+                            ) : (
+                              <p className="text-xs text-muted-foreground italic">No specific issue noted</p>
+                            )}
+                          </div>
+
+                          <div className="shrink-0 flex items-center gap-2">
+                            {isExpired ? (
+                              <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1 rounded-full bg-orange-100 dark:bg-orange-950/40 text-orange-700 dark:text-orange-300 border border-orange-200 dark:border-orange-800">
+                                <span className="w-1.5 h-1.5 rounded-full bg-orange-500 animate-pulse" />
+                                Chargeable: ₹{chargeAmt.toLocaleString("en-IN")}
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1 rounded-full bg-emerald-100 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                                Under Warranty
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
               
               {/* Reassignment Notice - Show previous data for reference */}
               {isReassigned && (
@@ -4704,14 +4874,32 @@ const ComplaintDetail = () => {
               {isPhase6ClosedOrVerified && (
                 <div className="p-4 rounded-xl border border-success/30 bg-success/10 text-success flex items-start gap-3 shadow-xs">
                   <CheckCircle2 className="w-5 h-5 shrink-0 mt-0.5 text-success" />
-                  <div className="space-y-1 text-xs">
+                  <div className="space-y-1 text-xs w-full">
                     <div className="font-bold text-sm text-success flex items-center gap-2">
-                      Complaint Successfully Finalized & Closed!
-                      <span className="bg-success text-white text-[10px] font-bold px-2 py-0.5 rounded-full uppercase">Verified ✓</span>
+                      Ticket Successfully Closed!
+                      <span className="bg-success text-white text-[10px] font-bold px-2 py-0.5 rounded-full uppercase">Completed ✓</span>
                     </div>
-                    <div className="text-success/90">
-                      Quality Assurance check completed, customer satisfaction verified via Happiness OTP, and the ticket is officially closed.
-                    </div>
+
+                    {/* Closure method indicators */}
+                    {(ticket.resolved_remotely || ticket.resolution_type === 'telephonic_triage' || ticket.triage_outcome === 'remote_fixed') && (
+                      <div className="mt-1">
+                        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-blue-100 text-blue-800 border border-blue-300">
+                          📞 Fixed via Remote Fix
+                        </span>
+                      </div>
+                    )}
+                    {ticket.force_closed && (
+                      <div className="mt-1.5 p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs">
+                        <p className="font-bold text-amber-800">⚠️ Force Closed by Admin. Reason: {ticket.force_close_reason || ticket.force_closure_reason || "Customer unreachable after 3 attempts"}</p>
+                      </div>
+                    )}
+                    {!ticket.resolved_remotely && !ticket.force_closed && ticket.happiness_code_verified && (
+                      <p className="text-xs text-success/90 mt-1 font-medium">✅ Verified & Closed via Customer Happiness Code.</p>
+                    )}
+                    {!ticket.resolved_remotely && !ticket.force_closed && !ticket.happiness_code_verified && (
+                      <p className="text-xs text-success/90 mt-1">Ticket closed and finalized.</p>
+                    )}
+
                     <div className="text-[11px] text-muted-foreground pt-1 flex flex-wrap gap-4 border-t border-success/20 mt-1.5">
                       {ticket.closed_by && <span><strong>Closed By:</strong> {ticket.closed_by}</span>}
                       {(ticket.closure_timestamp || ticket.closed_at) && (
@@ -5260,11 +5448,23 @@ const ComplaintDetail = () => {
                   />
                 </div>
               )}
-              {ticket.technician_evidence && ticket.technician_evidence.length > 0 && (
+              {/* Phase 3: Diagnostic Evidence (Before / PIR) */}
+              {((ticket.evidence_urls && ticket.evidence_urls.length > 0) ||
+                (ticket.technician_evidence && ticket.technician_evidence.length > 0 && !ticket.resolution && !ticket.signoff_timestamp)) && (
+                <div className="pt-3 border-t mt-3">
+                  <ImageGallery
+                    images={ticket.evidence_urls && ticket.evidence_urls.length > 0 ? ticket.evidence_urls : ticket.technician_evidence!}
+                    title="📸 Phase 3: Diagnostic Evidence (Before / PIR)"
+                    uploader="technician"
+                  />
+                </div>
+              )}
+              {/* Phase 5: Resolution Evidence (After) */}
+              {ticket.technician_evidence && ticket.technician_evidence.length > 0 && (Boolean(ticket.resolution) || Boolean(ticket.signoff_timestamp)) && (
                 <div className="pt-3 border-t mt-3">
                   <ImageGallery
                     images={ticket.technician_evidence}
-                    title="🔧 Phase 3 & 5: Technician Diagnostic & Resolution Proofs"
+                    title="✅ Phase 5: Resolution Evidence (After)"
                     uploader="technician"
                   />
                 </div>

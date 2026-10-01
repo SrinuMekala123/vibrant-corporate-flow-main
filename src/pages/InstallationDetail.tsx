@@ -512,10 +512,23 @@ export default function InstallationDetail() {
           instData.completed_at = localCached.completed_at;
         }
 
+        if (!instData.force_close_reason && instData.customer_feedback_comments?.includes('[Force Closed - ')) {
+          const match = instData.customer_feedback_comments.match(/\[Force Closed - ([^\]]+)\](?:\s*(.*))?/);
+          if (match) {
+            instData.force_close_reason = match[1];
+            if (match[2] && !instData.force_close_comments) {
+              instData.force_close_comments = match[2];
+            }
+          }
+        }
+        if (instData.force_closed || instData.status === 'force_closed' || instData.customer_feedback_comments?.includes('[Force Closed - ')) {
+          instData.force_closed = true;
+        }
+
         setInstallation(instData);
         const st = getInstallationStatusLabel(instData.status || '').toLowerCase();
         let phase = instData.current_phase || 1;
-        if (st === 'verified' || instData.force_closed) phase = 6;
+        if (st === 'verified' || instData.force_closed || instData.status === 'force_closed') phase = 6;
         else if (st === 'site completed and handed over') phase = 5;
         else if (st === 'in progress') phase = 4;
         else if (st === 'dispatched') phase = 3;
@@ -1224,41 +1237,51 @@ export default function InstallationDetail() {
       const nowIso = new Date().toISOString();
       const adminName = currentUser?.full_name || currentUser?.email || 'Admin';
       const formattedComments = forceCloseComments.trim();
-      const updateData: any = {
+      const feedbackCommentValue = formattedComments 
+        ? `[Force Closed - ${forceCloseReason}] ${formattedComments}` 
+        : `[Force Closed - ${forceCloseReason}]`;
+
+      const safePayload: any = {
         current_phase: 6,
-        status: 'Verified',
+        status: 'force_closed',
         verified_at: nowIso,
         verified_by: currentUser?.id,
         customer_satisfaction: customerSatisfaction || 'Satisfied (Force Closed)',
-        customer_feedback_comments: formattedComments ? `[Force Closed - ${forceCloseReason}] ${formattedComments}` : `[Force Closed - ${forceCloseReason}]`,
+        customer_feedback_comments: feedbackCommentValue,
         happiness_code_verified: false,
         force_closed: true,
-        force_close_reason: forceCloseReason,
-        force_close_comments: formattedComments || null,
         force_closed_by: adminName,
+        closed_at: nowIso,
+        closure_timestamp: nowIso,
         updated_at: nowIso
       };
 
-      const { error } = await supabase
+      const { error: fullError } = await supabase
         .from('installations')
-        .update(updateData)
+        .update({
+          ...safePayload,
+          force_close_reason: forceCloseReason,
+          force_close_comments: formattedComments || null,
+        })
         .eq('id', id);
 
-      if (error) {
-        console.warn("Full force close update failed, trying fallback:", error);
-        await supabase
+      if (fullError) {
+        console.warn("Full force close update failed (likely missing DB columns), using safe payload:", fullError);
+        const { error: safeError } = await supabase
           .from('installations')
-          .update({
-            status: 'Verified',
-            current_phase: 6,
-            verified_at: nowIso,
-            force_closed: true,
-            force_close_reason: forceCloseReason,
-            force_close_comments: formattedComments || null,
-            force_closed_by: adminName
-          })
+          .update(safePayload)
           .eq('id', id);
+        if (safeError) throw safeError;
       }
+
+      // Immediately update local state so Phase 6 circle turns green instantly
+      setInstallation((prev: any) => prev ? ({
+        ...prev,
+        ...safePayload,
+        force_close_reason: forceCloseReason,
+        force_close_comments: formattedComments || null,
+      }) : prev);
+      setCurrentPhase(6);
 
       // Stage 4 WhatsApp Notification on Force Close
       const displayId = formatInstallationTicketId(installation) || installation?.ticket_id || id?.slice(0, 8);
@@ -1304,7 +1327,7 @@ export default function InstallationDetail() {
       setShowForceCloseModal(false);
       setForceCloseReason('');
       setForceCloseComments('');
-      fetchInstallation();
+      await fetchInstallation();
     } catch (error: any) {
       console.error("Failed to force close installation:", error);
       toast.error(error?.message || "Failed to force close installation");
@@ -1403,10 +1426,14 @@ export default function InstallationDetail() {
   const canView = isAdmin || isSupervisor || isLeadTechnician || isAssignedTechnician;
   const currentStatusLower = (installation?.status || '').toLowerCase();
   
-  const isForceClosed = Boolean(installation?.force_closed || currentStatusLower === 'force_closed');
-  const isVerified = currentStatusLower === 'verified' || getInstallationStatusLabel(currentStatusLower) === 'Verified';
-  const isClosed = currentStatusLower === 'verified' || currentStatusLower === 'force_closed' || installation?.force_closed || currentStatusLower === 'closed';
-  const isClosedOrVerified = isForceClosed || isVerified;
+  const isForceClosed = Boolean(
+    installation?.force_closed || 
+    currentStatusLower === 'force_closed' || 
+    installation?.customer_feedback_comments?.includes('[Force Closed - ')
+  );
+  const isVerified = currentStatusLower === 'verified' || getInstallationStatusLabel(currentStatusLower) === 'Verified' || isForceClosed;
+  const isClosed = currentStatusLower === 'verified' || currentStatusLower === 'force_closed' || installation?.force_closed || currentStatusLower === 'closed' || isForceClosed;
+  const isClosedOrVerified = isForceClosed || isVerified || currentPhase >= 6;
   const isPhase5ReadyForVerification = (currentPhase === 5 || getInstallationStatusLabel(currentStatusLower) === 'Site Completed and Handed Over') && !isClosedOrVerified;
 
   const normalizedStatusValue = getInstallationStatusLabel(installation?.status || 'Assigned');
@@ -2248,6 +2275,31 @@ export default function InstallationDetail() {
                     <p className="font-bold text-slate-900">{customerSatisfaction || installation.customer_satisfaction || 'Not recorded'}</p>
                   </div>
                 </div>
+
+                {/* Closure Method Banner */}
+                {isForceClosed ? (
+                  <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
+                    <p className="font-bold text-emerald-800 flex items-center gap-1.5 text-sm">
+                      ✅ Ticket Successfully Closed
+                    </p>
+                    <div className="mt-2 p-2 bg-amber-50 border border-amber-200 rounded text-xs">
+                      <p className="font-bold text-amber-800">⚠️ Force Closed by Admin. Reason: {installation.force_close_reason || 'Administrative Override'}</p>
+                      {installation.force_close_comments && <p className="text-amber-700 mt-0.5">Comments: {installation.force_close_comments}</p>}
+                    </div>
+                  </div>
+                ) : isVerified ? (
+                  <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
+                    <p className="font-bold text-emerald-800 flex items-center gap-1.5 text-sm">
+                      ✅ Ticket Successfully Closed
+                    </p>
+                    {installation.resolved_remotely ? (
+                      <p className="text-xs text-blue-700 mt-1.5 font-semibold">📞 Fixed via Remote Fix</p>
+                    ) : (
+                      <p className="text-xs text-emerald-700 mt-1.5">✅ Verified & Closed via Customer Happiness Code.</p>
+                    )}
+                  </div>
+                ) : null}
+
                 {installation.force_closed && (
                   <div className="bg-amber-100/70 border border-amber-300 rounded-xl p-3">
                     <p className="font-bold text-amber-900">⚡ Force Closed Details:</p>
@@ -2660,35 +2712,38 @@ export default function InstallationDetail() {
 
       {/* Read-Only Force Close Summary Card */}
       {isForceClosed && (
-        <div className="bg-amber-50/90 border-2 border-amber-300 rounded-2xl p-6 shadow-xs space-y-3">
+        <div className="bg-emerald-50/90 border-2 border-emerald-300 rounded-2xl p-6 shadow-xs space-y-3">
           <div className="flex items-center justify-between">
-            <h4 className="font-bold text-amber-950 text-base flex items-center gap-2">
-              <Zap className="w-5 h-5 text-amber-600 fill-amber-500" />
-              ⚡ Force Closed Installation Summary (Phase 6)
+            <h4 className="font-bold text-emerald-950 text-base flex items-center gap-2">
+              <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+              ✓ Installation Completed (Phase 6) — Force Closed by Admin
             </h4>
-            <span className="px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider bg-amber-200 text-amber-900 border border-amber-300">
-              Force Closed
+            <span className="px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider bg-emerald-200 text-emerald-900 border border-emerald-300">
+              Completed
             </span>
           </div>
-          <div className="grid sm:grid-cols-2 gap-3 text-xs text-slate-800 pt-2 border-t border-amber-200">
-            <div>
-              <span className="text-amber-800 font-semibold block">Reason for Force Closure:</span>
-              <p className="font-bold text-slate-900 text-sm mt-0.5">{installation.force_close_reason || 'Administrative Override'}</p>
-            </div>
-            <div>
-              <span className="text-amber-800 font-semibold block">Closed By & Date:</span>
-              <p className="font-medium text-slate-800 mt-0.5">
-                {installation.force_closed_by || 'Admin'} on {formatDate(installation.verified_at || installation.updated_at)}
-              </p>
-            </div>
-            {installation.force_close_comments && (
-              <div className="sm:col-span-2 mt-1">
-                <span className="text-amber-800 font-semibold block mb-1">Administrative Comments:</span>
-                <p className="font-normal text-slate-800 bg-white/90 p-3 rounded-xl border border-amber-200 text-xs leading-relaxed">
-                  {installation.force_close_comments}
+          <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl space-y-2">
+            <p className="font-bold text-amber-800 text-xs">⚠️ Force Closed by Admin. Reason: {installation.force_close_reason || 'Administrative Override'}</p>
+            <div className="grid sm:grid-cols-2 gap-3 text-xs text-slate-800 pt-2 border-t border-amber-200">
+              <div>
+                <span className="text-amber-800 font-semibold block">Reason for Force Closure:</span>
+                <p className="font-bold text-slate-900 text-sm mt-0.5">{installation.force_close_reason || 'Administrative Override'}</p>
+              </div>
+              <div>
+                <span className="text-amber-800 font-semibold block">Closed By & Date:</span>
+                <p className="font-medium text-slate-800 mt-0.5">
+                  {installation.force_closed_by || 'Admin'} on {formatDate(installation.verified_at || installation.updated_at)}
                 </p>
               </div>
-            )}
+              {installation.force_close_comments && (
+                <div className="sm:col-span-2 mt-1">
+                  <span className="text-amber-800 font-semibold block mb-1">Administrative Comments:</span>
+                  <p className="font-normal text-slate-800 bg-white/90 p-3 rounded-xl border border-amber-200 text-xs leading-relaxed">
+                    {installation.force_close_comments}
+                  </p>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

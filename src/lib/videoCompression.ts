@@ -9,6 +9,8 @@ export interface VideoCompressionProgress {
   compressedSizeMB?: number;
 }
 
+export const MAX_VIDEO_FILE_SIZE_MB = 100;
+
 export const compressVideoForUpload = async (
   file: File,
   onProgress?: (progress: VideoCompressionProgress) => void
@@ -20,6 +22,12 @@ export const compressVideoForUpload = async (
   }
 
   const originalSizeMB = file.size / (1024 * 1024);
+
+  // Validate maximum limit (100MB) immediately before processing
+  if (originalSizeMB > MAX_VIDEO_FILE_SIZE_MB) {
+    throw new Error(`File is too large (Max ${MAX_VIDEO_FILE_SIZE_MB}MB). Please select a smaller file.`);
+  }
+
   if (originalSizeMB <= 6) {
     console.log(`[VideoCompression] File is already small (${originalSizeMB.toFixed(1)}MB), uploading directly.`);
     return file;
@@ -62,16 +70,17 @@ export const compressVideoForUpload = async (
 
   return new Promise((resolve) => {
     let isCompleted = false;
+    let activeTimeout: any = null;
 
-    // Safety timeout: abort if compression takes over 25 seconds
-    const safetyTimeout = setTimeout(() => {
+    // Safety timeout: generous 120-second initial limit for large drone videos
+    let safetyTimeout = setTimeout(() => {
       if (!isCompleted) {
         isCompleted = true;
-        console.warn('[VideoCompression] Compression reached safety timeout (25s), proceeding with original file.');
+        console.warn('[VideoCompression] Compression reached initial timeout (120s), proceeding with original file.');
         cleanup();
         resolve(file);
       }
-    }, 25000);
+    }, 120000);
 
     const video = document.createElement('video');
     const canvas = document.createElement('canvas');
@@ -96,6 +105,8 @@ export const compressVideoForUpload = async (
     let animationFrameId: number | null = null;
 
     const cleanup = () => {
+      if (activeTimeout) clearTimeout(activeTimeout);
+      if (safetyTimeout) clearTimeout(safetyTimeout);
       if (animationFrameId) cancelAnimationFrame(animationFrameId);
       if (videoUrl) {
         try { URL.revokeObjectURL(videoUrl); } catch (_) {}
@@ -111,6 +122,7 @@ export const compressVideoForUpload = async (
       if (isCompleted) return;
       isCompleted = true;
       clearTimeout(safetyTimeout);
+      if (activeTimeout) clearTimeout(activeTimeout);
       console.warn('[VideoCompression] Video load error (codec may not be decodable by browser), uploading original.');
       cleanup();
       resolve(file);
@@ -119,8 +131,24 @@ export const compressVideoForUpload = async (
     video.onloadedmetadata = () => {
       if (isCompleted) return;
 
-      // Target resolution: 720p HD (1280x720) or 540p (960x540 for large >30MB files)
-      const maxDimension = originalSizeMB > 30 ? 960 : 1280;
+      // Dynamic timeout based on actual video duration
+      clearTimeout(safetyTimeout);
+      const dynamicTimeoutMs = Math.max(90000, ((video.duration || 60) / 2) * 1000 + 20000);
+      activeTimeout = setTimeout(() => {
+        if (!isCompleted) {
+          isCompleted = true;
+          console.warn(`[VideoCompression] Compression timeout (${Math.round(dynamicTimeoutMs / 1000)}s), finalizing output.`);
+          if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+            mediaRecorder.stop();
+          } else {
+            cleanup();
+            resolve(file);
+          }
+        }
+      }, dynamicTimeoutMs);
+
+      // Target resolution: 720p HD (1280x720) or 540p (960x540 for >35MB) or 480p (854x480 for >60MB drone files)
+      const maxDimension = originalSizeMB > 60 ? 854 : (originalSizeMB > 35 ? 960 : 1280);
       let targetWidth = video.videoWidth || 1280;
       let targetHeight = video.videoHeight || 720;
 
@@ -156,13 +184,16 @@ export const compressVideoForUpload = async (
       if (!stream) {
         if (isCompleted) return;
         isCompleted = true;
-        clearTimeout(safetyTimeout);
         cleanup();
         return resolve(file);
       }
 
-      // 1.2 Mbps for evidence video provides sharp clarity while keeping file sizes small (~9MB/min)
-      const targetBitrate = originalSizeMB > 30 ? 1_000_000 : 1_400_000;
+      // Optimized bitrates: aggressive for heavy drone footage (>50MB) to stay well below storage limits
+      const targetBitrate = originalSizeMB > 60
+        ? 800_000
+        : originalSizeMB > 35
+        ? 1_000_000
+        : 1_400_000;
 
       try {
         mediaRecorder = new MediaRecorder(stream, {
@@ -173,7 +204,6 @@ export const compressVideoForUpload = async (
         console.warn('[VideoCompression] MediaRecorder creation failed:', recErr);
         if (isCompleted) return;
         isCompleted = true;
-        clearTimeout(safetyTimeout);
         cleanup();
         return resolve(file);
       }
@@ -187,7 +217,7 @@ export const compressVideoForUpload = async (
       mediaRecorder.onstop = () => {
         if (isCompleted) return;
         isCompleted = true;
-        clearTimeout(safetyTimeout);
+        cleanup();
 
         const extension = selectedMimeType.includes('mp4') ? 'mp4' : 'webm';
         const compressedBlob = new Blob(chunks, { type: selectedMimeType });
@@ -197,7 +227,6 @@ export const compressVideoForUpload = async (
 
         // If compression failed to reduce size or is corrupt, return original
         if (compressedBlob.size >= file.size || compressedBlob.size < 1000) {
-          cleanup();
           return resolve(file);
         }
 
@@ -214,7 +243,6 @@ export const compressVideoForUpload = async (
           compressedSizeMB
         });
 
-        cleanup();
         resolve(compressedFile);
       };
 
@@ -254,7 +282,6 @@ export const compressVideoForUpload = async (
         console.warn('[VideoCompression] Video play failed:', playErr);
         if (isCompleted) return;
         isCompleted = true;
-        clearTimeout(safetyTimeout);
         cleanup();
         resolve(file);
       });
@@ -262,10 +289,10 @@ export const compressVideoForUpload = async (
   });
 };
 
-export const validateVideoSize = (file: File): boolean => {
-  const maxSize = 50 * 1024 * 1024; // 50MB max
+export const validateVideoSize = (file: File, maxMB = MAX_VIDEO_FILE_SIZE_MB): boolean => {
+  const maxSize = maxMB * 1024 * 1024;
   if (file.size > maxSize) {
-    console.warn('Video exceeds maximum 50MB size limit:', file.size);
+    console.warn(`Video exceeds maximum ${maxMB}MB size limit:`, file.size);
     return false;
   }
   return true;

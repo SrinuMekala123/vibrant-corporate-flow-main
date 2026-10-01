@@ -429,3 +429,18 @@ html, body {
 .react-datepicker__portal .react-datepicker {
   animation: none !important;
 }
+
+/* Compact picker indicator for datetime-local: places calendar symbol directly beside format */
+input[type="datetime-local"].datetime-compact-input::-webkit-datetime-edit,
+.datetime-compact-input::-webkit-datetime-edit {
+  flex: 0 0 auto !important;
+  max-width: fit-content !important;
+}
+
+input[type="datetime-local"].datetime-compact-input::-webkit-calendar-picker-indicator,
+.datetime-compact-input::-webkit-calendar-picker-indicator {
+  margin-left: 8px !important;
+  margin-inline-start: 8px !important;
+  cursor: pointer;
+  padding: 2px;
+}

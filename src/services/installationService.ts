@@ -9,6 +9,8 @@ export interface Installation {
   non_btl_customer_name?: string | null;
   non_btl_contact_number?: string | null;
   non_btl_address?: string | null;
+  site_address?: string | null;
+  installation_site_address?: string | null;
   equipment_details?: string | null;
   brand?: string | null;
   priority: 'Critical' | 'High' | 'Medium' | 'Low' | string;
@@ -42,6 +44,13 @@ export interface Installation {
   correction_notes?: string | null;
   lead_technician_id?: string | null;
   reassignment_reason?: string | null;
+  // Force close fields
+  force_closed?: boolean | null;
+  force_close_reason?: string | null;
+  force_close_comments?: string | null;
+  force_closed_by?: string | null;
+  // Remote fix field
+  resolved_remotely?: boolean | null;
   created_at?: string;
   updated_at?: string;
 
@@ -51,6 +60,7 @@ export interface Installation {
     full_name: string;
     phone?: string;
     email?: string;
+    address?: string | null;
   } | null;
   location?: {
     id: string;
@@ -234,7 +244,11 @@ export const installationService = {
   getAll: async (): Promise<Installation[]> => {
     const { data, error } = await supabase
       .from("installations")
-      .select("*")
+      .select(`
+        *,
+        customer:customer_id (id, full_name, phone, email, address),
+        location:location_id (id, location_name, address, city, state, pincode)
+      `)
       .order("created_at", { ascending: false });
 
     if (error) {
@@ -281,17 +295,20 @@ export const installationService = {
       .from("installations")
       .select(`
         *,
-        customer:customers (
+        customer:customer_id (
           id,
           full_name,
           phone,
-          email
+          email,
+          address
         ),
-        location:customer_locations (
+        location:location_id (
           id,
           location_name,
           address,
-          city
+          city,
+          state,
+          pincode
         ),
         installation_technicians (
           id,
@@ -699,6 +716,8 @@ export const installationService = {
       customer_feedback_comments: null,
       customer_signature: null,
       completed_at: null,
+      closed_at: null,
+      closure_timestamp: null,
       arrival_time: null,
       arrival_gps_lat: null,
       arrival_gps_lng: null,
@@ -716,6 +735,9 @@ export const installationService = {
         delete stripped.happiness_code;
         delete stripped.happiness_code_sent_at;
         delete stripped.happiness_code_verified;
+        delete stripped.force_close_reason;
+        delete stripped.force_close_comments;
+        delete stripped.resolved_remotely;
         const { error: retryErr } = await supabase.from("installations").update(stripped).eq("id", installationId);
         if (retryErr) throw retryErr;
       } else {

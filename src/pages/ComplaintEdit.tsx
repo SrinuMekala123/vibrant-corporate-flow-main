@@ -1,10 +1,12 @@
 import { useParams, useNavigate } from "react-router-dom";
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { motion } from "framer-motion";
-import { ArrowLeft, Save, Filter, Loader2, Upload, X, Info, User, MapPin, ShieldCheck, AlertTriangle, Search, CheckCircle2, Crown, Package } from "lucide-react";
+import { ArrowLeft, Save, Filter, Loader2, Upload, X, Info, User, MapPin, ShieldCheck, AlertTriangle, Search, CheckCircle2, Crown, Package, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Command, CommandInput, CommandList, CommandEmpty, CommandItem } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -286,13 +288,261 @@ const ComplaintEdit = () => {
   const [showLocationSuggestions, setShowLocationSuggestions] = useState(false);
   const [locationHelp, setLocationHelp] = useState("");
   const [locationSuggestions, setLocationSuggestions] = useState<string[]>([]);
-  const [availableCategories, setAvailableCategories] = useState<string[]>(['Solar', 'Networking', 'Electrical', 'CCTV', 'Other']);
+  const [availableCategories, setAvailableCategories] = useState<string[]>(['Solar', 'Networking', 'Electrical', 'CCTV', 'Mixed Services', 'Other']);
+  const [userOverrodeFieldOfWork, setUserOverrodeFieldOfWork] = useState(false);
   const [isAssetsLoading, setIsAssetsLoading] = useState(false);
   const [customerAssets, setCustomerAssets] = useState<any[]>([]);
   const [selectedAssetId, setSelectedAssetId] = useState("");
   const [availableFieldOfWork, setAvailableFieldOfWork] = useState<string[]>([]);
 
-  // 📝 New Complaint Draft Persistence across tab switches & reloads
+  // 📦 Assets to Service (Multi-Asset Line Items)
+  const [assets, setAssets] = useState<Array<{
+    id?: string;
+    asset_type: string;
+    asset_name: string;
+    reported_issue: string;
+    warranty_status: 'Active' | 'Expired' | 'Not Applicable' | string;
+    is_chargeable: boolean;
+    service_charge: number;
+  }>>([
+    {
+      asset_type: '',
+      asset_name: '',
+      reported_issue: '',
+      warranty_status: 'Active',
+      is_chargeable: false,
+      service_charge: 0,
+    },
+  ]);
+
+  const handleAddAsset = () => {
+    setAssets((prev) => [
+      ...prev,
+      {
+        asset_type: '',
+        asset_name: '',
+        reported_issue: '',
+        warranty_status: 'Active',
+        is_chargeable: false,
+        service_charge: 0,
+      },
+    ]);
+  };
+
+  const handleRemoveAsset = (index: number) => {
+    setAssets((prev) => prev.filter((_, idx) => idx !== index));
+  };
+
+  const handleUpdateAsset = (index: number, field: string, value: any) => {
+    setAssets((prev) => {
+      const next = [...prev];
+      const target = { ...next[index], [field]: value };
+      if (field === 'warranty_status') {
+        if (value === 'Expired') {
+          target.is_chargeable = true;
+        } else if (value === 'Active' || value === 'Not Applicable') {
+          target.is_chargeable = false;
+          target.service_charge = 0;
+        }
+      }
+      if (field === 'is_chargeable' && !value) {
+        target.service_charge = 0;
+      }
+      next[index] = target;
+      return next;
+    });
+  };
+
+  const totalChargeableAmount = useMemo(() => {
+    return assets.reduce((sum, a) => sum + (a.is_chargeable ? (Number(a.service_charge) || 0) : 0), 0);
+  }, [assets]);
+
+  const handleSelectRegisteredAssetForRow = (index: number, assetId: string) => {
+    const chosen = customerAssets.find((a: any) => a.id === assetId);
+    if (!chosen) return;
+    const wInfo = getAssetWarrantyDetails(chosen.purchase_date, chosen.warranty_months);
+    const isExpired = wInfo.isExpired;
+    const brandPart = chosen.brand ? `[${chosen.brand}] ` : '';
+    const namePart = chosen.product_name || chosen.category || 'Asset';
+    const serialPart = chosen.serial_number ? ` (S/N: ${chosen.serial_number})` : '';
+
+    setAssets((prev) => {
+      const next = [...prev];
+      next[index] = {
+        ...next[index],
+        asset_type: chosen.category || next[index].asset_type,
+        asset_name: `${brandPart}${namePart}${serialPart}`,
+        warranty_status: isExpired ? 'Expired' : 'Active',
+        is_chargeable: isExpired,
+        service_charge: isExpired ? (next[index].service_charge || 0) : 0,
+      };
+      return next;
+    });
+  };
+
+  // 🧠 Smart Field of Work auto-detection from assets
+  const mapToStandardCategory = useCallback((type: string) => {
+    const raw = (type || '').trim();
+    if (!raw) return "";
+    const lower = raw.toLowerCase();
+    if (lower === 'camera' || lower.includes('cam') || lower.includes('cctv') || lower.includes('dvr') || lower.includes('nvr')) {
+      return 'CCTV';
+    }
+    if (lower.includes('solar') || lower.includes('inverter') || lower.includes('pv') || lower.includes('panel')) {
+      return 'Solar';
+    }
+    if (lower.includes('network') || lower.includes('router') || lower.includes('wifi') || lower.includes('switch') || lower.includes('lan')) {
+      return 'Networking';
+    }
+    if (lower.includes('electr') || lower.includes('wire') || lower.includes('power') || lower.includes('ups')) {
+      return 'Electrical';
+    }
+    // Match against known categories
+    const match = availableCategories.find(c => c.toLowerCase() === lower);
+    return match || raw;
+  }, [availableCategories]);
+
+  useEffect(() => {
+    if (userOverrodeFieldOfWork) return;
+
+    const validAssetTypes = assets
+      .map(a => (a.asset_type || '').trim())
+      .filter(t => t.length > 0);
+
+    if (validAssetTypes.length === 0) return;
+
+    const categories = Array.from(new Set(validAssetTypes.map(t => mapToStandardCategory(t))));
+
+    if (categories.length === 1) {
+      const singleCat = categories[0];
+      setForm(prev => {
+        if (prev.fieldOfWork !== singleCat) {
+          return { ...prev, fieldOfWork: singleCat };
+        }
+        return prev;
+      });
+    } else if (categories.length > 1) {
+      setForm(prev => {
+        if (prev.fieldOfWork !== "Mixed Services") {
+          return { ...prev, fieldOfWork: "Mixed Services" };
+        }
+        return prev;
+      });
+    }
+  }, [assets, userOverrodeFieldOfWork, mapToStandardCategory]);
+
+  // 🛡️ Auto-sync Coverage & Chargeable Service based on assets
+  useEffect(() => {
+    if (!assets || assets.length === 0) return;
+
+    const hasExpiredOrChargeable = assets.some(
+      a => a.warranty_status === 'Expired' || a.is_chargeable === true
+    );
+
+    const calculatedTotalCharge = assets.reduce(
+      (sum, a) => sum + (a.is_chargeable ? (Number(a.service_charge) || 0) : 0),
+      0
+    );
+
+    if (hasExpiredOrChargeable) {
+      setForm(prev => {
+        if (
+          prev.coverage === "Chargeable Service" &&
+          prev.chargeableService === "Yes" &&
+          prev.serviceCharge === calculatedTotalCharge
+        ) {
+          return prev;
+        }
+        return {
+          ...prev,
+          coverage: "Chargeable Service",
+          chargeableService: "Yes",
+          serviceCharge: calculatedTotalCharge,
+        };
+      });
+    } else {
+      setForm(prev => {
+        if (
+          prev.coverage === "Under Warranty" &&
+          prev.chargeableService === "No" &&
+          prev.serviceCharge === 0
+        ) {
+          return prev;
+        }
+        return {
+          ...prev,
+          coverage: "Under Warranty",
+          chargeableService: "No",
+          serviceCharge: 0,
+        };
+      });
+    }
+  }, [assets]);
+
+  // 📝 New Complaint Draft Persistence & Clearing
+  const isDraftClearedRef = useRef(false);
+
+  const clearDraft = useCallback(() => {
+    isDraftClearedRef.current = true;
+    try {
+      localStorage.removeItem('draft_new_complaint');
+      sessionStorage.removeItem('draft_new_complaint');
+    } catch (e) {
+      console.warn("Failed to clear draft:", e);
+    }
+  }, []);
+
+  const resetFormToBlank = useCallback(() => {
+    clearDraft();
+    setForm({
+      title: "",
+      customerId: "",
+      customerName: "",
+      customerPhone: "",
+      customerEmail: "",
+      location: "",
+      locationId: "",
+      fieldOfWork: "",
+      coverage: "Under Warranty",
+      chargeableService: "No",
+      serviceCharge: 0,
+      brand: "",
+      status: "unassigned",
+      severity: "minor" as SeverityTier,
+      assignedSupervisor: "",
+      assignedTechnician: "",
+      description: "",
+      supervisor_notes: "",
+      targetEndTime: "",
+      scheduledDate: null,
+      scheduledTime: "",
+      customerLat: null,
+      customerLng: null,
+    });
+    setAssets([
+      {
+        asset_type: '',
+        asset_name: '',
+        reported_issue: '',
+        warranty_status: 'Active',
+        is_chargeable: false,
+        service_charge: 0,
+      },
+    ]);
+    setSelectedSupervisorId("");
+    setSelectedTechnicianIds([]);
+    setLeadTechnicianId(null);
+    setEvidenceUrls([]);
+    setSelectedLocationId("");
+    setSelectedAssetId("");
+    setUserOverrodeFieldOfWork(false);
+  }, [clearDraft]);
+
+  const handleCancel = useCallback(() => {
+    resetFormToBlank();
+    navigate(-1);
+  }, [resetFormToBlank, navigate]);
+
   useEffect(() => {
     if (!isNew) return;
     try {
@@ -311,6 +561,10 @@ const ComplaintEdit = () => {
         if (parsed.selectedTechnicianIds) setSelectedTechnicianIds(parsed.selectedTechnicianIds);
         if (parsed.leadTechnicianId) setLeadTechnicianId(parsed.leadTechnicianId);
         if (parsed.evidenceUrls) setEvidenceUrls(parsed.evidenceUrls);
+        if (parsed.assets && Array.isArray(parsed.assets) && parsed.assets.length > 0) {
+          setAssets(parsed.assets);
+        }
+        if (parsed.userOverrodeFieldOfWork) setUserOverrodeFieldOfWork(Boolean(parsed.userOverrodeFieldOfWork));
       }
     } catch (e) {
       console.warn("Failed to restore new complaint draft:", e);
@@ -318,10 +572,11 @@ const ComplaintEdit = () => {
   }, [isNew]);
 
   useEffect(() => {
-    if (!isNew) return;
+    if (!isNew || isDraftClearedRef.current || isSaving) return;
     const timer = setTimeout(() => {
       try {
-        const hasContent = form.title || form.customerId || form.customerName || form.description;
+        if (isDraftClearedRef.current || isSaving) return;
+        const hasContent = form.title || form.customerId || form.customerName || form.description || assets.some(a => a.asset_name || a.asset_type);
         if (hasContent) {
           const data = {
             form,
@@ -330,6 +585,8 @@ const ComplaintEdit = () => {
             selectedTechnicianIds,
             leadTechnicianId,
             evidenceUrls,
+            assets,
+            userOverrodeFieldOfWork,
           };
           localStorage.setItem('draft_new_complaint', JSON.stringify(data));
         }
@@ -338,7 +595,46 @@ const ComplaintEdit = () => {
       }
     }, 500);
     return () => clearTimeout(timer);
-  }, [isNew, form, customerType, selectedSupervisorId, selectedTechnicianIds, leadTechnicianId, evidenceUrls]);
+  }, [isNew, isSaving, form, customerType, selectedSupervisorId, selectedTechnicianIds, leadTechnicianId, evidenceUrls, assets, userOverrodeFieldOfWork]);
+
+  // ✅ Validation checks controlling the "Create Complaint" / "Save" button state
+  const hasValidCustomer = Boolean(
+    isCustomer
+      ? (form.customerId || user?.id)
+      : (customerType === "Existing BTL Customer" ? Boolean(form.customerId) : Boolean(form.customerName?.trim()))
+  );
+
+  const hasValidLocation = Boolean(form.location && form.location.trim().length > 0);
+
+  // Must have at least 1 valid asset with a name
+  const hasValidAssets = Boolean(
+    assets.length > 0 &&
+    assets.some(a => (a.asset_name || '').trim().length > 0)
+  );
+
+  // Main issue text area
+  const hasValidDescription = Boolean(form.description && form.description.trim().length > 0);
+
+  // Field of Work (auto-filled by Requirement 2 or manually selected)
+  const hasValidFieldOfWork = Boolean(form.fieldOfWork && form.fieldOfWork.trim().length > 0);
+
+  const isFormValid = Boolean(
+    hasValidCustomer &&
+    hasValidLocation &&
+    hasValidAssets &&
+    hasValidDescription &&
+    hasValidFieldOfWork
+  );
+
+  const missingRequiredFields = useMemo(() => {
+    const list: string[] = [];
+    if (!hasValidCustomer) list.push(customerType === "Existing BTL Customer" ? "Customer" : "Customer Name");
+    if (!hasValidLocation) list.push("Location");
+    if (!hasValidAssets) list.push("Asset Name");
+    if (!hasValidDescription) list.push("Problem Description");
+    if (!hasValidFieldOfWork) list.push("Field of Work");
+    return list;
+  }, [hasValidCustomer, customerType, hasValidLocation, hasValidAssets, hasValidDescription, hasValidFieldOfWork]);
 
   // 🛡️ Derived Asset & Warranty Expiry Information
   const selectedAsset = useMemo(() => {
@@ -887,6 +1183,48 @@ const ComplaintEdit = () => {
         setSelectedTechnicianIds([]);
         setLeadTechnicianId(null);
       }
+
+      // Load complaint_assets
+      if ((existingComplaint as any).complaint_assets && (existingComplaint as any).complaint_assets.length > 0) {
+        setAssets((existingComplaint as any).complaint_assets.map((a: any) => ({
+          id: a.id,
+          asset_type: a.asset_type || '',
+          asset_name: a.asset_name || '',
+          reported_issue: a.reported_issue || '',
+          warranty_status: (a.warranty_status === 'Expired' ? 'Expired' : 'Active') as 'Active' | 'Expired',
+          is_chargeable: typeof a.is_chargeable === 'boolean' ? a.is_chargeable : (a.warranty_status === 'Expired'),
+          service_charge: Number(a.service_charge) || 0,
+        })));
+      } else if (existingComplaint.id) {
+        supabase
+          .from('complaint_assets')
+          .select('*')
+          .eq('complaint_id', existingComplaint.id)
+          .order('created_at', { ascending: true })
+          .then(({ data, error }) => {
+            if (!error && data && data.length > 0) {
+              setAssets(data.map((a: any) => ({
+                id: a.id,
+                asset_type: a.asset_type || '',
+                asset_name: a.asset_name || '',
+                reported_issue: a.reported_issue || '',
+                warranty_status: (a.warranty_status === 'Expired' ? 'Expired' : 'Active') as 'Active' | 'Expired',
+                is_chargeable: typeof a.is_chargeable === 'boolean' ? a.is_chargeable : (a.warranty_status === 'Expired'),
+                service_charge: Number(a.service_charge) || 0,
+              })));
+            } else {
+              // Legacy single-asset fallback
+              setAssets([{
+                asset_type: existingComplaint.field_of_work || '',
+                asset_name: existingComplaint.brand || existingComplaint.title || '',
+                reported_issue: existingComplaint.description || '',
+                warranty_status: existingComplaint.coverage === 'Out of Warranty' ? 'Expired' : 'Active',
+                is_chargeable: existingComplaint.chargeable_service === 'Yes' || String(existingComplaint.chargeable_service) === 'true',
+                service_charge: Number(existingComplaint.service_charge) || 0,
+              }]);
+            }
+          });
+      }
     }
   }, [existingComplaint]);
 
@@ -1145,10 +1483,9 @@ const ComplaintEdit = () => {
       return;
     }
     
-    // Strict validations
+    // Ensure title exists or generate from description / asset
     if (!form.title || form.title.trim() === "") {
-      toast.error("Please provide a title for the issue");
-      return;
+      form.title = form.description ? form.description.slice(0, 60).trim() : (assets[0]?.asset_name || "Complaint Service Request");
     }
     
     if (isCustomer || customerType === "Existing BTL Customer") {
@@ -1183,6 +1520,31 @@ const ComplaintEdit = () => {
     if (!form.location || form.location.trim() === "") {
       toast.error("Location / site address must be filled");
       return;
+    }
+
+    // Mandatory Assets to Service Check: must have at least 1 valid asset with a name
+    const validAssets = assets.filter(a => (a.asset_name || '').trim().length > 0);
+    if (validAssets.length === 0) {
+      toast.error("Please add at least one asset with an asset name");
+      return;
+    }
+
+    // Auto-fill asset_type if left empty
+    validAssets.forEach(a => {
+      if (!a.asset_type || a.asset_type.trim() === "") {
+        a.asset_type = form.fieldOfWork || "General";
+      }
+    });
+
+    // Auto-sync fieldOfWork, coverage, chargeableService if empty so backward-compatible schemas remain satisfied
+    if (!form.fieldOfWork && validAssets[0]?.asset_type) {
+      form.fieldOfWork = validAssets[0].asset_type;
+    }
+    if (!form.coverage) {
+      form.coverage = assets.some(a => a.warranty_status === 'Active') ? 'Under Warranty' : 'Out of Warranty';
+    }
+    if (!form.chargeableService) {
+      form.chargeableService = assets.some(a => a.is_chargeable) ? 'Yes' : 'No';
     }
     
     if (!form.fieldOfWork || form.fieldOfWork.trim() === "") {
@@ -1412,9 +1774,9 @@ const ComplaintEdit = () => {
           location_id: (isExistingBtl && selectedLocationId) ? selectedLocationId : null,
           location: form.location || null,
           field_of_work: form.fieldOfWork || null,
-          coverage: form.coverage || "Out of Warranty",
-          chargeable_service: form.chargeableService || "No",
-          service_charge: form.chargeableService === "Yes" ? (Number(form.serviceCharge) || 0) : 0,
+          coverage: form.coverage || (assets.some(a => a.warranty_status === 'Active') ? "Under Warranty" : "Out of Warranty"),
+          chargeable_service: form.chargeableService || (assets.some(a => a.is_chargeable) ? "Yes" : "No"),
+          service_charge: form.chargeableService === "Yes" ? (Number(form.serviceCharge) || totalChargeableAmount) : totalChargeableAmount,
           brand: form.brand || null,
           severity: form.severity || null,
           current_phase: phase,
@@ -1431,8 +1793,26 @@ const ComplaintEdit = () => {
           console.log("✅ Complaint created ID:", newComplaint.id);
         }
 
+        // Insert Assets: Store multiple line items in complaint_assets table
+        if (newComplaint?.id && validAssets.length > 0) {
+          const assetsToInsert = validAssets.map(a => ({
+            complaint_id: newComplaint.id,
+            asset_type: a.asset_type,
+            asset_name: a.asset_name,
+            reported_issue: a.reported_issue,
+            warranty_status: a.warranty_status,
+            is_chargeable: a.is_chargeable,
+            service_charge: a.service_charge || 0
+          }));
+          const { error: assetInsErr } = await supabase.from('complaint_assets').insert(assetsToInsert);
+          if (assetInsErr) {
+            console.error("Failed to insert complaint assets:", assetInsErr);
+          }
+        }
+
         // Invalidate queries so lists/dashboards/customers update immediately
         queryClient.invalidateQueries({ queryKey: ['complaints'] });
+        queryClient.invalidateQueries({ queryKey: ['complaint_assets'] });
         queryClient.invalidateQueries({ queryKey: ['dashboard-complaints'] });
         queryClient.invalidateQueries({ queryKey: ['customer-complaints'] });
         queryClient.invalidateQueries({ queryKey: ['customers'] });
@@ -1507,7 +1887,8 @@ const ComplaintEdit = () => {
           }
         })();
 
-        localStorage.removeItem('draft_new_complaint');
+        clearDraft();
+        resetFormToBlank();
         if (isCustomer) {
           toast.success(`Complaint #${displayTicketId} submitted! Our team will contact you soon.`);
           navigate("/dashboard");
@@ -1565,9 +1946,9 @@ const ComplaintEdit = () => {
           location: form.location || null,
           location_id: selectedLocationId || null,
           field_of_work: form.fieldOfWork || null,
-          coverage: form.coverage || "Out of Warranty",
-          chargeable_service: form.chargeableService || "No",
-          service_charge: form.chargeableService === "Yes" ? (Number(form.serviceCharge) || 0) : 0,
+          coverage: form.coverage || (assets.some(a => a.warranty_status === 'Active') ? "Under Warranty" : "Out of Warranty"),
+          chargeable_service: form.chargeableService || (assets.some(a => a.is_chargeable) ? "Yes" : "No"),
+          service_charge: form.chargeableService === "Yes" ? (Number(form.serviceCharge) || totalChargeableAmount) : totalChargeableAmount,
           brand: form.brand || null,
           severity: form.severity || null,
           status: nextStatus,
@@ -1629,12 +2010,36 @@ const ComplaintEdit = () => {
           }
         }
 
+        // Sync complaint_assets: delete old assets for this complaint and re-insert updated list
+        if (id && validAssets.length > 0) {
+          const { error: delErr } = await supabase.from('complaint_assets').delete().eq('complaint_id', id);
+          if (delErr) {
+            console.warn("Failed to delete old complaint assets:", delErr);
+          }
+          const assetsToInsert = validAssets.map(a => ({
+            complaint_id: id,
+            asset_type: a.asset_type,
+            asset_name: a.asset_name,
+            reported_issue: a.reported_issue,
+            warranty_status: a.warranty_status,
+            is_chargeable: a.is_chargeable,
+            service_charge: a.service_charge || 0
+          }));
+          const { error: assetUpdateErr } = await supabase.from('complaint_assets').insert(assetsToInsert);
+          if (assetUpdateErr) {
+            console.error("Failed to update complaint assets:", assetUpdateErr);
+          }
+        }
+
         // Invalidate queries so lists/dashboards/details update immediately
         queryClient.invalidateQueries({ queryKey: ['complaints'] });
+        queryClient.invalidateQueries({ queryKey: ['complaint_assets'] });
+        queryClient.invalidateQueries({ queryKey: ['complaint_assets', id] });
         queryClient.invalidateQueries({ queryKey: ['dashboard-complaints'] });
         queryClient.invalidateQueries({ queryKey: ['customer-complaints'] });
         queryClient.invalidateQueries({ queryKey: ['complaint', id] });
 
+        clearDraft();
         toast.success("Complaint updated!");
         navigate("/complaints");
       }
@@ -1662,7 +2067,7 @@ const ComplaintEdit = () => {
   return (
     <div className="space-y-6 w-full pb-20">
       <div className="flex items-center gap-3">
-        <button onClick={() => navigate(-1)} className="w-9 h-9 rounded-lg bg-muted hover:bg-muted/80 flex items-center justify-center" disabled={isSaving}>
+        <button onClick={handleCancel} className="w-9 h-9 rounded-lg bg-muted hover:bg-muted/80 flex items-center justify-center" disabled={isSaving}>
           <ArrowLeft className="w-4 h-4" />
         </button>
         <h1 className="text-xl font-display font-bold">
@@ -1683,314 +2088,134 @@ const ComplaintEdit = () => {
       )}
 
       <motion.form initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} onSubmit={handleSave} className="glass-card rounded-xl p-6 space-y-6">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {!isNew && (
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Ticket ID (Auto-Generated)</label>
-              <Input 
-                value={existingComplaint?.ticket_id || `Ticket #${id?.slice(0, 8)}`} 
-                disabled 
-                readOnly
-                className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100 font-mono text-xs"
-              />
-            </div>
-          )}
-
-          <div className="space-y-2">
-            <div className="flex justify-between items-center">
-              <label className="text-sm font-medium">Issue Title <span className="text-destructive">*</span></label>
-              <span className="text-xs text-muted-foreground">
-                {(form.title || "").length}/250
-              </span>
-            </div>
-            <Input 
-              value={form.title} 
-              onChange={(e) => setForm(prev => ({ ...prev, title: e.target.value }))} 
-              placeholder="Brief description of the problem..." 
-              required 
-              disabled={isSaving || (!isNew && !isAdminOrSupervisor)} 
-              maxLength={250} 
-              className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
-            />
-          </div>
-
-          {isCustomer ? (
-            <>
-              <div className="space-y-2">
-                <label className="text-sm font-medium">Your Name</label>
-                <Input value={form.customerName} disabled className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100" />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium">Contact Phone <span className="text-destructive">*</span></label>
+        {/* ==================================================================== */}
+        {/* 📋 SECTION 1: TOP DETAILS (TICKET ID, ISSUE TITLE, CUSTOMER & SITE) */}
+        {/* ==================================================================== */}
+        <div className="space-y-4">
+          {/* Ticket ID & Full-Width Issue Title */}
+          <div className={`grid grid-cols-1 ${!isNew ? 'md:grid-cols-3' : 'grid-cols-1'} gap-4`}>
+            {!isNew && (
+              <div className="space-y-1.5 md:col-span-1">
+                <label className="text-sm font-medium">Ticket ID (Auto-Generated)</label>
                 <Input 
-                  value={form.customerPhone} 
-                  onChange={(e) => setForm(prev => ({ ...prev, customerPhone: e.target.value }))} 
-                  placeholder="+91 9876543210" 
-                  required 
-                  disabled={isSaving || (!isNew && !isAdminOrSupervisor)} 
-                  className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
+                  value={existingComplaint?.ticket_id || `Ticket #${id?.slice(0, 8)}`} 
+                  disabled 
+                  readOnly
+                  className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100 font-mono text-xs"
                 />
               </div>
-            </>
-          ) : (
-            <>
-              {/* Customer Type Toggle */}
-              <div className="space-y-2 sm:col-span-2">
-                <label className="text-sm font-bold text-slate-700">
-                  Customer Type <span className="text-destructive">*</span>
-                </label>
-                <div className="flex flex-wrap gap-4 pt-1">
-                  <label className="flex items-center gap-2 cursor-pointer font-medium text-xs bg-slate-50 hover:bg-slate-100 p-2.5 rounded-xl border border-slate-200 transition-colors">
-                    <input
-                      type="radio"
-                      name="customer_type"
-                      value="Existing BTL Customer"
-                      checked={customerType === "Existing BTL Customer"}
-                      onChange={() => {
-                        setCustomerType("Existing BTL Customer");
-                        setForm(prev => ({ ...prev, customerId: "", customerName: "", customerPhone: "", customerEmail: "", coverage: "Under Warranty", chargeableService: "No" }));
-                      }}
-                      disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
-                      className="text-primary focus:ring-primary h-4 w-4"
-                    />
-                    <span className="text-slate-800 font-bold">🔘 Registered BTL Customer</span>
-                  </label>
+            )}
 
-                  <label className="flex items-center gap-2 cursor-pointer font-medium text-xs bg-amber-50/70 hover:bg-amber-100/70 p-2.5 rounded-xl border border-amber-200 transition-colors">
-                    <input
-                      type="radio"
-                      name="customer_type"
-                      value="New / Non-BTL Customer"
-                      checked={customerType === "New / Non-BTL Customer"}
-                      onChange={() => {
-                        setCustomerType("New / Non-BTL Customer");
-                        setSelectedLocationId("");
-                        setForm(prev => ({
-                          ...prev,
-                          customerId: "",
-                          customerName: "",
-                          customerPhone: "",
-                          customerEmail: "",
-                          locationId: "",
-                          coverage: "Out of Warranty",
-                          chargeableService: "Yes"
-                        }));
-                      }}
-                      disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
-                      className="text-amber-600 focus:ring-amber-500 h-4 w-4"
-                    />
-                    <span className="text-amber-900 font-bold">🔘 Direct Call / Walk-in / Non-BTL</span>
-                  </label>
-                </div>
+            <div className={`space-y-1.5 ${!isNew ? 'md:col-span-2' : 'w-full'}`}>
+              <div className="flex justify-between items-center">
+                <label className="text-sm font-medium">Issue Title <span className="text-destructive">*</span></label>
+                <span className="text-xs text-muted-foreground">
+                  {(form.title || "").length}/250
+                </span>
               </div>
+              <Input 
+                value={form.title} 
+                onChange={(e) => setForm(prev => ({ ...prev, title: e.target.value }))} 
+                placeholder="Brief description of the problem..." 
+                required 
+                disabled={isSaving || (!isNew && !isAdminOrSupervisor)} 
+                maxLength={250} 
+                className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
+              />
+            </div>
+          </div>
 
-              {customerType === "Existing BTL Customer" ? (
-                <>
-                  {isCustomersLoading && !isNew ? (
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium">Customer</label>
-                      <div className="flex items-center gap-2 text-muted-foreground">
-                        <Loader2 className="w-4 h-4 animate-spin" /> Loading customers...
-                      </div>
-                    </div>
-                  ) : (
-                    <>
-                      <div className="space-y-2">
-                        <label className="text-sm font-medium">Customer <span className="text-destructive">*</span></label>
-                        <Popover open={isCustomerPopoverOpen && !isCustomersLoading} onOpenChange={setIsCustomerPopoverOpen}>
-                          <PopoverTrigger asChild>
-                            <Button
-                              variant="outline"
-                              role="combobox"
-                              className="h-10 w-full justify-between font-normal disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
-                               disabled={isSaving || !customers || (!isNew && !isAdminOrSupervisor)}
-                            >
-                              {form.customerName ? (
-                                <span className="truncate font-medium">{form.customerName}</span>
-                              ) : (
-                                <span className="text-muted-foreground">Search by name, phone, or email...</span>
-                              )}
-                              <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                            </Button>
-                          </PopoverTrigger>
-                          <PopoverContent className="w-full p-0" align="start">
-                            <Command>
-                              <CommandInput placeholder="Search customer by name, phone, or email..." />
-                              <CommandList>
-                                <CommandEmpty className="py-4 text-center text-xs space-y-2">
-                                  <p className="text-muted-foreground">No existing customer found.</p>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setCustomerType("New / Non-BTL Customer");
-                                      setSelectedLocationId("");
-                                      setForm(prev => ({
-                                        ...prev,
-                                        customerId: "",
-                                        customerName: "",
-                                        customerPhone: "",
-                                        customerEmail: "",
-                                        locationId: "",
-                                        coverage: "Out of Warranty",
-                                        chargeableService: "Yes"
-                                      }));
-                                      setIsCustomerPopoverOpen(false);
-                                    }}
-                                    className="inline-flex items-center gap-1 text-xs font-semibold text-amber-800 bg-amber-100 hover:bg-amber-200 px-3 py-1.5 rounded-lg transition-colors cursor-pointer"
-                                  >
-                                    + Create as Walk-in / New Customer
-                                  </button>
-                                </CommandEmpty>
-                                {customers?.map((c: any) => (
-                                  <CommandItem
-                                    key={c.id}
-                                    value={`${c.full_name} ${c.phone || ''} ${c.email || ''}`}
-                                    onSelect={() => {
-                                      setForm(prev => ({
-                                        ...prev,
-                                        customerId: c.id,
-                                        customerName: c.full_name || "",
-                                        customerPhone: c.phone || "",
-                                        customerEmail: c.email || "",
-                                        location: c.address || prev.location,
-                                        fieldOfWork: ""
-                                      }));
-                                      setIsCustomerPopoverOpen(false);
-                                    }}
-                                  >
-                                    <div className="flex flex-col">
-                                      <span className="font-medium">{c.full_name}</span>
-                                      <span className="text-xs text-muted-foreground">{c.phone} {c.email ? `• ${c.email}` : ''}</span>
-                                    </div>
-                                  </CommandItem>
-                                ))}
-                              </CommandList>
-                            </Command>
-                          </PopoverContent>
-                        </Popover>
-                      </div>
-                      <div className="space-y-2">
-                        <label className="text-sm font-medium">Phone</label>
-                        <Input 
-                          value={form.customerPhone} 
-                          onChange={(e) => setForm(prev => ({ ...prev, customerPhone: e.target.value }))} 
-                          placeholder="+91 ..." 
-                          disabled={isSaving || (!isNew && !isAdminOrSupervisor)} 
-                          className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
-                        />
-                      </div>
-                    </>
-                  )}
+          {/* Customer & Location 2-Column Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+            {isCustomer ? (
+              <>
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium">Your Name</label>
+                  <Input value={form.customerName} disabled className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100" />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium">Contact Phone <span className="text-destructive">*</span></label>
+                  <Input 
+                    value={form.customerPhone} 
+                    onChange={(e) => setForm(prev => ({ ...prev, customerPhone: e.target.value }))} 
+                    placeholder="+91 9876543210" 
+                    required 
+                    disabled={isSaving || (!isNew && !isAdminOrSupervisor)} 
+                    className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
+                  />
+                </div>
+              </>
+            ) : (
+              <>
+                {/* Row 1, Col 1: Customer Type Toggle */}
+                <div className="space-y-1.5">
+                  <label className="text-sm font-bold text-slate-700 dark:text-slate-300">
+                    Customer Type <span className="text-destructive">*</span>
+                  </label>
+                  <div className="flex items-center gap-2 pt-0.5">
+                    <label className="flex items-center gap-2 cursor-pointer font-medium text-xs bg-slate-50 dark:bg-slate-900/60 hover:bg-slate-100 dark:hover:bg-slate-800 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 transition-colors flex-1">
+                      <input
+                        type="radio"
+                        name="customer_type"
+                        value="Existing BTL Customer"
+                        checked={customerType === "Existing BTL Customer"}
+                        onChange={() => {
+                          setCustomerType("Existing BTL Customer");
+                          setForm(prev => ({ ...prev, customerId: "", customerName: "", customerPhone: "", customerEmail: "", coverage: "Under Warranty", chargeableService: "No" }));
+                        }}
+                        disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
+                        className="text-primary focus:ring-primary h-4 w-4"
+                      />
+                      <span className="text-slate-800 dark:text-slate-200 font-bold truncate">🔘 Registered BTL</span>
+                    </label>
 
-                  {/* Customer Location Dropdown */}
-                  {form.customerId && (
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium">Installation / Service Location</label>
-                      {isLocationsLoading ? (
-                        <div className="flex items-center gap-2 text-muted-foreground">
-                          <Loader2 className="w-4 h-4 animate-spin" /> Loading locations...
-                        </div>
-                      ) : customerLocations.length === 0 ? (
-                        <p className="text-xs text-muted-foreground">{isCustomer ? "No saved locations found. Please enter address below." : "No locations found for this customer."}</p>
-                      ) : (
-                        <Select
-                          value={selectedLocationId}
-                          onValueChange={(v) => {
-                            const loc = customerLocations.find((l: any) => l.id === v);
-                            setSelectedLocationId(v);
-                            setForm(prev => ({
-                              ...prev,
-                              locationId: v,
-                              location: loc ? formatFullCustomerAddress(loc) : prev.location,
-                            }));
-                          }}
-                          disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
-                        >
-                          <SelectTrigger className="h-auto min-h-10 py-2 text-left whitespace-normal break-words max-w-full">
-                            <SelectValue placeholder="Select location" className="whitespace-normal break-words text-left" />
-                          </SelectTrigger>
-                          <SelectContent className="max-w-[92vw] sm:max-w-lg">
-                            {customerLocations.map((loc: any) => (
-                              <SelectItem key={loc.id} value={loc.id} className="whitespace-normal break-words py-2">
-                                <div className="flex flex-col text-left py-0.5 max-w-full">
-                                  <span className="font-semibold break-words">{loc.location_name}</span>
-                                  <span className="text-xs text-muted-foreground break-words whitespace-normal leading-relaxed mt-0.5">
-                                    {formatFullCustomerAddress(loc)}
-                                    {loc.is_primary && " • Primary"}
-                                  </span>
-                                </div>
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      )}
-                    </div>
-                  )}
-                </>
-              ) : (
-                /* Walk-in / Direct Customer Fields */
-                <>
-                  {/* Smart Walk-in Alert Banner */}
-                  {showMatchAlert && matchedCustomer && (
-                    <motion.div
-                      initial={{ opacity: 0, y: -8 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      className="sm:col-span-2 p-4 rounded-xl bg-amber-500/10 border-2 border-amber-500/40 text-amber-950 dark:text-amber-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-md"
-                    >
-                      <div className="flex items-start gap-2.5">
-                        <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-                        <div>
-                          <p className="font-bold text-sm">
-                            ⚠️ Existing Customer Profile Detected!
-                          </p>
-                          <p className="text-xs text-amber-900/80 dark:text-amber-300/80 mt-0.5">
-                            This phone number matches registered customer: <strong>{matchedCustomer.full_name}</strong> ({matchedCustomer.phone}). Do you want to link this ticket to their registered account instead?
-                          </p>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto">
-                        <Button
-                          type="button"
-                          size="sm"
-                          onClick={() => handleConvertToRegistered(matchedCustomer)}
-                          className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs h-8 px-3 shadow-sm rounded-lg flex-1 sm:flex-none"
-                        >
-                          <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> Yes, Switch to Registered
-                        </Button>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => {
-                            setOverrideDuplicateCustomer(true);
-                            setShowMatchAlert(false);
-                            toast.info("Proceeding with direct entry without linking registered account.");
-                          }}
-                          className="text-xs h-8 px-2.5 text-slate-600 hover:text-slate-900 rounded-lg"
-                        >
-                          No, Keep as Walk-in
-                        </Button>
-                      </div>
-                    </motion.div>
-                  )}
+                    <label className="flex items-center gap-2 cursor-pointer font-medium text-xs bg-amber-50/70 dark:bg-amber-950/40 hover:bg-amber-100/70 dark:hover:bg-amber-900/40 p-2.5 rounded-xl border border-amber-200 dark:border-amber-800 transition-colors flex-1">
+                      <input
+                        type="radio"
+                        name="customer_type"
+                        value="New / Non-BTL Customer"
+                        checked={customerType === "New / Non-BTL Customer"}
+                        onChange={() => {
+                          setCustomerType("New / Non-BTL Customer");
+                          setSelectedLocationId("");
+                          setForm(prev => ({
+                            ...prev,
+                            customerId: "",
+                            customerName: "",
+                            customerPhone: "",
+                            customerEmail: "",
+                            locationId: "",
+                            coverage: "Out of Warranty",
+                            chargeableService: "Yes"
+                          }));
+                        }}
+                        disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
+                        className="text-amber-600 focus:ring-amber-500 h-4 w-4"
+                      />
+                      <span className="text-amber-900 dark:text-amber-300 font-bold truncate">🔘 Direct / Walk-in</span>
+                    </label>
+                  </div>
+                </div>
 
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">Client / Customer Name <span className="text-destructive">*</span></label>
+                {/* Row 1, Col 2: Phone */}
+                {customerType === "Existing BTL Customer" ? (
+                  <div className="space-y-1.5">
+                    <label className="text-sm font-medium">Contact Phone</label>
                     <Input 
-                      value={form.customerName} 
-                      onChange={(e) => setForm(prev => ({ ...prev, customerName: e.target.value }))} 
-                      placeholder="e.g. Ramesh Kumar / Direct Client" 
-                      required 
+                      value={form.customerPhone} 
+                      onChange={(e) => setForm(prev => ({ ...prev, customerPhone: e.target.value }))} 
+                      placeholder="+91 ..." 
                       disabled={isSaving || (!isNew && !isAdminOrSupervisor)} 
-                      className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
+                      className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
                     />
                   </div>
-                  <div className="space-y-2">
+                ) : (
+                  <div className="space-y-1.5">
                     <label className="text-sm font-medium flex items-center justify-between">
                       <span>Contact Phone / WhatsApp <span className="text-destructive">*</span></span>
                       {isCheckingPhone && (
                         <span className="text-[10px] text-primary flex items-center gap-1 font-semibold">
-                          <Loader2 className="w-3 h-3 animate-spin" /> Checking customer database...
+                          <Loader2 className="w-3 h-3 animate-spin" /> Checking...
                         </span>
                       )}
                     </label>
@@ -2007,10 +2232,205 @@ const ComplaintEdit = () => {
                       placeholder="+91 9876543210" 
                       required 
                       disabled={isSaving || (!isNew && !isAdminOrSupervisor)} 
-                      className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
+                      className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
                     />
                   </div>
-                  <div className="space-y-2">
+                )}
+
+                {/* Smart Walk-in Alert Banner */}
+                {showMatchAlert && matchedCustomer && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="md:col-span-2 p-4 rounded-xl bg-amber-500/10 border-2 border-amber-500/40 text-amber-950 dark:text-amber-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-md"
+                  >
+                    <div className="flex items-start gap-2.5">
+                      <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="font-bold text-sm">
+                          ⚠️ Existing Customer Profile Detected!
+                        </p>
+                        <p className="text-xs text-amber-900/80 dark:text-amber-300/80 mt-0.5">
+                          This phone number matches registered customer: <strong>{matchedCustomer.full_name}</strong> ({matchedCustomer.phone}). Do you want to link this ticket to their registered account instead?
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto">
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => handleConvertToRegistered(matchedCustomer)}
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs h-8 px-3 shadow-sm rounded-lg flex-1 sm:flex-none"
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> Yes, Switch to Registered
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          setOverrideDuplicateCustomer(true);
+                          setShowMatchAlert(false);
+                          toast.info("Proceeding with direct entry without linking registered account.");
+                        }}
+                        className="text-xs h-8 px-2.5 text-slate-600 hover:text-slate-900 rounded-lg"
+                      >
+                        No, Keep as Walk-in
+                      </Button>
+                    </div>
+                  </motion.div>
+                )}
+
+                {/* Row 2, Col 1: Customer Search / Input */}
+                {customerType === "Existing BTL Customer" ? (
+                  isCustomersLoading && !isNew ? (
+                    <div className="space-y-1.5">
+                      <label className="text-sm font-medium">Customer</label>
+                      <div className="flex items-center gap-2 text-muted-foreground h-10">
+                        <Loader2 className="w-4 h-4 animate-spin" /> Loading customers...
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5">
+                      <label className="text-sm font-medium">Customer <span className="text-destructive">*</span></label>
+                      <Popover open={isCustomerPopoverOpen && !isCustomersLoading} onOpenChange={setIsCustomerPopoverOpen}>
+                        <PopoverTrigger asChild>
+                          <Button
+                            variant="outline"
+                            role="combobox"
+                            className="h-10 w-full justify-between font-normal disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
+                            disabled={isSaving || !customers || (!isNew && !isAdminOrSupervisor)}
+                          >
+                            {form.customerName ? (
+                              <span className="truncate font-medium">{form.customerName}</span>
+                            ) : (
+                              <span className="text-muted-foreground">Search by name, phone, or email...</span>
+                            )}
+                            <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-full p-0" align="start">
+                          <Command>
+                            <CommandInput placeholder="Search customer by name, phone, or email..." />
+                            <CommandList>
+                              <CommandEmpty className="py-4 text-center text-xs space-y-2">
+                                <p className="text-muted-foreground">No existing customer found.</p>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setCustomerType("New / Non-BTL Customer");
+                                    setSelectedLocationId("");
+                                    setForm(prev => ({
+                                      ...prev,
+                                      customerId: "",
+                                      customerName: "",
+                                      customerPhone: "",
+                                      customerEmail: "",
+                                      locationId: "",
+                                      coverage: "Out of Warranty",
+                                      chargeableService: "Yes"
+                                    }));
+                                    setIsCustomerPopoverOpen(false);
+                                  }}
+                                  className="inline-flex items-center gap-1 text-xs font-semibold text-amber-800 bg-amber-100 hover:bg-amber-200 px-3 py-1.5 rounded-lg transition-colors cursor-pointer"
+                                >
+                                  + Create as Walk-in / New Customer
+                                </button>
+                              </CommandEmpty>
+                              {customers?.map((c: any) => (
+                                <CommandItem
+                                  key={c.id}
+                                  value={`${c.full_name} ${c.phone || ''} ${c.email || ''}`}
+                                  onSelect={() => {
+                                    setForm(prev => ({
+                                      ...prev,
+                                      customerId: c.id,
+                                      customerName: c.full_name || "",
+                                      customerPhone: c.phone || "",
+                                      customerEmail: c.email || "",
+                                      location: c.address || prev.location,
+                                      fieldOfWork: ""
+                                    }));
+                                    setIsCustomerPopoverOpen(false);
+                                  }}
+                                >
+                                  <div className="flex flex-col">
+                                    <span className="font-medium">{c.full_name}</span>
+                                    <span className="text-xs text-muted-foreground">{c.phone} {c.email ? `• ${c.email}` : ''}</span>
+                                  </div>
+                                </CommandItem>
+                              ))}
+                            </CommandList>
+                          </Command>
+                        </PopoverContent>
+                      </Popover>
+                    </div>
+                  )
+                ) : (
+                  <div className="space-y-1.5">
+                    <label className="text-sm font-medium">Client / Customer Name <span className="text-destructive">*</span></label>
+                    <Input 
+                      value={form.customerName} 
+                      onChange={(e) => setForm(prev => ({ ...prev, customerName: e.target.value }))} 
+                      placeholder="e.g. Ramesh Kumar / Direct Client" 
+                      required 
+                      disabled={isSaving || (!isNew && !isAdminOrSupervisor)} 
+                      className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
+                    />
+                  </div>
+                )}
+
+                {/* Row 2, Col 2: Service Location Dropdown (for BTL) OR Email (for Walk-in) */}
+                {customerType === "Existing BTL Customer" ? (
+                  <div className="space-y-1.5">
+                    <label className="text-sm font-medium">Installation / Service Location</label>
+                    {!form.customerId ? (
+                      <div className="h-10 px-3 py-2 border rounded-md bg-muted/30 text-xs text-muted-foreground flex items-center">
+                        Select a customer to view saved locations
+                      </div>
+                    ) : isLocationsLoading ? (
+                      <div className="flex items-center gap-2 text-muted-foreground h-10">
+                        <Loader2 className="w-4 h-4 animate-spin" /> Loading locations...
+                      </div>
+                    ) : customerLocations.length === 0 ? (
+                      <div className="h-10 px-3 py-2 border rounded-md bg-muted/30 text-xs text-muted-foreground flex items-center">
+                        No saved locations found. Enter address below.
+                      </div>
+                    ) : (
+                      <Select
+                        value={selectedLocationId}
+                        onValueChange={(v) => {
+                          const loc = customerLocations.find((l: any) => l.id === v);
+                          setSelectedLocationId(v);
+                          setForm(prev => ({
+                            ...prev,
+                            locationId: v,
+                            location: loc ? formatFullCustomerAddress(loc) : prev.location,
+                          }));
+                        }}
+                        disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
+                      >
+                        <SelectTrigger className="h-10 text-left truncate">
+                          <SelectValue placeholder="Select location" className="truncate text-left" />
+                        </SelectTrigger>
+                        <SelectContent className="max-w-[92vw] sm:max-w-lg">
+                          {customerLocations.map((loc: any) => (
+                            <SelectItem key={loc.id} value={loc.id} className="whitespace-normal break-words py-2">
+                              <div className="flex flex-col text-left py-0.5 max-w-full">
+                                <span className="font-semibold break-words">{loc.location_name}</span>
+                                <span className="text-xs text-muted-foreground break-words whitespace-normal leading-relaxed mt-0.5">
+                                  {formatFullCustomerAddress(loc)}
+                                  {loc.is_primary && " • Primary"}
+                                </span>
+                              </div>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
                     <label className="text-sm font-medium">Contact Email (Optional)</label>
                     <Input 
                       type="email"
@@ -2018,255 +2438,378 @@ const ComplaintEdit = () => {
                       onChange={(e) => setForm(prev => ({ ...prev, customerEmail: e.target.value }))} 
                       placeholder="client@example.com" 
                       disabled={isSaving || (!isNew && !isAdminOrSupervisor)} 
-                      className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
+                      className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
                     />
                   </div>
-                </>
-              )}
-            </>
-          )}
-
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Location <span className="text-destructive">*</span></label>
-            
-            <div className="flex flex-col sm:flex-row sm:items-start gap-3 w-full">
-              {isCustomer && (
-                <div className="w-full sm:w-auto sm:max-w-xs shrink-0 flex flex-col gap-1.5">
-                  <Button 
-                    type="button" 
-                    variant="outline" 
-                    onClick={handleGetCurrentLocation}
-                    disabled={isLocating || isSaving || !isNew}
-                    className="w-full flex items-center justify-center gap-2 py-2 border-dashed border-primary/40 hover:border-primary/80 hover:bg-primary/5 transition-all h-11 sm:h-9"
-                  >
-                    {isLocating ? (
-                      <>
-                        <Loader2 className="w-4 h-4 animate-spin mr-2" />
-                        Detecting...
-                      </>
-                    ) : (
-                      <>
-                        <MapPin className="w-4 h-4 mr-2 text-primary" />
-                        Use Current Location
-                      </>
-                    )}
-                  </Button>
-                  <p className="text-[10px] text-muted-foreground mt-0.5 text-center sm:text-left">
-                    Use current location if you are at the field site
-                  </p>
-                  <div className="flex items-center justify-center my-1 sm:hidden">
-                    <div className="h-[1px] bg-border flex-1"></div>
-                    <span className="text-[10px] text-muted-foreground px-3 font-semibold uppercase">OR</span>
-                    <div className="h-[1px] bg-border flex-1"></div>
-                  </div>
-                </div>
-              )}
-              
-              <div className="relative flex-1 w-full">
-                <Input 
-                  value={form.location} 
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    setForm(prev => ({ ...prev, location: val }));
-                    setShowLocationSuggestions(true);
-                  }}
-                  onFocus={() => setShowLocationSuggestions(true)}
-                  onBlur={() => {
-                    // A brief timeout allows the click event on the suggestion button to register first
-                    setTimeout(() => setShowLocationSuggestions(false), 200);
-                  }}
-                  placeholder={isCustomer ? "Or enter address manually" : "Enter complete address"} 
-                  required 
-                  disabled={isSaving || (!isNew && !isAdminOrSupervisor)} 
-                  className="w-full h-11 sm:h-9 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100" 
-                />
-                
-                {showLocationSuggestions && filteredSuggestions.length > 0 && (
-                  <div className="absolute z-50 left-0 right-0 mt-1 bg-popover text-popover-foreground border shadow-lg rounded-xl p-1 max-h-60 overflow-y-auto w-full">
-                    {filteredSuggestions.map((suggestion) => (
-                      <button
-                        key={suggestion}
-                        type="button"
-                        onClick={() => {
-                          setForm(prev => ({ ...prev, location: suggestion }));
-                          setShowLocationSuggestions(false);
-                        }}
-                        className="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-accent hover:text-accent-foreground transition-colors truncate"
-                        disabled={!isNew}
-                      >
-                        {suggestion}
-                      </button>
-                    ))}
-                  </div>
                 )}
-              </div>
-            </div>
-            
-            {form.customerLat && form.customerLng && (
-              <p className="text-xs text-success flex items-center gap-1 mt-1">
-                <ShieldCheck className="w-3.5 h-3.5" />
-                GPS Coordinates Captured: {form.customerLat.toFixed(6)}, {form.customerLng.toFixed(6)}
-              </p>
+              </>
             )}
-            {locationHelp && (
-              <p className="text-xs text-amber-500 mt-1 font-medium">{locationHelp}</p>
-            )}
-          </div>
 
-          {/* Linked Customer Assets Dropdown & Warranty Expiry View */}
-          {customerAssets.length > 0 && (
-            <div className="space-y-3 p-4 bg-blue-50/60 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-900/60 rounded-2xl shadow-xs">
-              <label className="text-sm font-semibold flex items-center justify-between text-blue-900 dark:text-blue-200">
-                <span className="flex items-center gap-2">
-                  <Package className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                  Select Registered Customer Asset
-                </span>
-                <span className="text-xs text-muted-foreground font-normal">
-                  ({customerAssets.length} asset{customerAssets.length > 1 ? 's' : ''} available)
-                </span>
-              </label>
-
-              <Select
-                value={selectedAssetId}
-                onValueChange={handleAssetSelection}
-                disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
-              >
-                <SelectTrigger className="bg-white dark:bg-slate-900 border-blue-200 text-xs h-10">
-                  <SelectValue placeholder="Click to select customer's asset (Brand, Category, Serial No)..." />
-                </SelectTrigger>
-                <SelectContent className="max-h-60">
-                  {customerAssets.map((asset: any) => {
-                    const brandPart = asset.brand ? `[${asset.brand}] ` : '';
-                    const namePart = asset.product_name || asset.category || 'Asset';
-                    const serialPart = asset.serial_number ? ` • S/N: ${asset.serial_number}` : '';
-                    const aWInfo = getAssetWarrantyDetails(asset.purchase_date, asset.warranty_months);
-                    return (
-                      <SelectItem key={asset.id} value={asset.id} className="text-xs py-2">
-                        <div className="flex flex-col">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="font-semibold text-slate-800 dark:text-slate-200">
-                              {brandPart}{namePart}
-                            </span>
-                            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
-                              !aWInfo.isExpired ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' : 'bg-rose-100 text-rose-800 border border-rose-300'
-                            }`}>
-                              {!aWInfo.isExpired ? 'Warranty Active' : 'Expired'}
-                            </span>
-                          </div>
-                          <span className="text-[11px] text-muted-foreground">
-                            Category: <strong className="text-primary">{asset.category}</strong>{serialPart} • Expiry: {aWInfo.expiryDateStr}
-                          </span>
-                        </div>
-                      </SelectItem>
-                    );
-                  })}
-                </SelectContent>
-              </Select>
-
-              {/* Selected Asset Warranty & Expiry Info Card */}
-              {selectedAsset && selectedAssetWarranty && (
-                <div className={`p-4 rounded-xl border transition-all ${
-                  !selectedAssetWarranty.isExpired 
-                    ? 'bg-emerald-50/90 dark:bg-emerald-950/30 border-emerald-300 dark:border-emerald-800' 
-                    : 'bg-amber-50/90 dark:bg-amber-950/30 border-amber-300 dark:border-amber-800'
-                }`}>
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b pb-2.5 mb-3 border-current/10">
-                    <div className="flex items-center gap-2">
-                      <ShieldCheck className={`w-4 h-4 ${!selectedAssetWarranty.isExpired ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`} />
-                      <span className="font-bold text-xs uppercase tracking-wider text-slate-800 dark:text-slate-200">
-                        Asset Warranty & Hardware Specs
-                      </span>
-                    </div>
-                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold ${
-                      !selectedAssetWarranty.isExpired
-                        ? 'bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-200 border border-emerald-300 dark:border-emerald-700'
-                        : 'bg-rose-100 dark:bg-rose-900/60 text-rose-800 dark:text-rose-200 border border-rose-300 dark:border-rose-700'
-                    }`}>
-                      {!selectedAssetWarranty.isExpired ? (
+            {/* Row 3: Location / Address (Full Width across 2 columns) */}
+            <div className="md:col-span-2 space-y-1.5">
+              <label className="text-sm font-medium">Location / Address <span className="text-destructive">*</span></label>
+              
+              <div className="flex flex-col sm:flex-row sm:items-start gap-3 w-full">
+                {isCustomer && (
+                  <div className="w-full sm:w-auto sm:max-w-xs shrink-0 flex flex-col gap-1.5">
+                    <Button 
+                      type="button" 
+                      variant="outline" 
+                      onClick={handleGetCurrentLocation}
+                      disabled={isLocating || isSaving || !isNew}
+                      className="w-full flex items-center justify-center gap-2 py-2 border-dashed border-primary/40 hover:border-primary/80 hover:bg-primary/5 transition-all h-10"
+                    >
+                      {isLocating ? (
                         <>
-                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                          Active Warranty ({selectedAssetWarranty.daysRemaining > 0 ? `${selectedAssetWarranty.daysRemaining} days left` : 'Active'})
+                          <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                          Detecting...
                         </>
                       ) : (
                         <>
-                          <AlertTriangle className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400" />
-                          Warranty Expired ({selectedAssetWarranty.expiryDateStr})
+                          <MapPin className="w-4 h-4 mr-2 text-primary" />
+                          Use Current Location
                         </>
                       )}
-                    </span>
+                    </Button>
+                    <p className="text-[10px] text-muted-foreground mt-0.5 text-center sm:text-left">
+                      Use current location if you are at the field site
+                    </p>
                   </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 text-xs">
-                    <div>
-                      <span className="text-muted-foreground block text-[11px] font-medium">Warranty Expiry Date:</span>
-                      <strong className="text-sm font-bold text-slate-900 dark:text-slate-100">
-                        {selectedAssetWarranty.expiryDateStr}
-                      </strong>
+                )}
+                
+                <div className="relative flex-1 w-full">
+                  <Input 
+                    value={form.location} 
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setForm(prev => ({ ...prev, location: val }));
+                      setShowLocationSuggestions(true);
+                    }}
+                    onFocus={() => setShowLocationSuggestions(true)}
+                    onBlur={() => {
+                      setTimeout(() => setShowLocationSuggestions(false), 200);
+                    }}
+                    placeholder={isCustomer ? "Or enter address manually" : "Enter complete address"} 
+                    required 
+                    disabled={isSaving || (!isNew && !isAdminOrSupervisor)} 
+                    className="w-full h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100" 
+                  />
+                  
+                  {showLocationSuggestions && filteredSuggestions.length > 0 && (
+                    <div className="absolute z-50 left-0 right-0 mt-1 bg-popover text-popover-foreground border shadow-lg rounded-xl p-1 max-h-60 overflow-y-auto w-full">
+                      {filteredSuggestions.map((suggestion) => (
+                        <button
+                          key={suggestion}
+                          type="button"
+                          onClick={() => {
+                            setForm(prev => ({ ...prev, location: suggestion }));
+                            setShowLocationSuggestions(false);
+                          }}
+                          className="w-full text-left px-3 py-2 text-sm rounded-lg hover:bg-accent hover:text-accent-foreground transition-colors truncate"
+                          disabled={!isNew}
+                        >
+                          {suggestion}
+                        </button>
+                      ))}
                     </div>
-
-                    <div>
-                      <span className="text-muted-foreground block text-[11px] font-medium">Purchase Date & Span:</span>
-                      <span className="font-semibold text-slate-800 dark:text-slate-200">
-                        {selectedAssetWarranty.purchaseDateStr} ({selectedAssetWarranty.months} Months)
-                      </span>
-                    </div>
-
-                    <div>
-                      <span className="text-muted-foreground block text-[11px] font-medium">Hardware Identity:</span>
-                      <span className="font-mono text-slate-700 dark:text-slate-300">
-                        {selectedAsset.serial_number ? `S/N: ${selectedAsset.serial_number}` : selectedAsset.model_number ? `Model: ${selectedAsset.model_number}` : selectedAsset.brand || 'N/A'}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="mt-3 pt-2.5 border-t border-current/10 flex items-center gap-2 text-[11px]">
-                    {!selectedAssetWarranty.isExpired ? (
-                      <p className="text-emerald-800 dark:text-emerald-300 font-medium">
-                        ✓ <strong>Warranty Active:</strong> Coverage is automatically preset to <strong>Under Warranty</strong> and Chargeable Service to <strong>No</strong> (Included in Scope).
-                      </p>
-                    ) : (
-                      <p className="text-amber-800 dark:text-amber-300 font-medium">
-                        ⚠️ <strong>Warranty Expired:</strong> Coverage is preset to <strong>Out of Warranty</strong> and Chargeable Service to <strong>Yes</strong>.
-                      </p>
-                    )}
-                  </div>
+                  )}
                 </div>
+              </div>
+              
+              {form.customerLat && form.customerLng && (
+                <p className="text-xs text-success flex items-center gap-1 mt-1">
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  GPS Coordinates Captured: {form.customerLat.toFixed(6)}, {form.customerLng.toFixed(6)}
+                </p>
               )}
+              {locationHelp && (
+                <p className="text-xs text-amber-500 mt-1 font-medium">{locationHelp}</p>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* ==================================================================== */}
+        {/* 📦 SECTION 2: ASSETS TO SERVICE (FULL WIDTH - NO EMPTY GAPS)        */}
+        {/* ==================================================================== */}
+        <div className="space-y-4 p-5 bg-card border border-border/80 rounded-2xl shadow-xs">
+          {/* Header */}
+          <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
+            <div className="flex items-center gap-2.5">
+              <Package className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+              <h3 className="font-bold text-base text-slate-800 dark:text-slate-100">Assets to Service</h3>
+              <span className="bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300 px-2.5 py-0.5 rounded-full text-xs font-semibold">
+                {assets.length} {assets.length === 1 ? 'Asset' : 'Assets'}
+              </span>
+            </div>
+
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleAddAsset}
+              disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
+              className="border-dashed border-2 border-blue-200 hover:border-blue-400 text-blue-600 hover:text-blue-700 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-400 dark:hover:bg-blue-950/50 font-semibold text-xs h-9 px-3 gap-1.5 transition-all shadow-none"
+            >
+              <Plus className="w-4 h-4" />
+              + Add Asset
+            </Button>
+          </div>
+
+          {/* List of asset cards */}
+          {assets.length === 0 ? (
+            <div className="text-center py-8 border-2 border-dashed rounded-xl border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/30">
+              <Package className="w-8 h-8 text-slate-400 mx-auto mb-2 opacity-60" />
+              <p className="text-sm font-medium text-slate-600 dark:text-slate-400 mb-3">No assets added to this complaint yet.</p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleAddAsset}
+                className="border-dashed border-2 border-blue-200 text-blue-600 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-400 gap-1.5 font-semibold text-xs h-9"
+              >
+                <Plus className="w-4 h-4" />
+                + Add First Asset
+              </Button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {assets.map((asset, index) => {
+                const isExpiredOrChargeable = asset.warranty_status === 'Expired' || Boolean(asset.is_chargeable);
+
+                return (
+                  <div
+                    key={index}
+                    className="border border-slate-200 dark:border-slate-800 rounded-lg p-4 mb-3 bg-white dark:bg-card shadow-sm transition-all hover:border-slate-300 dark:hover:border-slate-700"
+                  >
+                    {/* Top Bar inside Card: Item Label, Badges & Quick-fill */}
+                    <div className="flex items-center justify-between gap-2 pb-2.5 mb-3 border-b border-slate-100 dark:border-slate-800/80">
+                      <div className="flex items-center flex-wrap gap-2">
+                        <span className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                          Item #{index + 1}
+                        </span>
+                        {asset.warranty_status === 'Active' ? (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
+                            Active Warranty (Free)
+                          </span>
+                        ) : asset.warranty_status === 'Expired' ? (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300 border border-amber-200 dark:border-amber-800">
+                            Warranty Expired • Chargeable
+                          </span>
+                        ) : (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                            Not Applicable
+                          </span>
+                        )}
+
+                        {asset.warranty_status !== 'Expired' && (
+                          <label className="text-[11px] text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 flex items-center gap-1.5 cursor-pointer ml-1 select-none">
+                            <Checkbox
+                              id={`chargeable-check-${index}`}
+                              checked={asset.is_chargeable}
+                              onCheckedChange={(checked) => handleUpdateAsset(index, 'is_chargeable', Boolean(checked))}
+                              disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
+                              className="h-3.5 w-3.5"
+                            />
+                            <span>Manual Chargeable Override</span>
+                          </label>
+                        )}
+                      </div>
+
+                      {/* Optional Quick-fill from registered customer assets if available */}
+                      {customerAssets.length > 0 && (
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[10px] text-slate-400 hidden sm:inline">Registered Asset:</span>
+                          <Select
+                            onValueChange={(val) => handleSelectRegisteredAssetForRow(index, val)}
+                            disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
+                          >
+                            <SelectTrigger className="h-7 text-[11px] px-2 w-[150px] bg-slate-50 dark:bg-slate-900 border-dashed text-slate-600 dark:text-slate-300">
+                              <SelectValue placeholder="Quick-fill..." />
+                            </SelectTrigger>
+                            <SelectContent className="max-h-56">
+                              {customerAssets.map((ca: any) => {
+                                const brandPart = ca.brand ? `[${ca.brand}] ` : '';
+                                const namePart = ca.product_name || ca.category || 'Asset';
+                                return (
+                                  <SelectItem key={ca.id} value={ca.id} className="text-xs">
+                                    {brandPart}{namePart} ({ca.category || 'Item'})
+                                  </SelectItem>
+                                );
+                              })}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Top Row (Grid Layout: 12 Columns) */}
+                    <div className="grid grid-cols-12 gap-3 items-end">
+                      {/* Column 1 (Wide): Asset Name */}
+                      <div className="col-span-12 sm:col-span-4 space-y-1">
+                        <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                          Asset Name <span className="text-destructive">*</span>
+                        </label>
+                        <Input
+                          placeholder="e.g., Front Gate Camera"
+                          value={asset.asset_name}
+                          onChange={(e) => handleUpdateAsset(index, 'asset_name', e.target.value)}
+                          disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
+                          className="h-9 text-sm"
+                          required
+                        />
+                      </div>
+
+                      {/* Column 2 (Medium): Asset Type */}
+                      <div className="col-span-12 sm:col-span-3 space-y-1">
+                        <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                          Asset Type <span className="text-destructive">*</span>
+                        </label>
+                        <Input
+                          placeholder="e.g., Camera, DVR, Solar"
+                          value={asset.asset_type}
+                          onChange={(e) => handleUpdateAsset(index, 'asset_type', e.target.value)}
+                          disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
+                          className="h-9 text-sm"
+                          required
+                        />
+                      </div>
+
+                      {/* Column 3 (Small): Warranty Status */}
+                      <div className="col-span-6 sm:col-span-2 space-y-1">
+                        <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                          Warranty Status
+                        </label>
+                        <Select
+                          value={asset.warranty_status}
+                          onValueChange={(val) => handleUpdateAsset(index, 'warranty_status', val)}
+                          disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
+                        >
+                          <SelectTrigger className="h-9 text-sm">
+                            <SelectValue placeholder="Status" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="Active">Active</SelectItem>
+                            <SelectItem value="Expired">Expired</SelectItem>
+                            <SelectItem value="Not Applicable">Not Applicable</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      {/* Column 4 (Small): Service Charge (Enabled if Expired / Chargeable) */}
+                      <div className="col-span-5 sm:col-span-2 space-y-1">
+                        <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                          Service Charge
+                        </label>
+                        <div className="relative">
+                          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-medium text-slate-400 select-none">
+                            ₹
+                          </span>
+                          <Input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            placeholder="0"
+                            value={asset.service_charge || ''}
+                            onChange={(e) => handleUpdateAsset(index, 'service_charge', parseFloat(e.target.value) || 0)}
+                            disabled={!isExpiredOrChargeable || isSaving || (!isNew && !isAdminOrSupervisor)}
+                            className="h-9 pl-6 text-sm font-medium disabled:bg-slate-50 dark:disabled:bg-slate-900/40 disabled:text-slate-400 disabled:border-slate-200 dark:disabled:border-slate-800"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Column 5 (Icon): Delete/Trash Button */}
+                      <div className="col-span-1 sm:col-span-1 flex items-end justify-center pb-0.5">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => handleRemoveAsset(index)}
+                          disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
+                          className="h-9 w-9 text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 rounded-lg transition-colors"
+                          title="Remove this asset"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* Bottom Row (Full Width): Reported Issue */}
+                    <div className="mt-3 space-y-1">
+                      <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                        Reported Issue
+                      </label>
+                      <Input
+                        placeholder="Describe the issue with this equipment (e.g., No power, video flicker, lens blur)..."
+                        value={asset.reported_issue}
+                        onChange={(e) => handleUpdateAsset(index, 'reported_issue', e.target.value)}
+                        disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
+                        className="h-9 text-sm w-full"
+                      />
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
 
-          <div className="space-y-2">
+          {/* Footer Summary: Invoice-style footer */}
+          {assets.length > 0 && (
+            <div className="bg-slate-50 dark:bg-slate-900/60 rounded-lg p-4 mt-4 border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+              <div className="text-slate-500 dark:text-slate-400 text-sm flex items-center flex-wrap gap-2">
+                <span>Total Assets: <strong className="text-slate-700 dark:text-slate-200 font-semibold">{assets.length}</strong></span>
+                <span>•</span>
+                <span>Chargeable: <strong className="text-amber-600 dark:text-amber-400 font-semibold">{assets.filter(a => a.is_chargeable || a.warranty_status === 'Expired').length}</strong></span>
+                <span>•</span>
+                <span>Under Warranty: <strong className="text-emerald-600 dark:text-emerald-400 font-semibold">{assets.filter(a => a.warranty_status === 'Active' && !a.is_chargeable).length}</strong></span>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="text-sm font-bold text-slate-700 dark:text-slate-200">Total Chargeable Amount:</span>
+                <span className="text-xl font-bold text-emerald-600 dark:text-emerald-400">
+                  ₹{totalChargeableAmount.toLocaleString('en-IN')}
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ==================================================================== */}
+        {/* ⚙️ SECTION 3: JOB DETAILS & CLASSIFICATION (COMPACT 4-COLUMN GRID)   */}
+        {/* ==================================================================== */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 p-5 bg-slate-50/60 dark:bg-slate-900/40 border border-slate-200/80 dark:border-slate-800 rounded-2xl">
+          {/* Field of Work */}
+          <div className="space-y-1.5">
             <label className="text-sm font-medium">Field of Work <span className="text-destructive">*</span></label>
             {isCustomer && (
               <p className="text-xs text-muted-foreground mb-1">
-                Select the category of your installed product
+                Category of your product
               </p>
             )}
             {isCustomer && !isAssetsLoading && availableCategories.length === 0 ? (
-              <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-xs text-amber-500 flex items-start gap-2">
+              <div className="p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-lg text-xs text-amber-500 flex items-start gap-1.5">
                 <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                <span>You have no registered products. Please contact support to register your products before raising a complaint.</span>
+                <span>No registered products found.</span>
               </div>
             ) : isAdminOrSupervisor && form.customerId && !isAssetsLoading && availableFieldOfWork.length === 0 ? (
-              <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-xs text-amber-500 flex items-start gap-2">
+              <div className="p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-lg text-xs text-amber-500 flex items-start gap-1.5">
                 <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                <span>No assets found for this customer. Please create assets first or select manually.</span>
+                <span>No assets found for customer.</span>
               </div>
             ) : (
               <Select
                 key={form.fieldOfWork || 'empty'}
                 value={form.fieldOfWork}
-                onValueChange={(v) => setForm(prev => ({ ...prev, fieldOfWork: v }))}
-                 disabled={isSaving || isAssetsLoading || (isCustomer && availableCategories.length === 0) || (!isNew && !isAdminOrSupervisor)}
+                onValueChange={(v) => {
+                  setUserOverrodeFieldOfWork(true);
+                  setForm(prev => ({ ...prev, fieldOfWork: v }));
+                }}
+                disabled={isSaving || isAssetsLoading || (isCustomer && availableCategories.length === 0) || (!isNew && !isAdminOrSupervisor)}
               >
-                <SelectTrigger className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100">
+                <SelectTrigger className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100">
                   <SelectValue placeholder={isAssetsLoading ? "Loading..." : "Select field"} />
                 </SelectTrigger>
                 <SelectContent>
-                  {(isAdminOrSupervisor && form.customerId && availableFieldOfWork.length > 0
-                    ? availableFieldOfWork
-                    : displayCategories
-                  ).map((cat) => (
+                  {displayCategories.map((cat) => (
                     <SelectItem key={cat} value={cat}>{cat}</SelectItem>
                   ))}
                 </SelectContent>
@@ -2274,10 +2817,11 @@ const ComplaintEdit = () => {
             )}
           </div>
 
-          <div className="space-y-2">
+          {/* Severity Level */}
+          <div className="space-y-1.5">
             <label className="text-sm font-medium">Severity Level <span className="text-destructive">*</span></label>
             <Select value={form.severity} onValueChange={(v) => setForm(prev => ({ ...prev, severity: v as SeverityTier }))} disabled={isSaving || (!isNew && !isAdminOrSupervisor)}>
-              <SelectTrigger className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100">
+              <SelectTrigger className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100">
                 <SelectValue placeholder="Select Severity" />
               </SelectTrigger>
               <SelectContent>
@@ -2289,11 +2833,18 @@ const ComplaintEdit = () => {
             </Select>
           </div>
 
-          {/* Coverage Dropdown (Required) */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium">
-              Coverage <span className="text-destructive">*</span>
-            </label>
+          {/* Coverage Dropdown */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-medium">
+                Coverage <span className="text-destructive">*</span>
+              </label>
+              {assets.length > 0 && (
+                <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">
+                  Auto-set
+                </span>
+              )}
+            </div>
             <Select 
               value={form.coverage} 
               onValueChange={(v) => {
@@ -2303,111 +2854,81 @@ const ComplaintEdit = () => {
                   chargeableService: (v === 'Under Warranty' || v === 'AMC' || v === 'CAMC') ? 'No' : 'Yes'
                 }));
               }} 
-              disabled={isSaving}
+              disabled={isSaving || assets.length > 0}
             >
-              <SelectTrigger className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100">
+              <SelectTrigger className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100">
                 <SelectValue placeholder="Select coverage" />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="Under Warranty">Under Warranty</SelectItem>
                 <SelectItem value="Out of Warranty">Out of Warranty</SelectItem>
-                <SelectItem value="AMC">AMC (Annual Maintenance Contract)</SelectItem>
-                <SelectItem value="CAMC">CAMC (Comprehensive AMC)</SelectItem>
+                <SelectItem value="AMC">AMC</SelectItem>
+                <SelectItem value="CAMC">CAMC</SelectItem>
                 <SelectItem value="Chargeable Service">Chargeable Service</SelectItem>
               </SelectContent>
             </Select>
           </div>
 
-          {/* Chargeable Service Dropdown (Required) */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium">
-              Chargeable Service <span className="text-destructive">*</span>
-            </label>
+          {/* Chargeable Service Dropdown */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-medium">
+                Chargeable <span className="text-destructive">*</span>
+              </label>
+              {assets.length > 0 && (
+                <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">
+                  Auto-set
+                </span>
+              )}
+            </div>
             <Select 
               value={form.chargeableService} 
               onValueChange={(v) => setForm(prev => ({ ...prev, chargeableService: v }))} 
-              disabled={isSaving}
+              disabled={isSaving || assets.length > 0}
             >
-              <SelectTrigger className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100">
-                <SelectValue placeholder="Select Chargeable Service" />
+              <SelectTrigger className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100">
+                <SelectValue placeholder="Select Chargeable" />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="Yes">Yes (Chargeable)</SelectItem>
-                <SelectItem value="No">No (Included in Scope)</SelectItem>
+                <SelectItem value="No">No (Warranty Scope)</SelectItem>
               </SelectContent>
             </Select>
           </div>
 
           {/* Conditional Service Charge Amount Field */}
           {form.chargeableService === "Yes" && (
-            <div className="space-y-2">
-              <label className="text-sm font-medium">
-                Service Charge Amount (₹) <span className="text-destructive">*</span>
-              </label>
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium">
+                  Service Charge (₹) <span className="text-destructive">*</span>
+                </label>
+                {assets.length > 0 && (
+                  <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">
+                    Asset sum
+                  </span>
+                )}
+              </div>
               <Input
                 type="number"
                 min="0"
                 step="0.01"
-                placeholder="Enter amount (e.g. 500)"
+                placeholder="Amount (e.g. 500)"
                 value={form.serviceCharge || ""}
                 onChange={(e) => setForm(prev => ({ ...prev, serviceCharge: parseFloat(e.target.value) || 0 }))}
-                disabled={isSaving}
-                className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100 font-medium"
+                disabled={isSaving || assets.length > 0}
+                className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100 font-medium"
                 required
               />
             </div>
           )}
 
-          {/* Combined Scheduled Date & Time - Only shown after technician is assigned to the complaint */}
-          {!isNew && (Boolean(form.assignedTechnician) || Boolean(selectedTechnicianId) || (selectedTechnicianIds && selectedTechnicianIds.length > 0) || Boolean(existingComplaint?.assigned_technician) || Boolean(existingComplaint?.assigned_to) || (existingComplaint?.complaint_technicians && existingComplaint.complaint_technicians.length > 0)) && (
-            <div className="space-y-2">
-              <label className="text-sm font-medium block">Scheduled Date & Time (Assigned Visit)</label>
-              <Input 
-                type="datetime-local" 
-                value={(() => {
-                  if (!form.scheduledDate) return "";
-                  const d = new Date(form.scheduledDate);
-                  if (isNaN(d.getTime())) return "";
-                  const pad = (n: number) => String(n).padStart(2, '0');
-                  const yyyy = d.getFullYear();
-                  const mm = pad(d.getMonth() + 1);
-                  const dd = pad(d.getDate());
-                  const time = form.scheduledTime ? form.scheduledTime.slice(0, 5) : "09:00";
-                  return `${yyyy}-${mm}-${dd}T${time}`;
-                })()}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  if (!val) {
-                    setForm(prev => ({ ...prev, scheduledDate: null, scheduledTime: "" }));
-                    return;
-                  }
-                  const [datePart, timePart] = val.split("T");
-                  if (datePart) {
-                    const [y, m, d] = datePart.split("-").map(Number);
-                    const parsedDate = new Date(y, m - 1, d);
-                    setForm(prev => ({
-                      ...prev,
-                      scheduledDate: parsedDate,
-                      scheduledTime: timePart ? `${timePart}:00` : "09:00:00"
-                    }));
-                  }
-                }}
-                disabled={isSaving}
-                className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
-              />
-            </div>
-          )}
-
+          {/* Assigned Supervisor */}
           {isAdminOrSupervisor && (
-            <div className="space-y-2">
-              <label className="text-sm font-medium flex items-center gap-2">
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium flex items-center gap-1.5">
                 <User className="w-3.5 h-3.5 text-primary" />
                 Assigned Supervisor
-                {form.fieldOfWork && (
-                  <span className="text-xs font-normal text-muted-foreground">
-                    — Filtered by "{form.fieldOfWork}" expertise
-                  </span>
-                )}
               </label>
               <Select 
                 value={selectedSupervisorId || "clear_unassigned"} 
@@ -2475,11 +2996,12 @@ const ComplaintEdit = () => {
             </div>
           )}
 
+          {/* Current Status */}
           {isAdminOrSupervisor && (
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <label className="text-sm font-medium text-muted-foreground">Current Status</label>
-              <div className="px-4 py-2.5 bg-muted/50 rounded-lg border border-border">
-                <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium ${
+              <div className="px-3 h-10 bg-muted/50 rounded-md border border-border flex items-center">
+                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
                   autoStatus === 'assigned' ? 'bg-indigo-100 text-indigo-700' :
                   autoStatus === 'dispatched' ? 'bg-orange-100 text-orange-700' :
                   autoStatus === 'in-progress' ? 'bg-yellow-100 text-yellow-700' :
@@ -2490,14 +3012,99 @@ const ComplaintEdit = () => {
                   {autoStatus.charAt(0).toUpperCase() + autoStatus.slice(1).replace('-', ' ')}
                 </span>
               </div>
-              <p className="text-xs text-muted-foreground">
-                Status updates automatically based on phase progression and assignments
-              </p>
             </div>
           )}
 
+          {/* Scheduled Date & Time - Shown after technician is assigned to complaint */}
+          {!isNew && (Boolean(form.assignedTechnician) || Boolean(selectedTechnicianId) || (selectedTechnicianIds && selectedTechnicianIds.length > 0) || Boolean(existingComplaint?.assigned_technician) || Boolean(existingComplaint?.assigned_to) || (existingComplaint?.complaint_technicians && existingComplaint.complaint_technicians.length > 0)) && (
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium block">Scheduled Date & Time</label>
+              <Input 
+                type="datetime-local" 
+                value={(() => {
+                  if (!form.scheduledDate) return "";
+                  const d = new Date(form.scheduledDate);
+                  if (isNaN(d.getTime())) return "";
+                  const pad = (n: number) => String(n).padStart(2, '0');
+                  const yyyy = d.getFullYear();
+                  const mm = pad(d.getMonth() + 1);
+                  const dd = pad(d.getDate());
+                  const time = form.scheduledTime ? form.scheduledTime.slice(0, 5) : "09:00";
+                  return `${yyyy}-${mm}-${dd}T${time}`;
+                })()}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (!val) {
+                    setForm(prev => ({ ...prev, scheduledDate: null, scheduledTime: "" }));
+                    return;
+                  }
+                  const [datePart, timePart] = val.split("T");
+                  if (datePart) {
+                    const [y, m, d] = datePart.split("-").map(Number);
+                    const parsedDate = new Date(y, m - 1, d);
+                    setForm(prev => ({
+                      ...prev,
+                      scheduledDate: parsedDate,
+                      scheduledTime: timePart ? `${timePart}:00` : "09:00:00"
+                    }));
+                  }
+                }}
+                disabled={isSaving}
+                className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
+              />
+            </div>
+          )}
+        </div>
+
+        {/* ==================================================================== */}
+        {/* 📝 SECTION 4: DESCRIPTION & ATTACHMENTS (FULL WIDTH)                 */}
+        {/* ==================================================================== */}
+        <div className="space-y-5">
+          {/* Problem Description */}
+          <div className="space-y-2">
+            <div className="flex justify-between items-center">
+              <label className="text-sm font-medium">Problem Description <span className="text-destructive">*</span></label>
+              {!form.description.trim() && hasValidAssets && (
+                <span className="text-xs text-amber-600 dark:text-amber-400 font-medium animate-pulse flex items-center gap-1">
+                  <AlertTriangle className="w-3 h-3" />
+                  Required to create complaint
+                </span>
+              )}
+            </div>
+            <Textarea 
+              value={form.description} 
+              onChange={(e) => setForm(prev => ({ ...prev, description: e.target.value }))} 
+              rows={4} 
+              maxLength={2000}
+              placeholder={isCustomer ? "Describe the issue in detail. What happened? When did it start?" : "Describe the issue..."} 
+              required 
+              disabled={isSaving || (!isNew && !isAdminOrSupervisor)} 
+              className={`disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100 transition-all ${
+                !form.description.trim() && hasValidAssets
+                  ? 'border-amber-400 dark:border-amber-500 focus-visible:ring-amber-400 ring-1 ring-amber-400/40 bg-amber-50/10'
+                  : ''
+              }`} 
+            />
+          </div>
+
+          {/* Supervisor Notes */}
+          {isSupervisor && form.assignedSupervisor && form.assignedTechnician && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Supervisor Notes / Key Points for Technician</label>
+              <Textarea
+                value={form.supervisor_notes}
+                onChange={(e) => setForm(prev => ({ ...prev, supervisor_notes: e.target.value }))}
+                rows={3}
+                placeholder="Optional: Add key symptoms or instructions for the technician."
+                disabled={isSaving}
+                className="w-full resize-y break-words"
+              />
+            </div>
+          )}
+
+          {/* Assigned Technicians */}
           {!isNew && (existingComplaint?.current_phase || 1) >= 3 && isRole("supervisor", "admin") && (
-            <div className="md:col-span-2 space-y-2">
+            <div className="space-y-2">
               <div className="flex justify-between items-center">
                 <label className="text-sm font-medium flex items-center gap-2">
                   <Filter className="w-3.5 h-3.5 text-primary" />
@@ -2588,35 +3195,8 @@ const ComplaintEdit = () => {
             </div>
           )}
 
-          <div className="md:col-span-2 space-y-2">
-            <label className="text-sm font-medium">Problem Description <span className="text-destructive">*</span></label>
-            <Textarea 
-              value={form.description} 
-              onChange={(e) => setForm(prev => ({ ...prev, description: e.target.value }))} 
-              rows={4} 
-              maxLength={2000}
-              placeholder={isCustomer ? "Describe the issue in detail. What happened? When did it start?" : "Describe the issue..."} 
-              required 
-              disabled={isSaving || (!isNew && !isAdminOrSupervisor)} 
-              className="disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100" 
-            />
-          </div>
-
-          {isSupervisor && form.assignedSupervisor && form.assignedTechnician && (
-            <div className="md:col-span-2 min-w-0 max-w-full space-y-2">
-              <label className="text-sm font-medium">Supervisor Notes / Key Points for Technician</label>
-              <Textarea
-                value={form.supervisor_notes}
-                onChange={(e) => setForm(prev => ({ ...prev, supervisor_notes: e.target.value }))}
-                rows={4}
-                placeholder="Optional: Add key symptoms or instructions for the technician."
-                disabled={isSaving}
-                className="w-full min-w-0 max-w-full resize-y break-words"
-              />
-            </div>
-          )}
-
-          <div className="md:col-span-2 space-y-2">
+          {/* Upload Evidence */}
+          <div className="space-y-2">
             <label className="text-sm font-medium flex items-center gap-2">
               <Upload className="w-4 h-4" />
               Upload Evidence (Photos/Videos) - Optional
@@ -2671,11 +3251,30 @@ const ComplaintEdit = () => {
 
         <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 border-t">
           <div className="flex items-center gap-3 w-full sm:w-auto">
+            {!isFormValid && (
+              <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1.5 font-medium">
+                <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                <span>To {isNew ? (isCustomer ? "submit" : "create complaint") : "save changes"}, please fill: <strong>{missingRequiredFields.join(", ")}</strong></span>
+              </p>
+            )}
           </div>
 
           <div className="flex flex-col sm:flex-row gap-3 justify-end w-full sm:w-auto">
-            <Button type="button" variant="outline" onClick={() => navigate(-1)} disabled={isSaving} className="w-full sm:w-auto">Cancel</Button>
-            <Button type="submit" className="gradient-primary text-primary-foreground shadow-glow hover:opacity-90 w-full sm:w-auto" disabled={isSaving}>
+            <Button 
+              type="button" 
+              variant="outline" 
+              onClick={handleCancel} 
+              disabled={isSaving} 
+              className="w-full sm:w-auto"
+            >
+              Cancel
+            </Button>
+            <Button 
+              type="submit" 
+              className="gradient-primary text-primary-foreground shadow-glow hover:opacity-90 w-full sm:w-auto" 
+              disabled={isSaving || !isFormValid}
+              title={!isFormValid ? `Required: ${missingRequiredFields.join(', ')}` : undefined}
+            >
               {isSaving ? (<span className="flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" />Saving...</span>) : (
                 <><Save className="w-4 h-4 mr-2" />{isNew ? (isCustomer ? "Submit Complaint" : "Create Complaint") : "Save Changes"}</>
               )}

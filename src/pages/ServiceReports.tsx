@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, Fragment } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -73,6 +73,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { complaintService } from "@/services/complaintService";
 import { installationService } from "@/services/installationService";
 import { generateCSV, downloadCSV } from "@/utils/csvHelpers";
+import { supabase, resolveSupabaseUrl } from "@/lib/supabase";
 
 type TabType = "dashboard" | "search" | "generate" | "payment" | "performance" | "history";
 
@@ -237,6 +238,62 @@ export default function ServiceReports() {
     queryFn: installationService.getAll,
     staleTime: 60000
   });
+
+  // Assets query for multi-asset complaint reports
+  const { data: allComplaintAssets = [] } = useQuery({
+    queryKey: ["all-complaint-assets-reports"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('complaint_assets')
+        .select('*')
+        .order('created_at', { ascending: true });
+      if (error) {
+        console.warn("Failed to fetch complaint_assets for reports:", error);
+        return [];
+      }
+      return data || [];
+    },
+    staleTime: 60000
+  });
+
+  const assetsByComplaintId = useMemo(() => {
+    const map = new Map<string, any[]>();
+    for (const a of allComplaintAssets) {
+      if (!a.complaint_id) continue;
+      const list = map.get(a.complaint_id) || [];
+      list.push(a);
+      map.set(a.complaint_id, list);
+    }
+    return map;
+  }, [allComplaintAssets]);
+
+  // Assets query for multi-asset installation reports (Phase 4 Requirement 1)
+  const { data: allInstallationAssets = [] } = useQuery({
+    queryKey: ["all-installation-assets-reports"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('installation_assets')
+        .select('*')
+        .order('created_at', { ascending: true });
+      if (error) {
+        console.warn("Failed to fetch installation_assets for reports:", error);
+        return [];
+      }
+      return data || [];
+    },
+    staleTime: 60000
+  });
+
+  const assetsByInstallationId = useMemo(() => {
+    const map = new Map<string, any[]>();
+    for (const a of allInstallationAssets) {
+      if (!a.installation_id) continue;
+      const list = map.get(a.installation_id) || [];
+      list.push(a);
+      map.set(a.installation_id, list);
+    }
+    return map;
+  }, [allInstallationAssets]);
 
   // ============================================================================
   // 2. PAYMENT MANAGEMENT STATE & FORM
@@ -418,6 +475,24 @@ export default function ServiceReports() {
   const combinedServiceList = useMemo(() => {
     const list: any[] = [];
     allComplaints.forEach((c: any) => {
+      const isForceClosed = Boolean(
+        c.force_closed ||
+        c.resolution_type === 'force_closed' ||
+        (c.feedback_comments?.includes('[Force Closed - ')) ||
+        (c.status === 'closed' && !c.happiness_code_verified && !c.resolved_remotely && c.resolution_type !== 'telephonic_triage' && c.triage_outcome !== 'remote_fixed')
+      );
+      const forceCloseReason = c.force_close_reason ||
+        (c.feedback_comments?.includes('[Force Closed - ')
+          ? c.feedback_comments.split('[Force Closed - ')[1]?.split(']')[0]
+          : null) ||
+        (c.resolution_type === 'force_closed' ? c.resolution_notes : null) ||
+        null;
+      const isRemoteFix = Boolean(
+        c.resolved_remotely ||
+        c.triage_outcome === 'remote_fixed' ||
+        c.resolution_type === 'telephonic_triage'
+      );
+
       list.push({
         id: c.id,
         ticket_id: c.ticket_id || c.id,
@@ -429,11 +504,35 @@ export default function ServiceReports() {
         is_chargeable: c.chargeable_service === "Yes" || c.coverage === "Chargeable Service",
         service_charge: c.service_charge || 0,
         payment_status: c.payment_status || "Not Applicable",
-        location: c.location || "Site location"
+        location: c.location || "Site location",
+        force_closed: isForceClosed,
+        force_close_reason: forceCloseReason,
+        resolved_remotely: isRemoteFix,
+        raw_complaint: c,
+        complaint_assets: assetsByComplaintId.get(c.id) || c.complaint_assets || [],
       });
     });
 
     allInstallations.forEach((i: any) => {
+      const isForceClosed = Boolean(
+        i.force_closed ||
+        i.status?.toLowerCase() === 'force_closed' ||
+        (i.customer_feedback_comments?.includes('[Force Closed - '))
+      );
+      const forceCloseReason = i.force_close_reason ||
+        (i.customer_feedback_comments?.includes('[Force Closed - ')
+          ? i.customer_feedback_comments.split('[Force Closed - ')[1]?.split(']')[0]
+          : null) ||
+        null;
+
+      const instAssets = assetsByInstallationId.get(i.id) || i.installation_assets || [];
+      const assetTotal = instAssets.reduce(
+        (sum: number, a: any) => sum + ((a.warranty_status === "Expired" || a.is_chargeable) ? (Number(a.service_charge ?? a.charge_amount) || 0) : 0),
+        0
+      );
+      const isChargeable = assetTotal > 0 || Boolean(i.is_chargeable);
+      const serviceCharge = assetTotal > 0 ? assetTotal : (Number(i.service_charge) || 0);
+
       list.push({
         id: i.id,
         ticket_id: i.ticket_id || i.id,
@@ -442,10 +541,16 @@ export default function ServiceReports() {
         technician: "Field Crew",
         status: i.status,
         date: i.created_at,
-        is_chargeable: i.is_chargeable || false,
-        service_charge: i.service_charge || 0,
+        is_chargeable: isChargeable,
+        service_charge: serviceCharge,
         payment_status: i.payment_status || "Not Applicable",
-        location: i.location?.location_name || i.non_btl_address || "Site address"
+        location: i.location?.location_name || i.non_btl_address || "Site address",
+        force_closed: isForceClosed,
+        force_close_reason: forceCloseReason,
+        resolved_remotely: Boolean(i.resolved_remotely),
+        raw_installation: i,
+        installation_assets: instAssets,
+        complaint_assets: [],
       });
     });
 
@@ -465,7 +570,7 @@ export default function ServiceReports() {
       }
       return true;
     });
-  }, [allComplaints, allInstallations, globalTypeFilter, globalSearchTerm]);
+  }, [allComplaints, allInstallations, globalTypeFilter, globalSearchTerm, assetsByComplaintId, assetsByInstallationId]);
 
   // ---------------------------------------------------------------------------
   // Universal Pagination Configuration (20 records per page)
@@ -694,24 +799,72 @@ export default function ServiceReports() {
     };
   }, [combinedServiceList, paymentRecords, effectiveDateBounds, generateCategory]);
 
+  const formatStatusWithClosure = (item: { status: string; force_closed?: boolean; force_close_reason?: string | null; resolved_remotely?: boolean }) => {
+    if (item.force_closed) {
+      const reasonText = item.force_close_reason ? `: ${item.force_close_reason}` : '';
+      return `${item.status} (Force Closed${reasonText})`;
+    }
+    if (item.resolved_remotely) {
+      return `${item.status} (Remote Fix)`;
+    }
+    return item.status;
+  };
+
   const handleExportGeneratedReportCSV = () => {
     if (generatedReportData.tickets.length === 0) {
       toast.warning("No records match the selected report parameters.");
       return;
     }
 
-    const csvRows = generatedReportData.tickets.map((t) => ({
-      "Ticket ID": t.ticket_id,
-      Type: t.type,
-      Customer: t.customer,
-      Location: t.location,
-      Technician: t.technician,
-      Status: t.status,
-      Scope: t.is_chargeable ? "Chargeable" : "Standard",
-      "Service Charge": `₹${t.service_charge || 0}`,
-      "Payment Status": t.payment_status,
-      Date: t.date ? new Date(t.date).toLocaleDateString("en-IN") : "N/A"
-    }));
+    const csvRows = generatedReportData.tickets.map((t) => {
+      const assets = (t.installation_assets && t.installation_assets.length > 0)
+        ? t.installation_assets
+        : (t.complaint_assets || []);
+      const assetTotal = assets.reduce(
+        (sum: number, a: any) => sum + (a.is_chargeable || a.warranty_status === "Expired" ? (Number(a.service_charge ?? a.charge_amount) || 0) : 0),
+        0
+      );
+      const isChargeable = assetTotal > 0 || t.is_chargeable;
+      const finalCharge = assetTotal > 0 ? assetTotal : (Number(t.service_charge) || 0);
+
+      const defaultScope = t.type === "Installation"
+        ? (t.raw_installation?.equipment_scope || t.raw_installation?.equipment_model || t.raw_installation?.brand || "Standard Installation")
+        : (t.raw_complaint?.field_of_work || "Standard Scope");
+
+      const assetSummary = assets.length > 0
+        ? assets.map((a: any, idx: number) => {
+            const charge = Number(a.service_charge ?? a.charge_amount) || 0;
+            const chargeText = (a.is_chargeable || a.warranty_status === "Expired") && charge > 0 ? ` - ₹${charge}` : "";
+            return `${idx + 1}. ${a.asset_name || a.asset_type || "Asset"} (${a.warranty_status || "Active"}${chargeText})`;
+          }).join(" | ")
+        : defaultScope;
+
+      const row: Record<string, any> = {
+        "Ticket ID": t.ticket_id,
+        Type: t.type,
+        Customer: t.customer,
+        Location: t.location,
+        Technician: t.technician,
+        Status: formatStatusWithClosure(t),
+        Scope: isChargeable ? "Chargeable" : "Standard",
+        "Service Charge": `₹${finalCharge}`,
+        "Payment Status": t.payment_status,
+        Date: t.date ? new Date(t.date).toLocaleDateString("en-IN") : "N/A",
+        "Assets & Line Items": assetSummary,
+      };
+
+      // Add up to 5 individual asset columns for spreadsheet analysis
+      for (let i = 0; i < 5; i++) {
+        const a = assets[i];
+        row[`Asset ${i + 1} Name`] = a ? (a.asset_name || a.asset_type || "") : "";
+        row[`Asset ${i + 1} Status`] = a ? (a.warranty_status || "Active") : "";
+        row[`Asset ${i + 1} Charge`] = a && (a.is_chargeable || a.warranty_status === "Expired") && Number(a.service_charge ?? a.charge_amount) > 0
+          ? `₹${Number(a.service_charge ?? a.charge_amount)}`
+          : (a ? "₹0" : "");
+      }
+
+      return row;
+    });
 
     const columns = [
       "Ticket ID",
@@ -723,7 +876,23 @@ export default function ServiceReports() {
       "Scope",
       "Service Charge",
       "Payment Status",
-      "Date"
+      "Date",
+      "Assets & Line Items",
+      "Asset 1 Name",
+      "Asset 1 Status",
+      "Asset 1 Charge",
+      "Asset 2 Name",
+      "Asset 2 Status",
+      "Asset 2 Charge",
+      "Asset 3 Name",
+      "Asset 3 Status",
+      "Asset 3 Charge",
+      "Asset 4 Name",
+      "Asset 4 Status",
+      "Asset 4 Charge",
+      "Asset 5 Name",
+      "Asset 5 Status",
+      "Asset 5 Charge",
     ];
 
     const csvContent = generateCSV(csvRows, columns);
@@ -1697,7 +1866,7 @@ export default function ServiceReports() {
                       </td>
                       <td className="py-3 px-4 whitespace-nowrap">
                         <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border bg-slate-100 text-slate-700 border-slate-200">
-                          {item.status}
+                          {formatStatusWithClosure(item)}
                         </span>
                       </td>
                       <td className="py-3 px-4 whitespace-nowrap">
@@ -2076,7 +2245,7 @@ export default function ServiceReports() {
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
                         <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 font-semibold">
-                          {t.status}
+                          {formatStatusWithClosure(t)}
                         </span>
                         {t.is_chargeable && (
                           <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200 font-bold">
@@ -2189,60 +2358,456 @@ export default function ServiceReports() {
               </div>
             </div>
 
-            {/* Full Work Orders Ledger Table */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-800">
-                  Work Order Audit Register ({generatedReportData.tickets.length} Records)
-                </h3>
-                <span className="text-[10px] text-slate-500 font-medium">All Matching Work Orders</span>
-              </div>
+            {/* If Single Installation Selected: Detailed Single Installation Work Order Report (Requirement 2) */}
+            {generatedReportData.tickets.length === 1 && generatedReportData.tickets[0].type === "Installation" ? (() => {
+              const single = generatedReportData.tickets[0];
+              const inst = single.raw_installation || {};
+              const assets = single.installation_assets || [];
+              const totalAssetCharge = assets.reduce(
+                (sum: number, a: any) => sum + ((a.warranty_status === "Expired" || a.is_chargeable) ? (Number(a.service_charge ?? a.charge_amount) || 0) : 0),
+                0
+              );
+              const signatureUrl = inst.customer_signature ? resolveSupabaseUrl(inst.customer_signature) : null;
+              const photos = Array.isArray(inst.evidence_photos) ? inst.evidence_photos : [];
 
-              <table className="print-table w-full">
-                <thead>
-                  <tr>
-                    <th className="w-8 text-center">#</th>
-                    <th className="w-28 text-left">Ticket ID</th>
-                    <th className="w-20 text-left">Type</th>
-                    <th className="text-left">Customer Name</th>
-                    <th className="text-left">Site Location</th>
-                    <th className="w-24 text-left">Technician</th>
-                    <th className="w-20 text-center">Status</th>
-                    <th className="w-20 text-center">Scope</th>
-                    <th className="w-20 text-right">Charge (₹)</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {generatedReportData.tickets.length === 0 ? (
-                    <tr>
-                      <td colSpan={9} className="text-center py-6 text-slate-500">
-                        No work orders recorded for this reporting period.
-                      </td>
-                    </tr>
+              return (
+                <div className="space-y-4 text-xs">
+                  {/* Customer / Location Details */}
+                  <div className="border border-slate-300 rounded-lg p-3 bg-slate-50 grid grid-cols-2 gap-4">
+                    <div>
+                      <p className="text-[10px] uppercase font-bold text-slate-500">Customer & Site Information</p>
+                      <p className="font-bold text-sm text-slate-900 mt-0.5">{single.customer}</p>
+                      <p className="text-slate-600 mt-0.5">{single.location}</p>
+                      {(inst.customer?.phone || inst.customer_phone) && (
+                        <p className="text-slate-500">Phone: {inst.customer?.phone || inst.customer_phone}</p>
+                      )}
+                      {(inst.customer?.email || inst.customer_email) && (
+                        <p className="text-slate-500">Email: {inst.customer?.email || inst.customer_email}</p>
+                      )}
+                    </div>
+                    <div className="space-y-1 text-right">
+                      <p className="text-[10px] uppercase font-bold text-slate-500">Work Order Details</p>
+                      <p className="font-mono font-bold text-slate-900">{single.ticket_id}</p>
+                      <p className="text-slate-600">Assigned Tech: <span className="font-semibold text-slate-900">{single.technician}</span></p>
+                      <p className="text-slate-600">Status: <span className="font-bold text-slate-900">{formatStatusWithClosure(single)}</span></p>
+                      <p className="text-slate-600">Date: <span className="font-medium text-slate-800">{single.date ? format(new Date(single.date), "dd MMM yyyy") : "N/A"}</span></p>
+                    </div>
+                  </div>
+
+                  {/* Section: Installed Assets & Line Items (Requirement 2) */}
+                  {assets.length > 0 ? (
+                    <div className="border border-slate-300 rounded-lg overflow-hidden">
+                      <div className="bg-slate-100 px-3 py-1.5 font-bold uppercase text-[10px] text-slate-800 border-b border-slate-300 flex items-center justify-between">
+                        <span>Installed Assets & Line Items ({assets.length})</span>
+                        <span className="text-[9px] font-normal text-slate-500">Official Equipment Verification & Warranty Audit</span>
+                      </div>
+                      <table className="w-full text-xs border-collapse">
+                        <thead>
+                          <tr className="bg-slate-50 border-b border-slate-300 text-left text-[10px] font-bold text-slate-700">
+                            <th className="p-2 w-8 text-center">#</th>
+                            <th className="p-2">Asset Name</th>
+                            <th className="p-2 w-32">Type</th>
+                            <th className="p-2 w-40 text-center">Warranty Status</th>
+                            <th className="p-2 w-32 text-right">Charge (₹)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {assets.map((asset: any, aIdx: number) => {
+                            const isExpired = asset.warranty_status === "Expired" || Boolean(asset.is_chargeable);
+                            const charge = Number(asset.service_charge ?? asset.charge_amount) || 0;
+                            const badgeText = isExpired
+                              ? `[Expired${charge > 0 ? ` - ₹${charge.toLocaleString("en-IN")}` : ""}]`
+                              : `[Active]`;
+                            return (
+                              <tr key={aIdx} className="border-b border-slate-200">
+                                <td className="p-2 text-center font-mono text-slate-500">{aIdx + 1}</td>
+                                <td className="p-2 font-medium text-slate-900">{asset.asset_name || `Asset #${aIdx + 1}`}</td>
+                                <td className="p-2 text-slate-600">{asset.asset_type || "Equipment"}</td>
+                                <td className="p-2 text-center font-mono text-[10px]">{badgeText}</td>
+                                <td className="p-2 text-right font-mono font-bold text-slate-900">
+                                  {isExpired && charge > 0 ? `₹${charge.toLocaleString("en-IN")}` : "₹0"}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                        <tfoot>
+                          <tr className="bg-slate-100 border-t-2 border-slate-400 font-bold">
+                            <td colSpan={4} className="p-2 text-right text-[11px] uppercase tracking-wider text-slate-700">
+                              Total Chargeable Amount:
+                            </td>
+                            <td className="p-2 text-right font-mono text-slate-900 text-sm">
+                              ₹{totalAssetCharge.toLocaleString("en-IN")}
+                            </td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
                   ) : (
-                    generatedReportData.tickets.map((t, idx) => (
-                      <tr key={t.id}>
-                        <td className="text-center font-mono text-slate-500">{idx + 1}</td>
-                        <td className="font-mono font-bold text-slate-900">{t.ticket_id}</td>
-                        <td className="font-semibold">{t.type}</td>
-                        <td className="font-medium text-slate-900">{t.customer}</td>
-                        <td className="text-slate-600">{t.location}</td>
-                        <td className="text-slate-600">{t.technician}</td>
-                        <td className="text-center font-bold uppercase text-[9px]">
-                          {t.status}
-                        </td>
-                        <td className="text-center font-medium">
-                          {t.is_chargeable ? "Chargeable" : "Standard"}
-                        </td>
-                        <td className="text-right font-mono font-bold text-slate-900">
-                          {t.is_chargeable ? `₹${Number(t.service_charge || 0).toLocaleString("en-IN")}` : "—"}
+                    /* Backward Compatibility: Legacy single-equipment view */
+                    <div className="border border-slate-300 rounded-lg p-3 bg-white space-y-2">
+                      <p className="text-[10px] uppercase font-bold text-slate-500">Equipment & Installation Scope</p>
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div>
+                          <span className="text-slate-500">Equipment: </span>
+                          <span className="font-semibold text-slate-800">
+                            {inst.equipment_scope || inst.equipment_model || inst.brand || "Standard Installation"}
+                          </span>
+                        </div>
+                        {inst.serial_number && (
+                          <div>
+                            <span className="text-slate-500">Serial No: </span>
+                            <span className="font-mono text-slate-800">{inst.serial_number}</span>
+                          </div>
+                        )}
+                      </div>
+                      {inst.installation_notes && (
+                        <div className="pt-2 border-t border-slate-200">
+                          <span className="text-slate-500 text-[10px] uppercase font-bold block">Notes:</span>
+                          <p className="text-slate-700 italic">{inst.installation_notes}</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Installation Scope & Notes */}
+                  {(inst.installation_notes || inst.testing_results) && assets.length > 0 && (
+                    <div className="border border-slate-300 rounded-lg p-3 bg-white space-y-1.5">
+                      <p className="text-[10px] uppercase font-bold text-slate-500">Resolution & Site Notes</p>
+                      {inst.installation_notes && (
+                        <p className="text-slate-700 whitespace-pre-wrap">{inst.installation_notes}</p>
+                      )}
+                      {inst.testing_results && (
+                        <p className="text-slate-600 text-[11px]"><span className="font-semibold">Testing Results: </span>{inst.testing_results}</p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Evidence Photos */}
+                  {photos.length > 0 && (
+                    <div className="border border-slate-300 rounded-lg p-2.5">
+                      <p className="text-[10px] uppercase font-bold text-slate-700 mb-2">
+                        Installation Handover Evidence Photos
+                      </p>
+                      <div className="grid grid-cols-4 gap-2">
+                        {photos.map((imgUrl: string, i: number) => (
+                          <img
+                            key={i}
+                            src={resolveSupabaseUrl(imgUrl)}
+                            alt={`Evidence ${i + 1}`}
+                            className="w-full h-20 object-cover rounded border border-slate-200"
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Customer Verification & Signature */}
+                  <div className="border border-slate-300 rounded-lg p-3 bg-slate-50 flex items-center justify-between">
+                    <div>
+                      <p className="text-[10px] uppercase font-bold text-slate-500">Customer Verification</p>
+                      <p className="font-semibold text-slate-800 mt-0.5">
+                        Happiness Code (OTP): {inst.happiness_code_verified ? "Verified ✓" : "Self-certified / Pending"}
+                      </p>
+                    </div>
+                    {signatureUrl && (
+                      <div className="text-right">
+                        <p className="text-[10px] uppercase font-bold text-slate-500 mb-1">Customer Signature</p>
+                        <img
+                          src={signatureUrl}
+                          alt="Customer Signature"
+                          className="h-14 max-w-[160px] object-contain border border-slate-300 rounded bg-white p-1 ml-auto"
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })() : /* If Single Complaint Selected: Detailed Single Complaint Work Order Report */
+            generatedReportData.tickets.length === 1 && generatedReportData.tickets[0].type === "Complaint" ? (() => {
+              const single = generatedReportData.tickets[0];
+              const c = single.raw_complaint || {};
+              const assets = single.complaint_assets || [];
+              const totalAssetCharge = assets.reduce(
+                (sum: number, a: any) => sum + ((a.warranty_status === "Expired" || a.is_chargeable) ? (Number(a.service_charge ?? a.charge_amount) || 0) : 0),
+                0
+              );
+              const pirImages: string[] = Array.isArray(c.evidence_urls) && c.evidence_urls.length > 0
+                ? c.evidence_urls
+                : (Array.isArray(c.complaint_images) ? c.complaint_images : []);
+              const resImages: string[] = Array.isArray(c.technician_evidence) && c.technician_evidence.length > 0
+                ? c.technician_evidence
+                : [];
+              const signatureUrl = c.signature_url ? resolveSupabaseUrl(c.signature_url) : null;
+
+              return (
+                <div className="space-y-4 text-xs">
+                  {/* Customer / Location Details */}
+                  <div className="border border-slate-300 rounded-lg p-3 bg-slate-50 grid grid-cols-2 gap-4">
+                    <div>
+                      <p className="text-[10px] uppercase font-bold text-slate-500">Customer & Site Information</p>
+                      <p className="font-bold text-sm text-slate-900 mt-0.5">{single.customer}</p>
+                      <p className="text-slate-600 mt-0.5">{single.location}</p>
+                      {c.customer_phone && <p className="text-slate-500">Phone: {c.customer_phone}</p>}
+                      {c.customer_email && <p className="text-slate-500">Email: {c.customer_email}</p>}
+                    </div>
+                    <div className="space-y-1 text-right">
+                      <p className="text-[10px] uppercase font-bold text-slate-500">Work Order Details</p>
+                      <p className="font-mono font-bold text-slate-900">{single.ticket_id}</p>
+                      <p className="text-slate-600">Assigned Tech: <span className="font-semibold text-slate-900">{single.technician}</span></p>
+                      <p className="text-slate-600">Status: <span className="font-bold text-slate-900">{formatStatusWithClosure(single)}</span></p>
+                      <p className="text-slate-600">Date: <span className="font-medium text-slate-800">{single.date ? format(new Date(single.date), "dd MMM yyyy") : "N/A"}</span></p>
+                    </div>
+                  </div>
+
+                  {/* Section: Assets & Line Items (Requirement 2) */}
+                  {assets.length > 0 ? (
+                    <div className="border border-slate-300 rounded-lg overflow-hidden">
+                      <div className="bg-slate-100 px-3 py-1.5 font-bold uppercase text-[10px] text-slate-800 border-b border-slate-300 flex items-center justify-between">
+                        <span>Assets & Line Items ({assets.length})</span>
+                        <span className="text-[9px] font-normal text-slate-500">Official Asset Diagnostic & Warranty Status</span>
+                      </div>
+                      <table className="w-full text-xs border-collapse">
+                        <thead>
+                          <tr className="bg-slate-50 border-b border-slate-300 text-left text-[10px] font-bold text-slate-700">
+                            <th className="p-2 w-8 text-center">#</th>
+                            <th className="p-2">Asset Name</th>
+                            <th className="p-2 w-28">Type</th>
+                            <th className="p-2">Reported Issue</th>
+                            <th className="p-2 w-36 text-center">Warranty Status</th>
+                            <th className="p-2 w-28 text-right">Charge (₹)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {assets.map((asset: any, aIdx: number) => {
+                            const isExpired = asset.warranty_status === "Expired" || Boolean(asset.is_chargeable);
+                            const charge = Number(asset.service_charge ?? asset.charge_amount) || 0;
+                            const badgeText = isExpired
+                              ? `[Expired${charge > 0 ? ` - ₹${charge.toLocaleString("en-IN")}` : ""}]`
+                              : `[Active]`;
+                            return (
+                              <tr key={aIdx} className="border-b border-slate-200">
+                                <td className="p-2 text-center font-mono text-slate-500">{aIdx + 1}</td>
+                                <td className="p-2 font-semibold text-slate-900">{asset.asset_name || `Asset #${aIdx + 1}`}</td>
+                                <td className="p-2 text-slate-600">{asset.asset_type || "General"}</td>
+                                <td className="p-2 text-slate-700">{asset.reported_issue || "No specific issue noted"}</td>
+                                <td className="p-2 text-center font-mono font-medium text-[11px]">{badgeText}</td>
+                                <td className="p-2 text-right font-mono font-bold text-slate-900">
+                                  {isExpired && charge > 0 ? `₹${charge.toLocaleString("en-IN")}` : "—"}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                          <tr className="bg-slate-100 font-bold border-t border-slate-300">
+                            <td colSpan={5} className="p-2 text-right text-slate-900">Total Chargeable Amount:</td>
+                            <td className="p-2 text-right font-mono text-slate-900 font-black">
+                              ₹{totalAssetCharge.toLocaleString("en-IN")}
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    /* Backward Compatibility: If NO assets in the new table, show standard field_of_work and description */
+                    <div className="border border-slate-300 rounded-lg p-3 bg-slate-50 space-y-1">
+                      <p className="text-[10px] uppercase font-bold text-slate-500">Service Scope & Description</p>
+                      <p className="text-slate-900 font-semibold">Field of Work: <span className="font-normal">{c.field_of_work || "Standard Service"}</span></p>
+                      <p className="text-slate-900 font-semibold">Issue Description: <span className="font-normal">{c.description || "No description provided"}</span></p>
+                    </div>
+                  )}
+
+                  {/* Resolution Notes & Closure Summary */}
+                  <div className="border border-slate-300 rounded-lg p-3 bg-slate-50 space-y-1">
+                    <p className="text-[10px] uppercase font-bold text-slate-500">Resolution & Closure Summary</p>
+                    <p className="text-slate-800">{c.resolution_notes || "Ticket resolved according to standard field procedures."}</p>
+                    {c.resolved_at && (
+                      <p className="text-[11px] text-slate-500">Resolution Timestamp: {format(new Date(c.resolved_at), "dd MMM yyyy, hh:mm a")}</p>
+                    )}
+                  </div>
+
+                  {/* Diagnostic & Resolution Evidence Images (PIR Before vs Resolution After) */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="border border-slate-300 rounded-lg p-2.5">
+                      <p className="text-[10px] uppercase font-bold text-slate-700 mb-2">
+                        Technician's Diagnostic Evidence (Before) / PIR
+                      </p>
+                      {pirImages.length > 0 ? (
+                        <div className="grid grid-cols-3 gap-2">
+                          {pirImages.map((imgUrl, i) => (
+                            <img
+                              key={i}
+                              src={resolveSupabaseUrl(imgUrl)}
+                              alt={`Diagnostic Before ${i + 1}`}
+                              className="w-full h-20 object-cover rounded border border-slate-200"
+                            />
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-slate-400 italic text-[11px]">No diagnostic images provided</p>
+                      )}
+                    </div>
+
+                    <div className="border border-slate-300 rounded-lg p-2.5">
+                      <p className="text-[10px] uppercase font-bold text-slate-700 mb-2">
+                        Technician's Resolution Evidence (After)
+                      </p>
+                      {resImages.length > 0 ? (
+                        <div className="grid grid-cols-3 gap-2">
+                          {resImages.map((imgUrl, i) => (
+                            <img
+                              key={i}
+                              src={resolveSupabaseUrl(imgUrl)}
+                              alt={`Resolution After ${i + 1}`}
+                              className="w-full h-20 object-cover rounded border border-slate-200"
+                            />
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-slate-400 italic text-[11px]">No resolution images provided</p>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Customer Verification & Signature */}
+                  <div className="border border-slate-300 rounded-lg p-3 bg-slate-50 flex items-center justify-between">
+                    <div>
+                      <p className="text-[10px] uppercase font-bold text-slate-500">Customer Verification</p>
+                      <p className="font-semibold text-slate-800 mt-0.5">
+                        Happiness Code (OTP): {c.happiness_code_verified ? "Verified ✓" : "Self-certified / Pending"}
+                      </p>
+                    </div>
+                    {signatureUrl && (
+                      <div className="text-right">
+                        <p className="text-[10px] uppercase font-bold text-slate-500 mb-1">Customer Signature</p>
+                        <img
+                          src={signatureUrl}
+                          alt="Customer Signature"
+                          className="h-14 max-w-[160px] object-contain border border-slate-300 rounded bg-white p-1 ml-auto"
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })() : (
+              /* Full Work Orders Ledger Table */
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-800">
+                    Work Order Audit Register ({generatedReportData.tickets.length} Records)
+                  </h3>
+                  <span className="text-[10px] text-slate-500 font-medium">All Matching Work Orders</span>
+                </div>
+
+                <table className="print-table w-full">
+                  <thead>
+                    <tr>
+                      <th className="w-8 text-center">#</th>
+                      <th className="w-28 text-left">Ticket ID</th>
+                      <th className="w-20 text-left">Type</th>
+                      <th className="text-left">Customer Name</th>
+                      <th className="text-left">Site Location</th>
+                      <th className="w-24 text-left">Technician</th>
+                      <th className="w-20 text-center">Status</th>
+                      <th className="w-20 text-center">Scope</th>
+                      <th className="w-20 text-right">Charge (₹)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {generatedReportData.tickets.length === 0 ? (
+                      <tr>
+                        <td colSpan={9} className="text-center py-6 text-slate-500">
+                          No work orders recorded for this reporting period.
                         </td>
                       </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
+                    ) : (
+                      generatedReportData.tickets.map((t, idx) => {
+                        const assets = (t.installation_assets && t.installation_assets.length > 0)
+                          ? t.installation_assets
+                          : (t.complaint_assets || []);
+                        const assetTotal = assets.reduce(
+                          (sum: number, a: any) => sum + ((a.warranty_status === "Expired" || a.is_chargeable) ? (Number(a.service_charge ?? a.charge_amount) || 0) : 0),
+                          0
+                        );
+                        const isChargeable = assetTotal > 0 || t.is_chargeable;
+                        const finalCharge = assetTotal > 0 ? assetTotal : (Number(t.service_charge) || 0);
+
+                        return (
+                          <Fragment key={t.id}>
+                            <tr className={assets.length > 0 ? "border-b border-slate-200" : ""}>
+                              <td className="text-center font-mono text-slate-500">{idx + 1}</td>
+                              <td className="font-mono font-bold text-slate-900">{t.ticket_id}</td>
+                              <td className="font-semibold">{t.type}</td>
+                              <td className="font-medium text-slate-900">{t.customer}</td>
+                              <td className="text-slate-600">{t.location}</td>
+                              <td className="text-slate-600">{t.technician}</td>
+                              <td className="text-center font-bold text-[9px]">
+                                {formatStatusWithClosure(t)}
+                              </td>
+                              <td className="text-center font-medium">
+                                {isChargeable ? "Chargeable" : "Standard"}
+                              </td>
+                              <td className="text-right font-mono font-bold text-slate-900">
+                                {isChargeable && finalCharge > 0 ? `₹${finalCharge.toLocaleString("en-IN")}` : "—"}
+                              </td>
+                            </tr>
+                            {/* Nested line-items row for multi-asset tickets */}
+                            {assets.length > 0 && (
+                              <tr className="bg-slate-50/70 print-avoid-break">
+                                <td colSpan={9} className="p-2 border-b border-slate-300">
+                                  <div className="text-[10px] font-bold text-slate-700 uppercase mb-1">
+                                    Assets & Line Items ({assets.length})
+                                  </div>
+                                  <table className="w-full text-[10px] border border-slate-200 bg-white">
+                                    <thead>
+                                      <tr className="bg-slate-100 text-slate-700 border-b border-slate-200">
+                                        <th className="p-1 text-left w-6 text-center">#</th>
+                                        <th className="p-1 text-left">Asset Name</th>
+                                        <th className="p-1 text-left w-24">Type</th>
+                                        <th className="p-1 text-left">{t.type === "Installation" ? "Equipment Scope / Notes" : "Reported Issue"}</th>
+                                        <th className="p-1 text-center w-32">Warranty Status</th>
+                                        <th className="p-1 text-right w-24">Charge (₹)</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {assets.map((asset: any, aIdx: number) => {
+                                        const isExpired = asset.warranty_status === "Expired" || Boolean(asset.is_chargeable);
+                                        const charge = Number(asset.service_charge ?? asset.charge_amount) || 0;
+                                        const badgeText = isExpired
+                                          ? `[Expired${charge > 0 ? ` - ₹${charge.toLocaleString("en-IN")}` : ""}]`
+                                          : `[Active]`;
+                                        return (
+                                          <tr key={aIdx} className="border-b border-slate-100">
+                                            <td className="p-1 text-center font-mono text-slate-400">{aIdx + 1}</td>
+                                            <td className="p-1 font-semibold text-slate-900">{asset.asset_name || `Asset #${aIdx + 1}`}</td>
+                                            <td className="p-1 text-slate-600">{asset.asset_type || "General"}</td>
+                                            <td className="p-1 text-slate-700">{asset.reported_issue || asset.status || "—"}</td>
+                                            <td className="p-1 text-center font-mono font-medium">{badgeText}</td>
+                                            <td className="p-1 text-right font-mono font-semibold">
+                                              {isExpired && charge > 0 ? `₹${charge.toLocaleString("en-IN")}` : "—"}
+                                            </td>
+                                          </tr>
+                                        );
+                                      })}
+                                      <tr className="bg-slate-50 font-bold">
+                                        <td colSpan={5} className="p-1 text-right text-slate-800">Total Chargeable Amount:</td>
+                                        <td className="p-1 text-right font-mono text-slate-900">
+                                          ₹{assetTotal.toLocaleString("en-IN")}
+                                        </td>
+                                      </tr>
+                                    </tbody>
+                                  </table>
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
 
             {/* Official Sign-off & Verification Block (Printed at the end) */}
             <div className="pt-8 mt-8 border-t border-slate-300 print-avoid-break">
