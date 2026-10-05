@@ -894,10 +894,10 @@ const ComplaintDetail = () => {
         }
       }
 
-      // Enforce 50MB file upload limit to prevent Supabase timeout/size limit rejection
-      if (fileToUpload.size > 50 * 1024 * 1024) {
-        toast.error(`Video is ${(fileToUpload.size / 1024 / 1024).toFixed(1)}MB. Video is too large. Please compress it or upload a shorter clip.`);
-        throw new Error("File size exceeds storage limit");
+      // Enforce 100MB file upload limit for all file types
+      if (fileToUpload.size > 100 * 1024 * 1024) {
+        toast.error(`File is ${(fileToUpload.size / (1024 * 1024)).toFixed(1)}MB. Maximum allowed size is 100MB. Please choose a smaller file.`);
+        throw new Error("File size exceeds 100MB limit");
       }
 
       setUploadProgressText(`Uploading ${(fileToUpload.size / (1024 * 1024)).toFixed(1)}MB to cloud...`);
@@ -1414,6 +1414,131 @@ const ComplaintDetail = () => {
       cleanUrl.endsWith('.mkv') ||
       cleanUrl.endsWith('.3gp') ||
       url.includes('video')
+    );
+  };
+
+  const getFileType = (url: string): 'image' | 'video' | 'audio' | 'document' => {
+    const lowercaseUrl = url.toLowerCase();
+    if (
+      lowercaseUrl.endsWith('.mp3') ||
+      lowercaseUrl.endsWith('.wav') ||
+      lowercaseUrl.endsWith('.m4a') ||
+      lowercaseUrl.endsWith('.ogg') ||
+      lowercaseUrl.endsWith('.aac') ||
+      lowercaseUrl.includes('/audios/') ||
+      lowercaseUrl.includes('/pir-audio/')
+    ) {
+      return 'audio';
+    }
+    if (
+      lowercaseUrl.endsWith('.mp4') ||
+      lowercaseUrl.endsWith('.webm') ||
+      lowercaseUrl.endsWith('.mov') ||
+      lowercaseUrl.endsWith('.quicktime') ||
+      lowercaseUrl.endsWith('.avi') ||
+      lowercaseUrl.endsWith('.mkv') ||
+      lowercaseUrl.endsWith('.3gp') ||
+      lowercaseUrl.includes('video')
+    ) {
+      return 'video';
+    }
+    if (
+      lowercaseUrl.endsWith('.png') ||
+      lowercaseUrl.endsWith('.jpg') ||
+      lowercaseUrl.endsWith('.jpeg') ||
+      lowercaseUrl.endsWith('.gif') ||
+      lowercaseUrl.endsWith('.webp') ||
+      lowercaseUrl.endsWith('.svg') ||
+      lowercaseUrl.includes('/images/') ||
+      lowercaseUrl.includes('/evidence/')
+    ) {
+      return 'image';
+    }
+    return 'document';
+  };
+
+  const SmartFilePreview = ({ url, idx, onRemove, className }: { url: string; idx: number; onRemove?: () => void; className?: string }) => {
+    const resolved = resolveSupabaseUrl(url);
+    const fileType = getFileType(url);
+    const filename = decodeURIComponent(url.split('/').pop() || `File ${idx + 1}`).split('?')[0];
+    const ext = filename.includes('.') ? filename.split('.').pop()?.toUpperCase() : 'FILE';
+
+    if (fileType === 'image') {
+      return (
+        <a key={idx} href={resolved} target="_blank" rel="noreferrer" className={cn("relative border rounded-lg overflow-hidden hover:opacity-90 transition-opacity bg-slate-900 block group", className)}>
+          <img src={resolved} alt={`Evidence ${idx + 1}`} className="w-full h-full object-cover" />
+          {onRemove && (
+            <button type="button" onClick={onRemove} className="absolute top-1 right-1 bg-red-600 text-white rounded-full p-0.5 opacity-80 hover:opacity-100 transition-opacity shadow-xs">
+              <X className="w-3 h-3" />
+            </button>
+          )}
+        </a>
+      );
+    }
+
+    if (fileType === 'video') {
+      return (
+        <div key={idx} className={cn("relative border rounded-lg bg-slate-900 overflow-hidden group shadow-xs", className)}>
+          <video src={resolved} controls className="w-full h-full object-cover block print:hidden" />
+          <div className="block print:hidden relative w-full h-full min-h-[120px] flex items-center justify-center bg-slate-950">
+            <video src={resolved} className="w-full h-full object-cover" muted playsInline />
+            <div className="absolute inset-0 flex items-center justify-center bg-black/40">
+              <div className="w-8 h-8 rounded-full bg-black/60 flex items-center justify-center text-white shadow-sm">
+                <Play className="w-4 h-4 fill-white ml-0.5" />
+              </div>
+            </div>
+            <span className="absolute bottom-1.5 left-1.5 text-[9px] font-bold bg-black/70 text-white px-1.5 rounded">VIDEO</span>
+          </div>
+          <div className="hidden print:flex items-center gap-2 p-2 bg-slate-100 border border-slate-300 rounded">
+            <Play className="w-4 h-4 text-slate-700" />
+            <span className="text-xs font-medium text-slate-800">🎬 {filename}</span>
+          </div>
+          {onRemove && (
+            <button type="button" onClick={onRemove} className="absolute top-1 right-1 bg-red-600 text-white rounded-full p-0.5 opacity-80 hover:opacity-100 transition-opacity shadow-xs print:hidden">
+              <X className="w-3 h-3" />
+            </button>
+          )}
+        </div>
+      );
+    }
+
+    if (fileType === 'audio') {
+      return (
+        <div key={idx} className={cn("w-full max-w-sm border rounded-xl p-3 bg-slate-100/60 flex flex-col gap-2 shadow-sm", className)}>
+          <audio src={resolved} controls className="w-full h-9 rounded-lg block print:hidden" />
+          <div className="block print:hidden">
+            <span className="text-xs font-bold text-[#0083a2] flex items-center gap-1.5">
+              🎵 Audio Note {idx + 1}
+            </span>
+            <audio src={resolved} controls className="w-full h-9 rounded-lg" />
+          </div>
+          <div className="hidden print:flex items-center gap-2 p-2 bg-slate-100 border border-slate-300 rounded">
+            <span className="text-xs font-medium text-slate-800">🎵 {filename}</span>
+          </div>
+          {onRemove && (
+            <button type="button" onClick={onRemove} className="text-xs text-red-600 hover:text-red-700 font-medium print:hidden">Remove</button>
+          )}
+        </div>
+      );
+    }
+
+    return (
+      <>
+        <a key={idx} href={resolved} target="_blank" rel="noreferrer" className={cn("flex items-center gap-3 p-3 border border-slate-200 rounded-lg hover:bg-slate-50 transition-all bg-slate-50 shadow-sm max-w-xs w-full group block print:hidden", className)}>
+          <div className="p-2 rounded bg-red-50 text-red-500 shrink-0">
+            <FileText className="w-6 h-6" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-slate-700 truncate">{filename}</p>
+            <p className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wide">Document</p>
+          </div>
+          <span className="text-[10px] font-semibold text-primary uppercase tracking-wide border border-primary/20 rounded px-2 py-1 bg-primary/5">View</span>
+        </a>
+        <div className="hidden print:flex items-center gap-2 p-2 bg-slate-100 border border-slate-300 rounded">
+          <FileText className="w-4 h-4 text-slate-700" />
+          <span className="text-xs font-medium text-slate-800">📄 {filename}</span>
+        </div>
+      </>
     );
   };
 
@@ -2111,38 +2236,23 @@ const ComplaintDetail = () => {
       return;
     }
 
-    // Validate signature is provided BEFORE starting submission
-    const isCanvasNotEmpty = sigRef.current ? !sigRef.current.isEmpty() : false;
-    const isDrawn = signatureMode === "draw" && (isCanvasNotEmpty || hasDrawnSignature);
-    const isUploaded = signatureMode === "upload" && Boolean(uploadedSignatureUrl);
-    if (!isDrawn && !isUploaded) {
-      toast.error("⚠️ Customer signature is mandatory. Please draw or upload the customer's signature before submitting.");
-      return;
-    }
+    // Signature is optional. If provided, capture/upload it.
 
     if (isSubmittingSignOff) return;
     setIsSubmittingSignOff(true);
 
     try {
-      let signatureUrl = null;
-      if (signatureMode === "draw") {
-        if (!sigRef.current || sigRef.current.isEmpty()) {
-          toast.error("Please draw the customer signature in the canvas.");
-          setIsSubmittingSignOff(false);
-          return;
+      let signatureUrl = uploadedSignatureUrl;
+      if (signatureMode === "draw" && sigRef.current && !sigRef.current.isEmpty()) {
+        try {
+          const signatureData = sigRef.current?.getCanvas().toDataURL('image/png');
+          if (signatureData) {
+            const blob = await fetch(signatureData).then(res => res.blob());
+            signatureUrl = await uploadToSupabase(new File([blob], 'signature.png', { type: 'image/png' }), 'signatures');
+          }
+        } catch (sigErr) {
+          console.warn("Signature canvas export skipped:", sigErr);
         }
-        const signatureData = sigRef.current?.getCanvas().toDataURL('image/png');
-        if (signatureData) {
-          const blob = await fetch(signatureData).then(res => res.blob());
-          signatureUrl = await uploadToSupabase(new File([blob], 'signature.png', { type: 'image/png' }), 'signatures');
-        }
-      } else if (signatureMode === "upload") {
-        signatureUrl = uploadedSignatureUrl;
-      }
-      if (!signatureUrl) {
-        toast.error("Please provide a customer signature (draw or upload)");
-        setIsSubmittingSignOff(false);
-        return;
       }
 
       // Auto-generate random 5-digit Happiness Code (e.g. 32333)
@@ -2956,18 +3066,18 @@ const ComplaintDetail = () => {
                 <span className="font-medium text-slate-700">{supervisorName || 'Pending Assignment'}</span>
               </div>
             </div>
-            {ticket.complaint_images && ticket.complaint_images.length > 0 && (
-              <div className="mt-3">
-                <span className="text-xs text-muted-foreground block mb-2 font-medium">📷 Initial Complaint Images (Before Fix):</span>
-                <div className="flex flex-wrap gap-2">
-                  {ticket.complaint_images.map((url, idx) => (
-                    <a key={idx} href={url} target="_blank" rel="noreferrer" className="block relative w-20 h-20 border rounded overflow-hidden hover:opacity-90">
-                      <img src={url} alt={`Initial Evidence ${idx + 1}`} className="w-full h-full object-cover" />
-                    </a>
-                  ))}
-                </div>
-              </div>
-            )}
+             {ticket.complaint_images && ticket.complaint_images.length > 0 && (
+               <div className="mt-3">
+                 <span className="text-xs text-muted-foreground block mb-2 font-medium">📷 Initial Complaint Proofs:</span>
+                 <div className="flex flex-wrap gap-2.5">
+                   {ticket.complaint_images.map((url, idx) => (
+                     <div key={idx} className="relative group">
+                       <SmartFilePreview url={url} idx={idx} />
+                     </div>
+                   ))}
+                 </div>
+               </div>
+             )}
           </div>
         );
 
@@ -3721,10 +3831,12 @@ const ComplaintDetail = () => {
 
               {ticket.technician_evidence && ticket.technician_evidence.length > 0 && (
                 <div className="bg-white/60 dark:bg-slate-900/40 rounded-lg p-3 border border-amber-200/60">
-                  <p className="text-[10px] font-bold text-amber-800 uppercase tracking-wider mb-1">Previous Work Evidence Photos ({ticket.technician_evidence.length})</p>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  <p className="text-[10px] font-bold text-amber-800 uppercase tracking-wider mb-1">Previous Work Evidence ({ticket.technician_evidence.length})</p>
+                  <div className="flex flex-wrap gap-2.5">
                     {ticket.technician_evidence.map((url: string, i: number) => (
-                      <img key={i} src={resolveSupabaseUrl(url)} alt={`Previous evidence ${i + 1}`} className="w-full h-24 object-cover rounded-lg border border-amber-200" />
+                      <div key={i} className="relative group">
+                        <SmartFilePreview url={url} idx={i} />
+                      </div>
                     ))}
                   </div>
                 </div>
@@ -4159,31 +4271,31 @@ const ComplaintDetail = () => {
                       </div>
                     </div>
 
-                    {/* Original Complaint Proofs Notice */}
-                    {ticket.complaint_images && ticket.complaint_images.length > 0 && (
-                      <div className="p-3 rounded-lg bg-blue-50/70 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 text-xs space-y-1.5">
-                        <span className="font-semibold text-blue-900 dark:text-blue-300 flex items-center gap-1.5">
-                          📷 Initial Complaint Proofs (Phase 1 • Permanent Record)
-                        </span>
-                        <div className="flex flex-wrap gap-2 pt-1">
-                          {ticket.complaint_images.map((url: string, idx: number) => (
-                            <a key={idx} href={url} target="_blank" rel="noreferrer" className="relative w-14 h-14 border rounded-lg overflow-hidden block hover:opacity-90">
-                              <img src={url} alt={`Initial ${idx + 1}`} className="w-full h-full object-cover" />
-                            </a>
-                          ))}
-                        </div>
-                      </div>
-                    )}
+                     {/* Original Complaint Proofs Notice */}
+                     {ticket.complaint_images && ticket.complaint_images.length > 0 && (
+                       <div className="p-3 rounded-lg bg-blue-50/70 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 text-xs space-y-1.5">
+                         <span className="font-semibold text-blue-900 dark:text-blue-300 flex items-center gap-1.5">
+                           📷 Initial Complaint Proofs (Phase 1 • Permanent Record)
+                         </span>
+                         <div className="flex flex-wrap gap-2.5 pt-1">
+                           {ticket.complaint_images.map((url: string, idx: number) => (
+                             <div key={idx} className="relative group">
+                               <SmartFilePreview url={url} idx={idx} />
+                             </div>
+                           ))}
+                         </div>
+                       </div>
+                     )}
 
                     {/* Evidence Upload */}
                     <div className="space-y-1">
                       <label className="text-sm font-semibold text-foreground flex items-center gap-1.5">
-                        <Upload className="w-4 h-4 text-primary" /> Upload Diagnostic Evidence Photos / Video / Audio (Optional)
+                        <Upload className="w-4 h-4 text-primary" /> Upload Diagnostic Evidence (Photos, Videos, PDFs, Audio & Documents) (Optional)
                       </label>
                       <input
                         type="file"
                         multiple
-                        accept="image/*,video/*,.png,.jpg,.jpeg,.gif,.webp,.mp4,.mov,.avi,.mkv,audio/*"
+                        accept="image/*,video/*,audio/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt,.csv,.ppt,.pptx,.mp3,.wav,.m4a,.ogg,.aac"
                         onChange={async (e) => {
                           const files = Array.from(e.target.files || []);
                           if (files.length === 0) return;
@@ -4241,28 +4353,13 @@ const ComplaintDetail = () => {
                     {pirEvidenceUrls.length > 0 && (
                       <div>
                         <p className="text-xs font-medium mb-1.5">Uploaded PIR Diagnostic Attachments ({pirEvidenceUrls.length} file(s)):</p>
-                        <div className="flex flex-wrap gap-2">
+                        <div className="flex flex-wrap gap-2.5">
                           {pirEvidenceUrls.map((url, i) => (
-                            <div key={i} className="relative w-16 h-16 border rounded-lg bg-slate-900 overflow-hidden group shadow-xs">
-                              {isVideoUrl(url) ? (
-                                <div className="relative w-full h-full bg-slate-950 flex items-center justify-center">
-                                  <video src={resolveSupabaseUrl(url)} className="w-full h-full object-cover" muted playsInline />
-                                  <div className="absolute inset-0 flex items-center justify-center bg-black/40">
-                                    <div className="w-6 h-6 rounded-full bg-black/60 flex items-center justify-center text-white shadow-sm">
-                                      <Play className="w-3 h-3 fill-white ml-0.5" />
-                                    </div>
-                                  </div>
-                                  <span className="absolute bottom-1 left-1 text-[9px] font-bold bg-black/70 text-white px-1 rounded">VIDEO</span>
-                                </div>
-                              ) : (
-                                <img src={resolveSupabaseUrl(url)} alt={`PIR Evidence ${i + 1}`} className="w-full h-full object-cover" />
-                              )}
-                              <button type="button" onClick={() => {
+                            <div key={i} className="relative group">
+                              <SmartFilePreview url={url} idx={i} onRemove={() => {
                                 setPirEvidenceUrls(prev => prev.filter((_, idx) => idx !== i));
                                 setEvidenceUrls(prev => prev.filter(u => u !== url));
-                              }} className="absolute top-1 right-1 bg-red-600 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity shadow-xs">
-                                <X className="w-3 h-3" />
-                              </button>
+                              }} />
                             </div>
                           ))}
                         </div>
@@ -4584,14 +4681,14 @@ const ComplaintDetail = () => {
                     {/* 2. Upload Proof / Work Evidence (Images & Videos) */}
                     <div className="space-y-2">
                       <label className="text-sm font-semibold text-foreground flex items-center gap-1.5">
-                        <Camera className="w-4 h-4 text-primary" /> Attach Work Completion Proof (Photos / Videos)
+                        <Camera className="w-4 h-4 text-primary" /> Attach Work Completion Proof (Photos, Videos, PDFs, Audio & Documents)
                       </label>
                       <div className="border-2 border-dashed border-primary/30 hover:border-primary/60 rounded-xl p-4 bg-white/70 dark:bg-slate-900/70 transition-colors text-center">
                         <input
                           id="resolution-evidence-input"
                           type="file"
                           multiple
-                          accept="image/*,video/*,.png,.jpg,.jpeg,.gif,.webp,.mp4,.mov,.avi,.mkv"
+                          accept="image/*,video/*,audio/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt,.csv,.ppt,.pptx,.mp3,.wav,.m4a,.ogg,.aac"
                           onChange={async (e) => {
                             const files = Array.from(e.target.files || []);
                             if (files.length === 0) return;
@@ -4625,7 +4722,7 @@ const ComplaintDetail = () => {
                           htmlFor="resolution-evidence-input"
                           className="inline-flex items-center gap-2 px-4 py-2 bg-primary/10 text-primary font-semibold rounded-lg cursor-pointer hover:bg-primary/20 transition-colors text-xs sm:text-sm"
                         >
-                          <Upload className="w-4 h-4" /> {isUploading ? (uploadProgressText || "Optimizing & Uploading...") : "Choose Work Completion Photos"}
+                          <Upload className="w-4 h-4" /> {isUploading ? (uploadProgressText || "Optimizing & Uploading...") : "Choose Work Completion Files"}
                         </label>
                         {isUploading && (
                           <div className="flex items-center justify-center gap-2 text-xs font-semibold text-primary mt-2 animate-pulse">
@@ -4634,52 +4731,32 @@ const ComplaintDetail = () => {
                           </div>
                         )}
                         <p className="text-xs text-muted-foreground mt-2">
-                          Supported: JPG, PNG, WEBP, MP4, MOV. Upload after-fix photos of repaired equipment.
+                          Supported: JPG, PNG, WEBP, MP4, MOV, PDF, DOC, XLS, Audio. Upload after-fix photos and documents of repaired equipment.
                         </p>
                       </div>
 
-                      {/* Evidence Thumbnails Grid */}
-                      {resolutionEvidenceUrls.length > 0 && (
-                        <div className="space-y-1.5 mt-3">
-                          <p className="text-xs font-semibold text-muted-foreground">Work Completion Attachments ({resolutionEvidenceUrls.length}):</p>
-                          <div className="flex flex-wrap gap-2.5">
-                            {resolutionEvidenceUrls.map((url, i) => (
-                              <div key={i} className="relative w-16 h-16 sm:w-20 sm:h-20 border rounded-lg bg-slate-900 overflow-hidden group shadow-xs">
-                                {isVideoUrl(url) ? (
-                                  <div className="relative w-full h-full bg-slate-950 flex items-center justify-center">
-                                    <video src={resolveSupabaseUrl(url)} className="w-full h-full object-cover" muted playsInline />
-                                    <div className="absolute inset-0 flex items-center justify-center bg-black/40">
-                                      <div className="w-7 h-7 rounded-full bg-black/60 flex items-center justify-center text-white shadow-sm">
-                                        <Play className="w-3.5 h-3.5 fill-white ml-0.5" />
-                                      </div>
-                                    </div>
-                                    <span className="absolute bottom-1 left-1 text-[9px] font-bold bg-black/70 text-white px-1 rounded">VIDEO</span>
-                                  </div>
-                                ) : (
-                                  <img src={resolveSupabaseUrl(url)} alt={`Resolution Evidence ${i + 1}`} className="w-full h-full object-cover" />
-                                )}
-                                <button
-                                  type="button"
-                                  title="Remove attachment"
-                                  onClick={() => {
+                       {/* Evidence Thumbnails Grid */}
+                       {resolutionEvidenceUrls.length > 0 && (
+                         <div className="space-y-1.5 mt-3">
+                           <p className="text-xs font-semibold text-muted-foreground">Work Completion Attachments ({resolutionEvidenceUrls.length}):</p>
+                           <div className="flex flex-wrap gap-2.5">
+                             {resolutionEvidenceUrls.map((url, i) => (
+                               <div key={i} className="relative group">
+                                  <SmartFilePreview url={url} idx={i} onRemove={() => {
                                     setResolutionEvidenceUrls((prev) => prev.filter((_, idx) => idx !== i));
                                     setEvidenceUrls((prev) => prev.filter((u) => u !== url));
-                                  }}
-                                  className="absolute top-1 right-1 bg-red-600 text-white rounded-full p-1 opacity-80 hover:opacity-100 transition-opacity shadow-xs"
-                                >
-                                  <X className="w-3 h-3" />
-                                </button>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
+                                  }} />
+                               </div>
+                             ))}
+                           </div>
+                         </div>
+                       )}
                     </div>
 
                     {/* 3. Customer Sign-off / Signature */}
                     <div className="space-y-3 pt-2">
                       <label className="text-sm font-semibold text-foreground flex items-center gap-1.5">
-                        <PenTool className="w-4 h-4 text-primary" /> Customer Sign-Off & Signature *
+                        <PenTool className="w-4 h-4 text-primary" /> Customer Sign-Off & Signature (Optional)
                       </label>
 
                        <div className="flex flex-col sm:flex-row gap-2 border-b border-border">
@@ -4976,27 +5053,6 @@ const ComplaintDetail = () => {
                   <div>
                     <p className="text-xs font-semibold text-muted-foreground mb-1.5">Customer Signature:</p>
                     <img src={resolveSupabaseUrl(ticket.signature_url)} alt="Customer Signature" className="max-h-20 border rounded-lg bg-white p-1.5" />
-                  </div>
-                )}
-                {ticket.technician_evidence && ticket.technician_evidence.length > 0 && (
-                  <div>
-                    <p className="text-xs font-semibold text-muted-foreground mb-1.5">Work Evidence Photos ({ticket.technician_evidence.length}):</p>
-                    <div className="flex flex-wrap gap-2">
-                      {ticket.technician_evidence.map((url: string, i: number) => (
-                        <a key={i} href={resolveSupabaseUrl(url)} target="_blank" rel="noreferrer" className="w-16 h-16 border rounded-lg overflow-hidden hover:opacity-80 transition-opacity relative bg-slate-900 block">
-                          {isVideoUrl(url) ? (
-                            <div className="w-full h-full flex items-center justify-center">
-                              <video src={resolveSupabaseUrl(url)} className="w-full h-full object-cover" muted playsInline />
-                              <div className="absolute inset-0 flex items-center justify-center bg-black/30">
-                                <Play className="w-3.5 h-3.5 text-white fill-white" />
-                              </div>
-                            </div>
-                          ) : (
-                            <img src={resolveSupabaseUrl(url)} alt={`Evidence ${i + 1}`} className="w-full h-full object-cover" />
-                          )}
-                        </a>
-                      ))}
-                    </div>
                   </div>
                 )}
               </div>

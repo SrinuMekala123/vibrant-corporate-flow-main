@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { X, Download, ZoomIn, User, Wrench, Play, Image as ImageIcon } from "lucide-react";
+import { X, Download, ZoomIn, User, Wrench, Play, Image as ImageIcon, FileText } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { resolveSupabaseUrl } from "@/lib/supabase";
 
@@ -9,6 +9,38 @@ interface ImageGalleryProps {
     uploader: "customer" | "technician";
     emptyMessage?: string;
 }
+
+const getFileType = (url: string): "image" | "video" | "document" => {
+  const lower = url.toLowerCase();
+  if (
+    lower.endsWith(".mp4") ||
+    lower.endsWith(".webm") ||
+    lower.endsWith(".ogg") ||
+    lower.endsWith(".mov") ||
+    lower.endsWith(".quicktime") ||
+    lower.includes("video")
+  ) {
+    return "video";
+  }
+  if (
+    lower.endsWith(".png") ||
+    lower.endsWith(".jpg") ||
+    lower.endsWith(".jpeg") ||
+    lower.endsWith(".gif") ||
+    lower.endsWith(".webp") ||
+    lower.endsWith(".svg") ||
+    lower.includes("/images/") ||
+    lower.includes("/evidence/")
+  ) {
+    return "image";
+  }
+  return "document";
+};
+
+const getFileName = (url: string): string => {
+  const decoded = decodeURIComponent(url.split("/").pop() || "Attachment");
+  return decoded.split("?")[0] || "Attachment_Document";
+};
 
 function GalleryImage({ url, index, onClick }: { url: string; index: number; onClick: () => void }) {
     const [hasError, setHasError] = useState(false);
@@ -52,6 +84,27 @@ function GalleryImage({ url, index, onClick }: { url: string; index: number; onC
     );
 }
 
+function DocumentCard({ url, index }: { url: string; index: number }) {
+  const resolvedUrl = resolveSupabaseUrl(url);
+  const filename = getFileName(url);
+
+  return (
+    <div
+      className="flex items-center gap-3 p-3 border border-slate-200 rounded-lg bg-slate-50 hover:bg-slate-100 transition-colors shadow-sm cursor-pointer"
+      onClick={() => window.open(resolvedUrl, "_blank")}
+    >
+      <div className="p-2 rounded bg-red-50 text-red-500 shrink-0">
+        <FileText className="w-6 h-6" />
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium text-slate-700 truncate">{filename}</p>
+        <p className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wide">Document</p>
+      </div>
+      <span className="text-[10px] font-semibold text-primary uppercase tracking-wide border border-primary/20 rounded px-2 py-1 bg-primary/5 shrink-0">Open</span>
+    </div>
+  );
+}
+
 export default function ImageGallery({ images, title, uploader, emptyMessage }: ImageGalleryProps) {
     const [selectedMedia, setSelectedMedia] = useState<string | null>(null);
 
@@ -87,7 +140,8 @@ export default function ImageGallery({ images, title, uploader, emptyMessage }: 
     }
 
     const videoCount = images.filter(isVideoUrl).length;
-    const imageCount = images.length - videoCount;
+    const imageCount = images.filter(url => getFileType(url) === "image").length;
+    const docCount = images.filter(url => getFileType(url) === "document").length;
 
     return (
         <>
@@ -98,8 +152,10 @@ export default function ImageGallery({ images, title, uploader, emptyMessage }: 
                         <h3 className="font-semibold text-sm text-foreground">{title}</h3>
                         <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${styles.badge}`}>
                             {imageCount > 0 && `${imageCount} image${imageCount > 1 ? "s" : ""}`}
-                            {imageCount > 0 && videoCount > 0 && " • "}
+                            {imageCount > 0 && (videoCount > 0 || docCount > 0) && " • "}
                             {videoCount > 0 && `${videoCount} video${videoCount > 1 ? "s" : ""}`}
+                            {videoCount > 0 && docCount > 0 && " • "}
+                            {docCount > 0 && `${docCount} document${docCount > 1 ? "s" : ""}`}
                         </span>
                     </div>
                 </div>
@@ -107,6 +163,7 @@ export default function ImageGallery({ images, title, uploader, emptyMessage }: 
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
                     {images.map((url, index) => {
                         const isVideo = isVideoUrl(url);
+                        const fileType = getFileType(url);
                         if (isVideo) {
                             return (
                                 <div
@@ -126,6 +183,11 @@ export default function ImageGallery({ images, title, uploader, emptyMessage }: 
                                         <ZoomIn className="w-6 h-6 text-white" />
                                     </div>
                                 </div>
+                            );
+                        }
+                        if (fileType === "document") {
+                            return (
+                                <DocumentCard key={index} url={url} index={index} />
                             );
                         }
                         return (
@@ -165,6 +227,26 @@ export default function ImageGallery({ images, title, uploader, emptyMessage }: 
                                     autoPlay
                                     className="max-w-full max-h-[80vh] object-contain rounded-lg shadow-2xl border border-white/10"
                                 />
+                            ) : getFileType(selectedMedia) === "document" ? (
+                                <div className="bg-white rounded-lg shadow-2xl p-6 max-w-md w-full">
+                                    <div className="flex items-center gap-4">
+                                        <div className="p-3 rounded bg-red-50 text-red-500">
+                                            <FileText className="w-8 h-8" />
+                                        </div>
+                                        <div>
+                                            <p className="font-semibold text-slate-800">{getFileName(selectedMedia)}</p>
+                                            <p className="text-xs text-slate-500">Document</p>
+                                        </div>
+                                    </div>
+                                    <a
+                                        href={resolveSupabaseUrl(selectedMedia)}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="mt-4 w-full inline-flex items-center justify-center gap-2 bg-primary text-white px-4 py-2 rounded-lg font-semibold text-sm hover:bg-primary/90 transition-colors"
+                                    >
+                                        <Download className="w-4 h-4" /> Open / Download
+                                    </a>
+                                </div>
                             ) : (
                                 <img
                                     src={resolveSupabaseUrl(selectedMedia)}
@@ -174,15 +256,17 @@ export default function ImageGallery({ images, title, uploader, emptyMessage }: 
                             )}
                         </div>
 
-                        <a
-                            href={resolveSupabaseUrl(selectedMedia)}
-                            download
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="absolute bottom-6 right-6 bg-white hover:bg-slate-100 text-black px-4 py-2 rounded-lg flex items-center gap-2 font-semibold text-sm shadow-lg transition-all"
-                        >
-                            <Download className="w-4 h-4" /> Download
-                        </a>
+                        {getFileType(selectedMedia) !== "document" && (
+                            <a
+                                href={resolveSupabaseUrl(selectedMedia)}
+                                download
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="absolute bottom-6 right-6 bg-white hover:bg-slate-100 text-black px-4 py-2 rounded-lg flex items-center gap-2 font-semibold text-sm shadow-lg transition-all"
+                            >
+                                <Download className="w-4 h-4" /> Download
+                            </a>
+                        )}
                     </motion.div>
                 )}
             </AnimatePresence>

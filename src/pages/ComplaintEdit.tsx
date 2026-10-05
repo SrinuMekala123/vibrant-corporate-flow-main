@@ -3199,9 +3199,9 @@ const ComplaintEdit = () => {
           <div className="space-y-2">
             <label className="text-sm font-medium flex items-center gap-2">
               <Upload className="w-4 h-4" />
-              Upload Evidence (Photos/Videos) - Optional
+              Upload Evidence (Photos, Videos, PDFs, Audio & Documents) - Optional
             </label>
-            <input type="file" multiple accept="image/*,video/*,.png,.jpg,.jpeg,.gif,.webp,.mp4,.mov,.avi,.mkv" onChange={async (e) => {
+            <input type="file" multiple accept="image/*,video/*,audio/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt,.csv,.ppt,.pptx,.mp3,.wav,.m4a,.ogg,.aac" onChange={async (e) => {
               const files = Array.from(e.target.files || []);
               if (files.length === 0) return;
               setIsUploading(true);

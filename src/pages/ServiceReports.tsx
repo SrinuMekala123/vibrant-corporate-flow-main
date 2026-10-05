@@ -75,6 +75,46 @@ import { installationService } from "@/services/installationService";
 import { generateCSV, downloadCSV } from "@/utils/csvHelpers";
 import { supabase, resolveSupabaseUrl } from "@/lib/supabase";
 
+const getFileType = (url: string): "image" | "video" | "audio" | "document" => {
+  const lower = url.toLowerCase();
+  if (
+    lower.endsWith(".mp3") ||
+    lower.endsWith(".wav") ||
+    lower.endsWith(".m4a") ||
+    lower.endsWith(".ogg") ||
+    lower.endsWith(".aac") ||
+    lower.includes("/audios/") ||
+    lower.includes("/pir-audio/")
+  ) {
+    return "audio";
+  }
+  if (
+    lower.endsWith(".mp4") ||
+    lower.endsWith(".webm") ||
+    lower.endsWith(".mov") ||
+    lower.endsWith(".quicktime") ||
+    lower.endsWith(".avi") ||
+    lower.endsWith(".mkv") ||
+    lower.endsWith(".3gp") ||
+    lower.includes("video")
+  ) {
+    return "video";
+  }
+  if (
+    lower.endsWith(".png") ||
+    lower.endsWith(".jpg") ||
+    lower.endsWith(".jpeg") ||
+    lower.endsWith(".gif") ||
+    lower.endsWith(".webp") ||
+    lower.endsWith(".svg") ||
+    lower.includes("/images/") ||
+    lower.includes("/evidence/")
+  ) {
+    return "image";
+  }
+  return "document";
+};
+
 type TabType = "dashboard" | "search" | "generate" | "payment" | "performance" | "history";
 
 // ---------------------------------------------------------------------------
@@ -2626,47 +2666,134 @@ export default function ServiceReports() {
                   </div>
 
                   {/* Diagnostic & Resolution Evidence Images (PIR Before vs Resolution After) */}
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="border border-slate-300 rounded-lg p-2.5">
-                      <p className="text-[10px] uppercase font-bold text-slate-700 mb-2">
-                        Technician's Diagnostic Evidence (Before) / PIR
-                      </p>
-                      {pirImages.length > 0 ? (
-                        <div className="grid grid-cols-3 gap-2">
-                          {pirImages.map((imgUrl, i) => (
-                            <img
-                              key={i}
-                              src={resolveSupabaseUrl(imgUrl)}
-                              alt={`Diagnostic Before ${i + 1}`}
-                              className="w-full h-20 object-cover rounded border border-slate-200"
-                            />
-                          ))}
-                        </div>
-                      ) : (
-                        <p className="text-slate-400 italic text-[11px]">No diagnostic images provided</p>
-                      )}
-                    </div>
+                  {(() => {
+                    const getFileType = (url: string): "image" | "video" | "audio" | "document" => {
+                      const lower = url.toLowerCase();
+                      if (
+                        lower.endsWith(".mp3") ||
+                        lower.endsWith(".wav") ||
+                        lower.endsWith(".m4a") ||
+                        lower.endsWith(".ogg") ||
+                        lower.endsWith(".aac") ||
+                        lower.includes("/audios/") ||
+                        lower.includes("/pir-audio/")
+                      ) {
+                        return "audio";
+                      }
+                      if (
+                        lower.endsWith(".mp4") ||
+                        lower.endsWith(".webm") ||
+                        lower.endsWith(".mov") ||
+                        lower.endsWith(".quicktime") ||
+                        lower.endsWith(".avi") ||
+                        lower.endsWith(".mkv") ||
+                        lower.endsWith(".3gp") ||
+                        lower.includes("video")
+                      ) {
+                        return "video";
+                      }
+                      if (
+                        lower.endsWith(".png") ||
+                        lower.endsWith(".jpg") ||
+                        lower.endsWith(".jpeg") ||
+                        lower.endsWith(".gif") ||
+                        lower.endsWith(".webp") ||
+                        lower.endsWith(".svg") ||
+                        lower.includes("/images/") ||
+                        lower.includes("/evidence/")
+                      ) {
+                        return "image";
+                      }
+                      return "document";
+                    };
 
-                    <div className="border border-slate-300 rounded-lg p-2.5">
-                      <p className="text-[10px] uppercase font-bold text-slate-700 mb-2">
-                        Technician's Resolution Evidence (After)
-                      </p>
-                      {resImages.length > 0 ? (
-                        <div className="grid grid-cols-3 gap-2">
-                          {resImages.map((imgUrl, i) => (
-                            <img
-                              key={i}
-                              src={resolveSupabaseUrl(imgUrl)}
-                              alt={`Resolution After ${i + 1}`}
-                              className="w-full h-20 object-cover rounded border border-slate-200"
-                            />
-                          ))}
+                    const renderMixedGrid = (urls: string[], label: string, emptyLabel: string) => {
+                      if (urls.length === 0) return <p className="text-slate-400 italic text-[11px]">{emptyLabel}</p>;
+                      const images = urls.filter(u => getFileType(u) === "image");
+                      const videos = urls.filter(u => getFileType(u) === "video");
+                      const audios = urls.filter(u => getFileType(u) === "audio");
+                      const docs = urls.filter(u => getFileType(u) === "document");
+
+                      return (
+                        <div className="space-y-2">
+                          <p className="text-[10px] uppercase font-bold text-slate-700 mb-1">{label}</p>
+                          {images.length > 0 && (
+                            <div className="grid grid-cols-3 gap-2">
+                              {images.map((imgUrl, i) => (
+                                <img
+                                  key={i}
+                                  src={resolveSupabaseUrl(imgUrl)}
+                                  alt={`${label} ${i + 1}`}
+                                  className="w-full h-20 object-cover rounded border border-slate-200"
+                                />
+                              ))}
+                            </div>
+                          )}
+                          {videos.length > 0 && (
+                            <div className="space-y-1.5">
+                              {videos.map((vUrl, i) => {
+                                const filename = decodeURIComponent(vUrl.split('/').pop() || `Video ${i + 1}`).split('?')[0];
+                                return (
+                                  <div key={i} className="border border-slate-200 rounded-lg overflow-hidden">
+                                    <video src={resolveSupabaseUrl(vUrl)} controls className="w-full h-20 object-cover block print:hidden" />
+                                    <div className="hidden print:flex items-center gap-2 p-2 bg-slate-100 border border-slate-300 rounded">
+                                      <span className="text-[10px] font-medium text-slate-800">🎬 {filename}</span>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                          {audios.length > 0 && (
+                            <div className="space-y-1.5">
+                              {audios.map((aUrl, i) => {
+                                const filename = decodeURIComponent(aUrl.split('/').pop() || `Audio ${i + 1}`).split('?')[0];
+                                return (
+                                  <div key={i} className="border border-slate-200 rounded-lg overflow-hidden">
+                                    <audio src={resolveSupabaseUrl(aUrl)} controls className="w-full h-8 block print:hidden" />
+                                    <div className="hidden print:flex items-center gap-2 p-2 bg-slate-100 border border-slate-300 rounded">
+                                      <span className="text-[10px] font-medium text-slate-800">🎵 {filename}</span>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                          {docs.length > 0 && (
+                            <div className="space-y-1.5">
+                              {docs.map((docUrl, i) => {
+                                const filename = decodeURIComponent(docUrl.split('/').pop() || `Document ${i + 1}`).split('?')[0];
+                                return (
+                                  <div key={i} className="border border-slate-200 rounded-lg overflow-hidden">
+                                    <a href={resolveSupabaseUrl(docUrl)} target="_blank" rel="noreferrer" className="flex items-center gap-2 p-2 bg-slate-50 hover:bg-slate-100 transition-colors">
+                                      <FileText className="w-4 h-4 text-slate-700" />
+                                      <span className="text-xs font-medium text-slate-800">📄 {filename}</span>
+                                    </a>
+                                    <div className="hidden print:flex items-center gap-2 p-2 bg-slate-100 border border-slate-300 rounded">
+                                      <FileText className="w-4 h-4 text-slate-700" />
+                                      <span className="text-xs font-medium text-slate-800">📄 {filename}</span>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
                         </div>
-                      ) : (
-                        <p className="text-slate-400 italic text-[11px]">No resolution images provided</p>
-                      )}
-                    </div>
-                  </div>
+                      );
+                    };
+
+                    return (
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="border border-slate-300 rounded-lg p-2.5">
+                          {renderMixedGrid(pirImages, "Technician's Diagnostic Evidence (Before) / PIR", "No diagnostic files provided")}
+                        </div>
+
+                        <div className="border border-slate-300 rounded-lg p-2.5">
+                          {renderMixedGrid(resImages, "Technician's Resolution Evidence (After)", "No resolution files provided")}
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   {/* Customer Verification & Signature */}
                   <div className="border border-slate-300 rounded-lg p-3 bg-slate-50 flex items-center justify-between">
