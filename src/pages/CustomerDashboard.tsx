@@ -183,7 +183,7 @@ const CustomerDashboard = () => {
                   <div className="space-y-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-mono text-xs font-bold text-primary">{displayId}</span>
-                      <StatusBadge status={ticket.status} />
+                      <StatusBadge status={ticket.status} ticket={ticket} />
                       <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-primary/10 text-primary">
                         Phase {ticket.current_phase || 1}
                       </span>

@@ -4,7 +4,7 @@ import { motion } from "framer-motion";
 import { Search, Plus, MapPin, Clock, Loader2, X, Calendar, Upload, Download, FileText, Trash2, CheckSquare, Square, Eye, Wrench, UserPlus, Navigation, Edit2, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { StatusBadge, SeverityBadge } from "@/components/Badges";
+import { StatusBadge, SeverityBadge, getEffectiveComplaintStatus } from "@/components/Badges";
 import {
   Dialog,
   DialogContent,
@@ -32,6 +32,7 @@ const statusFilters = [
   "all",
   "unassigned",
   "assigned",
+  "reassigned",
   "in-progress",
   "dispatched",
   "completed",
@@ -115,12 +116,12 @@ const ComplaintsList = () => {
       const { deleted, blocked, failed } = await complaintService.deleteMany(Array.from(selectedIds));
 
       if (deleted.length > 0) {
-        const currentData = queryClient.getQueryData(["complaints", statusFilter, user?.id, user?.role]);
+        const currentData = queryClient.getQueryData(["complaints", user?.id, user?.role]);
         if (currentData && Array.isArray(currentData)) {
           const updatedData = currentData.filter((item: any) => deleted.includes(item.id));
-          queryClient.setQueryData(["complaints", statusFilter, user?.id, user?.role], updatedData);
+          queryClient.setQueryData(["complaints", user?.id, user?.role], updatedData);
         }
-        await queryClient.invalidateQueries({ queryKey: ["complaints", statusFilter, user?.id, user?.role].filter(Boolean) });
+        await queryClient.invalidateQueries({ queryKey: ["complaints"] });
       }
 
       if (deleted.length > 0 && blocked.length === 0 && failed.length === 0) {
@@ -147,11 +148,12 @@ const ComplaintsList = () => {
     try {
       await complaintService.delete(id);
 
-      const currentData = queryClient.getQueryData(["complaints", statusFilter, user?.id, user?.role]);
+      const currentData = queryClient.getQueryData(["complaints", user?.id, user?.role]);
       if (currentData && Array.isArray(currentData)) {
         const updatedData = currentData.filter((item: any) => item.id !== id);
-        queryClient.setQueryData(["complaints", statusFilter, user?.id, user?.role], updatedData);
+        queryClient.setQueryData(["complaints", user?.id, user?.role], updatedData);
       }
+      await queryClient.invalidateQueries({ queryKey: ["complaints"] });
 
       toast.success("Complaint deleted successfully.");
       setDeleteConfirmId(null);
@@ -176,9 +178,9 @@ const ComplaintsList = () => {
     }
   }, [user, navigate]);
 
-  // Fetch complaints based on role
+  // Fetch complaints based on role (Unified across all status tabs)
   const { data: complaints, isLoading, error, refetch } = useQuery({
-    queryKey: ["complaints", statusFilter, user?.id, user?.role],
+    queryKey: ["complaints", user?.id, user?.role],
     queryFn: async () => {
       let allComplaints = await complaintService.getAll();
 
@@ -218,8 +220,26 @@ const ComplaintsList = () => {
       return allComplaints;
     },
     enabled: !!user,
-    staleTime: 1000 * 60 * 5,
+    staleTime: 15000,
   });
+
+  // ⚡ Live Real-time listener for Complaints List
+  useEffect(() => {
+    const channel = supabase
+      .channel("complaints-list-live-sync")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "complaints" },
+        () => {
+          queryClient.invalidateQueries({ queryKey: ["complaints"] });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [queryClient]);
 
   // Fetch customers lookup to accurately distinguish registered/admin-created BTL customers from walk-ins
   const { data: allCustomers = [] } = useQuery({
@@ -380,17 +400,23 @@ const ComplaintsList = () => {
       techNames.includes(debouncedSearch.toLowerCase()) ||
       t.assigned_supervisor?.toLowerCase().includes(debouncedSearch.toLowerCase());
 
+    const effectiveStatus = getEffectiveComplaintStatus(t);
+
     let matchStatus = false;
     if (statusFilter === "all") {
       matchStatus = true;
     } else if (statusFilter === "active") {
-      matchStatus = t.status !== "completed" && t.status !== "closed";
+      matchStatus = effectiveStatus !== "completed" && effectiveStatus !== "closed";
     } else if (statusFilter === "completed") {
-      matchStatus = t.status === "completed";
+      matchStatus = effectiveStatus === "completed";
     } else if (statusFilter === "closed") {
-      matchStatus = t.status === "closed";
+      matchStatus = effectiveStatus === "closed";
+    } else if (statusFilter === "reassigned") {
+      matchStatus = effectiveStatus === "reassigned";
+    } else if (statusFilter === "in-progress" || statusFilter === "in_progress") {
+      matchStatus = (effectiveStatus === "in-progress" || effectiveStatus === "in_progress");
     } else {
-      matchStatus = t.status === statusFilter;
+      matchStatus = effectiveStatus === statusFilter;
     }
 
     let matchDate = true;
@@ -479,6 +505,7 @@ const ComplaintsList = () => {
   const complaintStats = {
     total: complaints?.length || 0,
     open: complaints?.filter(c => !["completed", "closed"].includes(c.status)).length || 0,
+    reassigned: complaints?.filter(c => getEffectiveComplaintStatus(c) === "reassigned").length || 0,
     urgent: complaints?.filter(c => c.severity === "major" && c.status !== "closed").length || 0,
     completed: complaints?.filter(c => ["completed", "closed"].includes(c.status)).length || 0,
   };
@@ -822,6 +849,7 @@ const ComplaintsList = () => {
             {[
               { id: "all", label: "All" },
               { id: "active", label: "Active" },
+              { id: "reassigned", label: "Reassigned" },
               { id: "completed", label: "Completed" },
               { id: "closed", label: "Closed" }
             ].map((tab) => (
@@ -1041,7 +1069,7 @@ const ComplaintsList = () => {
 
                           {/* Status */}
                           <td className="py-3 px-4 whitespace-nowrap">
-                            {ticket.status && <StatusBadge status={ticket.status} />}
+                            {ticket.status && <StatusBadge status={getEffectiveComplaintStatus(ticket)} ticket={ticket} />}
                           </td>
 
                           {/* Actions */}
@@ -1197,7 +1225,7 @@ const ComplaintsList = () => {
                           </span>
                         )}
                         <span className="text-xs text-muted-foreground">•</span>
-                        {ticket.status && <StatusBadge status={ticket.status} />}
+                        {ticket.status && <StatusBadge status={getEffectiveComplaintStatus(ticket)} ticket={ticket} />}
                       </div>
                       
                       <h3 className="font-bold text-base text-foreground group-hover:text-primary transition-colors truncate" title={ticket.title}>{ticket.title}</h3>

@@ -74,44 +74,13 @@ import { complaintService } from "@/services/complaintService";
 import { installationService } from "@/services/installationService";
 import { generateCSV, downloadCSV } from "@/utils/csvHelpers";
 import { supabase, resolveSupabaseUrl } from "@/lib/supabase";
+import { getEvidenceCategory, getEvidenceFileName, EvidenceCategory } from "@/utils/evidenceFileHelpers";
 
 const getFileType = (url: string): "image" | "video" | "audio" | "document" => {
-  const lower = url.toLowerCase();
-  if (
-    lower.endsWith(".mp3") ||
-    lower.endsWith(".wav") ||
-    lower.endsWith(".m4a") ||
-    lower.endsWith(".ogg") ||
-    lower.endsWith(".aac") ||
-    lower.includes("/audios/") ||
-    lower.includes("/pir-audio/")
-  ) {
-    return "audio";
-  }
-  if (
-    lower.endsWith(".mp4") ||
-    lower.endsWith(".webm") ||
-    lower.endsWith(".mov") ||
-    lower.endsWith(".quicktime") ||
-    lower.endsWith(".avi") ||
-    lower.endsWith(".mkv") ||
-    lower.endsWith(".3gp") ||
-    lower.includes("video")
-  ) {
-    return "video";
-  }
-  if (
-    lower.endsWith(".png") ||
-    lower.endsWith(".jpg") ||
-    lower.endsWith(".jpeg") ||
-    lower.endsWith(".gif") ||
-    lower.endsWith(".webp") ||
-    lower.endsWith(".svg") ||
-    lower.includes("/images/") ||
-    lower.includes("/evidence/")
-  ) {
-    return "image";
-  }
+  const category = getEvidenceCategory(url);
+  if (category === "image") return "image";
+  if (category === "video") return "video";
+  if (category === "audio") return "audio";
   return "document";
 };
 
@@ -2667,52 +2636,12 @@ export default function ServiceReports() {
 
                   {/* Diagnostic & Resolution Evidence Images (PIR Before vs Resolution After) */}
                   {(() => {
-                    const getFileType = (url: string): "image" | "video" | "audio" | "document" => {
-                      const lower = url.toLowerCase();
-                      if (
-                        lower.endsWith(".mp3") ||
-                        lower.endsWith(".wav") ||
-                        lower.endsWith(".m4a") ||
-                        lower.endsWith(".ogg") ||
-                        lower.endsWith(".aac") ||
-                        lower.includes("/audios/") ||
-                        lower.includes("/pir-audio/")
-                      ) {
-                        return "audio";
-                      }
-                      if (
-                        lower.endsWith(".mp4") ||
-                        lower.endsWith(".webm") ||
-                        lower.endsWith(".mov") ||
-                        lower.endsWith(".quicktime") ||
-                        lower.endsWith(".avi") ||
-                        lower.endsWith(".mkv") ||
-                        lower.endsWith(".3gp") ||
-                        lower.includes("video")
-                      ) {
-                        return "video";
-                      }
-                      if (
-                        lower.endsWith(".png") ||
-                        lower.endsWith(".jpg") ||
-                        lower.endsWith(".jpeg") ||
-                        lower.endsWith(".gif") ||
-                        lower.endsWith(".webp") ||
-                        lower.endsWith(".svg") ||
-                        lower.includes("/images/") ||
-                        lower.includes("/evidence/")
-                      ) {
-                        return "image";
-                      }
-                      return "document";
-                    };
-
                     const renderMixedGrid = (urls: string[], label: string, emptyLabel: string) => {
                       if (urls.length === 0) return <p className="text-slate-400 italic text-[11px]">{emptyLabel}</p>;
-                      const images = urls.filter(u => getFileType(u) === "image");
-                      const videos = urls.filter(u => getFileType(u) === "video");
-                      const audios = urls.filter(u => getFileType(u) === "audio");
-                      const docs = urls.filter(u => getFileType(u) === "document");
+                      const images = urls.filter(u => getEvidenceCategory(u) === "image");
+                      const videos = urls.filter(u => getEvidenceCategory(u) === "video");
+                      const audios = urls.filter(u => getEvidenceCategory(u) === "audio");
+                      const docs = urls.filter(u => ["pdf", "spreadsheet", "document"].includes(getEvidenceCategory(u)));
 
                       return (
                         <div className="space-y-2">
@@ -2732,7 +2661,7 @@ export default function ServiceReports() {
                           {videos.length > 0 && (
                             <div className="space-y-1.5">
                               {videos.map((vUrl, i) => {
-                                const filename = decodeURIComponent(vUrl.split('/').pop() || `Video ${i + 1}`).split('?')[0];
+                                const filename = getEvidenceFileName(vUrl, `Video ${i + 1}`);
                                 return (
                                   <div key={i} className="border border-slate-200 rounded-lg overflow-hidden">
                                     <video src={resolveSupabaseUrl(vUrl)} controls className="w-full h-20 object-cover block print:hidden" />
@@ -2747,7 +2676,7 @@ export default function ServiceReports() {
                           {audios.length > 0 && (
                             <div className="space-y-1.5">
                               {audios.map((aUrl, i) => {
-                                const filename = decodeURIComponent(aUrl.split('/').pop() || `Audio ${i + 1}`).split('?')[0];
+                                const filename = getEvidenceFileName(aUrl, `Audio ${i + 1}`);
                                 return (
                                   <div key={i} className="border border-slate-200 rounded-lg overflow-hidden">
                                     <audio src={resolveSupabaseUrl(aUrl)} controls className="w-full h-8 block print:hidden" />
@@ -2762,16 +2691,18 @@ export default function ServiceReports() {
                           {docs.length > 0 && (
                             <div className="space-y-1.5">
                               {docs.map((docUrl, i) => {
-                                const filename = decodeURIComponent(docUrl.split('/').pop() || `Document ${i + 1}`).split('?')[0];
+                                const cat = getEvidenceCategory(docUrl);
+                                const filename = getEvidenceFileName(docUrl, `Document ${i + 1}`);
+                                const prefix = cat === "pdf" ? "📄 [PDF]" : cat === "spreadsheet" ? "📊 [CSV/XLS]" : "📄 [DOC]";
                                 return (
                                   <div key={i} className="border border-slate-200 rounded-lg overflow-hidden">
                                     <a href={resolveSupabaseUrl(docUrl)} target="_blank" rel="noreferrer" className="flex items-center gap-2 p-2 bg-slate-50 hover:bg-slate-100 transition-colors">
                                       <FileText className="w-4 h-4 text-slate-700" />
-                                      <span className="text-xs font-medium text-slate-800">📄 {filename}</span>
+                                      <span className="text-xs font-medium text-slate-800">{prefix} {filename}</span>
                                     </a>
                                     <div className="hidden print:flex items-center gap-2 p-2 bg-slate-100 border border-slate-300 rounded">
                                       <FileText className="w-4 h-4 text-slate-700" />
-                                      <span className="text-xs font-medium text-slate-800">📄 {filename}</span>
+                                      <span className="text-xs font-medium text-slate-800">{prefix} {filename}</span>
                                     </div>
                                   </div>
                                 );

@@ -164,7 +164,9 @@ export interface Complaint {
   technician_evidence?: string[];   // Technician images (Resolution - After - Phase 5)
   signature_url?: string;
   triage_outcome?: 'remote_fixed' | 'field_required';
-  pir_decision_tree?: string;
+  pir_decision_tree?: any;
+  feedback_history?: any[];
+  rework_history?: any[];
   assignment_timestamp?: string;
   start_journey_timestamp?: string;
   arrival_timestamp?: string;
@@ -474,11 +476,14 @@ export const complaintService = {
     }
 
     rows.forEach((r: any) => {
+      const isActuallyClosed = (r.status || "").toLowerCase() === 'closed' || (r.status || "").toLowerCase() === 'verified';
       if (
-        r.force_closed ||
-        r.resolution_type === 'force_closed' ||
-        r.feedback_comments?.includes('[Force Closed - ') ||
-        (r.status === 'closed' && !r.happiness_code_verified && !r.resolved_remotely && r.resolution_type !== 'telephonic_triage' && r.triage_outcome !== 'remote_fixed')
+        isActuallyClosed && (
+          r.force_closed ||
+          r.resolution_type === 'force_closed' ||
+          r.feedback_comments?.includes('[Force Closed - ') ||
+          (!r.happiness_code_verified && !r.resolved_remotely && r.resolution_type !== 'telephonic_triage' && r.triage_outcome !== 'remote_fixed')
+        )
       ) {
         r.force_closed = true;
         if (!r.force_close_reason) {
@@ -561,11 +566,14 @@ export const complaintService = {
     }
 
     if (data) {
+      const isActuallyClosed = (data.status || "").toLowerCase() === 'closed' || (data.status || "").toLowerCase() === 'verified';
       if (
-        data.force_closed ||
-        data.resolution_type === 'force_closed' ||
-        data.feedback_comments?.includes('[Force Closed - ') ||
-        (data.status === 'closed' && !data.happiness_code_verified && !data.resolved_remotely && data.resolution_type !== 'telephonic_triage' && data.triage_outcome !== 'remote_fixed')
+        isActuallyClosed && (
+          data.force_closed ||
+          data.resolution_type === 'force_closed' ||
+          data.feedback_comments?.includes('[Force Closed - ') ||
+          (!data.happiness_code_verified && !data.resolved_remotely && data.resolution_type !== 'telephonic_triage' && data.triage_outcome !== 'remote_fixed')
+        )
       ) {
         data.force_closed = true;
         if (!data.force_close_reason) {
@@ -777,9 +785,6 @@ export const complaintService = {
       'triage_outcome',
       'evidence_urls',
       'technician_evidence',
-      'arrival_lat',
-      'arrival_lng',
-      'arrival_timestamp',
       'start_journey_timestamp',
       'pir_decision_tree',
       'happiness_code',
@@ -1073,9 +1078,6 @@ export const complaintService = {
       'triage_outcome',
       'evidence_urls',
       'technician_evidence',
-      'arrival_lat',
-      'arrival_lng',
-      'arrival_timestamp',
       'start_journey_timestamp',
       'pir_decision_tree',
       'happiness_code',
@@ -1179,10 +1181,16 @@ export const complaintService = {
       }
 
       if (isColErr) {
-        // Try extracting specific missing column name
-        const match = errMsg.match(/'([^']+)' column/) || errDetails.match(/'([^']+)' column/);
+        // Try extracting specific missing column name from Postgres / PostgREST error message
+        const match = 
+          errMsg.match(/column\s+(?:[a-zA-Z0-9_]+\.)?([a-zA-Z0-9_]+)\s+does not exist/i) ||
+          errMsg.match(/column\s+"?([a-zA-Z0-9_]+)"?\s+of relation/i) ||
+          errMsg.match(/find the '([^']+)' column/i) ||
+          errMsg.match(/'([^']+)' column/i) ||
+          errDetails.match(/'([^']+)' column/);
+
         if (match && match[1] && payload[match[1]] !== undefined) {
-          console.warn(`Stripping missing column '${match[1]}' from complaints update payload`);
+          console.warn(`Stripping missing column '${match[1]}' from complaints update payload and retrying`);
           delete payload[match[1]];
           continue;
         }
@@ -1266,6 +1274,66 @@ export const complaintService = {
       }
     }
 
+    let existingHistory: any[] = [];
+    try {
+      const { data: cur } = await supabase.from("complaints").select("rework_history, feedback_history, pir_findings, resolution, technician_evidence, assigned_technician, assigned_to").eq("id", complaintId).maybeSingle();
+      if (cur) {
+        if (Array.isArray(cur.rework_history)) {
+          existingHistory = cur.rework_history;
+        } else if (typeof cur.rework_history === "string") {
+          try {
+            const p = JSON.parse(cur.rework_history);
+            if (Array.isArray(p)) existingHistory = p;
+          } catch {}
+        } else if (Array.isArray(cur.feedback_history)) {
+          existingHistory = cur.feedback_history.filter((x: any) => x && (x.type === "rework_round" || x.round));
+        }
+
+        // If the ticket has prior submitted work before team modification, archive it:
+        if (cur.pir_findings || cur.resolution || (cur.technician_evidence && cur.technician_evidence.length > 0)) {
+          const prevTechs = await complaintService.fetchTechnicians(complaintId);
+          const previousRoundTechs = prevTechs && prevTechs.length > 0
+            ? prevTechs.map((t: any) => ({
+                id: t.technician_id,
+                name: t.technician?.full_name || t.technician_id,
+                is_lead: Boolean(t.is_lead),
+              }))
+            : (cur.assigned_technician ? [{ id: cur.assigned_to || "1", name: cur.assigned_technician, is_lead: true }] : []);
+
+          const nextRound = existingHistory.length + 1;
+          const snap = {
+            type: "rework_round",
+            round: nextRound,
+            round_number: nextRound,
+            reassigned_at: new Date().toISOString(),
+            reassigned_by: "Supervisor",
+            reassignment_reason: supervisorNotes || "Team modified by supervisor in Phase 3",
+            technician_name: cur.assigned_technician || previousRoundTechs.find((t: any) => t.is_lead)?.name || previousRoundTechs[0]?.name || "Previous Technician",
+            technicians: previousRoundTechs,
+            pir: {
+              findings: cur.pir_findings || "",
+              severity: "",
+              evidence_urls: [],
+              audio_url: null,
+            },
+            resolution: {
+              notes: cur.resolution || "",
+              evidence_urls: cur.technician_evidence || [],
+              signature_url: null,
+              signoff_timestamp: null,
+            },
+            verification: {
+              status: "rework_required",
+              qa_notes: supervisorNotes || "Reassigned by supervisor",
+            }
+          };
+          existingHistory = [...existingHistory, snap];
+        }
+      }
+    } catch (e) {
+      console.warn("Could not check/archive rework history in assignFieldVisitTechnicians:", e);
+    }
+
     const complaintUpdates: any = {
       status: "assigned",
       current_phase: 3,
@@ -1274,6 +1342,11 @@ export const complaintService = {
       ...(scheduledDate ? { scheduled_date: scheduledDate } : {}),
       ...(scheduledTime ? { scheduled_time: scheduledTime } : {}),
       ...(supervisorNotes ? { supervisor_notes: supervisorNotes } : {}),
+      ...(existingHistory.length > 0 ? {
+        rework_history: existingHistory,
+        feedback_history: existingHistory,
+        pir_decision_tree: existingHistory,
+      } : {}),
       triage_outcome: "field_required",
       closure_timestamp: null,
       closed_at: null,
@@ -1371,13 +1444,114 @@ export const complaintService = {
       }
     }
 
+    // Capture previous round snapshot before resetting fields
+    let updatedReworkHistory: any[] = [];
+    try {
+      const { data: cur } = await supabase.from("complaints").select("*").eq("id", complaintId).maybeSingle();
+      if (cur) {
+        let existingHistory: any[] = [];
+        if (Array.isArray(cur.rework_history)) {
+          existingHistory = cur.rework_history;
+        } else if (typeof cur.rework_history === "string") {
+          try {
+            const p = JSON.parse(cur.rework_history);
+            if (Array.isArray(p)) existingHistory = p;
+          } catch {}
+        } else if (Array.isArray(cur.feedback_history)) {
+          existingHistory = cur.feedback_history.filter((x: any) => x && (x.type === "rework_round" || x.round));
+        }
+
+        if (existingHistory.length === 0 && Array.isArray(cur.pir_decision_tree)) {
+          existingHistory = cur.pir_decision_tree.filter((x: any) => x && (x.type === "rework_round" || x.round));
+        }
+
+        const prevTechs = await complaintService.fetchTechnicians(complaintId);
+        const previousRoundTechs = prevTechs && prevTechs.length > 0
+          ? prevTechs.map((t: any) => ({
+              id: t.technician_id,
+              name: t.technician?.full_name || t.technician_id,
+              is_lead: Boolean(t.is_lead),
+            }))
+          : (cur.assigned_technician ? [{ id: cur.assigned_to || "1", name: cur.assigned_technician, is_lead: true }] : []);
+
+        const pastPirUrls = (cur.evidence_urls && cur.evidence_urls.length > 0)
+          ? cur.evidence_urls
+          : (cur.technician_evidence && !cur.resolution ? cur.technician_evidence : []);
+        const pastResUrls = cur.technician_evidence || [];
+
+        // If this ticket was previously reassigned but rework_history wasn't initialized, synthesize Round 1
+        if (existingHistory.length === 0 && cur.reassignment_reason && (cur.technician_evidence?.length > 0 || cur.signature_url || cur.pir_findings || (cur.evidence_urls && cur.evidence_urls.length > 0))) {
+          existingHistory = [{
+            type: "rework_round",
+            round: 1,
+            round_number: 1,
+            reassigned_at: cur.reassigned_at || cur.updated_at,
+            reassignment_reason: cur.reassignment_reason,
+            technician_name: cur.assigned_technician || previousRoundTechs.find((t: any) => t.is_lead)?.name || previousRoundTechs[0]?.name || "Previous Technician",
+            technicians: previousRoundTechs,
+            pir: {
+              findings: cur.pir_findings || "",
+              severity: cur.pir_findings_severity || "",
+              evidence_urls: pastPirUrls,
+              audio_url: cur.pir_audio_url || null,
+            },
+            resolution: {
+              notes: cur.resolution || cur.resolution_notes || "",
+              evidence_urls: pastResUrls,
+              signature_url: cur.signature_url || null,
+              signoff_timestamp: cur.signoff_timestamp || null,
+            },
+            verification: {
+              status: "rework_required",
+              qa_notes: cur.reassignment_reason,
+            }
+          }];
+        }
+
+        const nextRound = existingHistory.length + 1;
+        const snapshot = {
+          type: "rework_round",
+          round: nextRound,
+          round_number: nextRound,
+          reassigned_at: new Date().toISOString(),
+          reassigned_by: "Supervisor",
+          reassignment_reason: reason.trim(),
+          technician_name: cur.assigned_technician || previousRoundTechs.find((t: any) => t.is_lead)?.name || previousRoundTechs[0]?.name || "Previous Technician",
+          technicians: previousRoundTechs,
+          pir: {
+            findings: cur.pir_findings || "",
+            severity: cur.pir_findings_severity || "",
+            evidence_urls: pastPirUrls,
+            audio_url: cur.pir_audio_url || null,
+          },
+          resolution: {
+            notes: cur.resolution || cur.resolution_notes || "",
+            evidence_urls: pastResUrls,
+            signature_url: cur.signature_url || null,
+            signoff_timestamp: cur.signoff_timestamp || null,
+          },
+          verification: {
+            status: "rework_required",
+            qa_notes: reason.trim(),
+          }
+        };
+        updatedReworkHistory = [...existingHistory, snapshot];
+      }
+    } catch (e) {
+      console.warn("Could not archive rework snapshot in reassignComplaint:", e);
+    }
+
     const updates: any = {
       reassignment_reason: reason.trim(),
       reassigned_at: new Date().toISOString(),
+      supervisor_notes: `[Reassigned for Rework] ${reason.trim()}`,
       assigned_to: leadTechId,
       ...(leadTechName ? { assigned_technician: leadTechName } : {}),
-      status: "assigned",
+      status: "reassigned",
       current_phase: 3,
+      rework_history: updatedReworkHistory,
+      feedback_history: updatedReworkHistory,
+      pir_decision_tree: updatedReworkHistory,
       triage_outcome: "field_required",
       start_journey_timestamp: null,
       arrival_timestamp: null,
@@ -1407,6 +1581,7 @@ export const complaintService = {
       pir_findings: null,
       pir_audio_url: null,
       technician_evidence: null,
+      evidence_urls: null,
       resolved_remotely: false,
       resolution_type: null,
       resolved_at: null,
@@ -1423,6 +1598,7 @@ export const complaintService = {
     } catch (err: any) {
       if (err?.message?.includes("column") || err?.code === "42703" || err?.code === "PGRST204") {
         const stripped = { ...updates };
+        // Delete only the non-existent columns, keep rework_history intact!
         delete stripped.reassignment_reason;
         delete stripped.reassigned_at;
         delete stripped.closed_at;

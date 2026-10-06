@@ -20,15 +20,50 @@
 
 import { TicketStatus } from "@/data/mockData";
 
-interface StatusBadgeProps {
-  status: string; // 🔥 Changed from TicketStatus to string
+export function getEffectiveComplaintStatus(ticket: any): string {
+  if (!ticket) return "unassigned";
+  const rawStatus = (typeof ticket === "string" ? ticket : ticket.status || "").toLowerCase().trim();
+  
+  // If ticket is completed or closed or awaiting QA verification, preserve that final/verification state
+  if (rawStatus === "closed" || rawStatus === "completed" || rawStatus === "pending_verification" || rawStatus === "resolution_submitted" || rawStatus === "awaiting_verification") {
+    return rawStatus;
+  }
+  
+  // If ticket has rework / reassignment signals, it is strictly "reassigned"
+  if (
+    rawStatus === "reassigned" ||
+    rawStatus === "rework_required" ||
+    (typeof ticket === "object" && (
+      Boolean(ticket.reassignment_reason) ||
+      Boolean(ticket.reassigned_at) ||
+      (Array.isArray(ticket.rework_history) && ticket.rework_history.length > 0) ||
+      (Array.isArray(ticket.feedback_history) && ticket.feedback_history.some((x: any) => x && (x.type === "rework_round" || x.round))) ||
+      (Array.isArray(ticket.pir_decision_tree) && ticket.pir_decision_tree.some((x: any) => x && (x.type === "rework_round" || x.round))) ||
+      (typeof ticket.supervisor_notes === "string" && (
+        ticket.supervisor_notes.toLowerCase().includes("reassign") ||
+        ticket.supervisor_notes.toLowerCase().includes("rework")
+      )) ||
+      (typeof ticket.resolution === "string" && ticket.resolution.toLowerCase().startsWith("rejected:"))
+    ))
+  ) {
+    return "reassigned";
+  }
+
+  return rawStatus;
 }
 
-interface SeverityBadgeProps {
-  severity: string; // 🔥 Changed from SeverityTier to string
+export interface StatusBadgeProps {
+  status: string;
+  ticket?: any;
 }
 
-export function StatusBadge({ status }: StatusBadgeProps) {
+export interface SeverityBadgeProps {
+  severity: string;
+}
+
+export function StatusBadge({ status, ticket }: StatusBadgeProps) {
+  const effectiveKey = ticket ? getEffectiveComplaintStatus(ticket) : getEffectiveComplaintStatus(status);
+
   const statusConfig: Record<string, { bg: string; text: string; label: string }> = {
     unassigned: { bg: "bg-slate-100", text: "text-slate-700", label: "Unassigned" },
     open: { bg: "bg-blue-100", text: "text-blue-700", label: "Open" },
@@ -47,8 +82,9 @@ export function StatusBadge({ status }: StatusBadgeProps) {
     pir_rejected: { bg: "bg-amber-100", text: "text-amber-800", label: "Info Requested" },
     pir_approved_work_in_progress: { bg: "bg-blue-100", text: "text-blue-800", label: "Resolution & Sign-off" },
     resolution_pending: { bg: "bg-blue-100", text: "text-blue-800", label: "Resolution Pending" },
-    awaiting_signoff: { bg: "bg-blue-100", text: "text-blue-800", label: "Awaiting Sign-off" },
-    rework_required: { bg: "bg-rose-100", text: "text-rose-700", label: "Rework Required" },
+    rework_required: { bg: "bg-amber-100 dark:bg-amber-950/60", text: "text-amber-800 dark:text-amber-300", label: "Reassigned" },
+    reassigned: { bg: "bg-amber-100 dark:bg-amber-950/60", text: "text-amber-800 dark:text-amber-300", label: "Reassigned" },
+    "Reassigned": { bg: "bg-amber-100 dark:bg-amber-950/60", text: "text-amber-800 dark:text-amber-300", label: "Reassigned" },
     completed: { bg: "bg-emerald-100", text: "text-emerald-700", label: "Completed" },
     resolved: { bg: "bg-emerald-100", text: "text-emerald-700", label: "Resolved" },
     pending_verification: { bg: "bg-cyan-100", text: "text-cyan-700", label: "Pending Verification" },
@@ -64,7 +100,7 @@ export function StatusBadge({ status }: StatusBadgeProps) {
     "Dispatched": { bg: "bg-orange-100", text: "text-orange-700", label: "Dispatched" },
   };
 
-  const config = statusConfig[status] || { bg: "bg-slate-100", text: "text-slate-700", label: status };
+  const config = statusConfig[effectiveKey] || statusConfig[status] || { bg: "bg-slate-100", text: "text-slate-700", label: status };
 
   return (
     <span className={`px-2 py-1 rounded-full text-xs font-medium ${config.bg} ${config.text}`}>

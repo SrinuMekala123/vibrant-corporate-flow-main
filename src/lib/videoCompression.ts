@@ -1,6 +1,6 @@
-// High-performance client-side video compressor for complaint evidence
+// High-performance client-side video compressor for complaint and installation evidence
 // Uses HTML5 Canvas + MediaRecorder with hardware-accelerated playback
-// Drastically compresses 1080p/4K phone videos down by 75-95% in seconds.
+// Drastically compresses 1080p/4K phone & drone videos (200MB -> ~15-20MB) in seconds.
 
 export interface VideoCompressionProgress {
   percent: number;
@@ -9,40 +9,77 @@ export interface VideoCompressionProgress {
   compressedSizeMB?: number;
 }
 
-export const MAX_VIDEO_FILE_SIZE_MB = 100;
+export const MAX_RAW_VIDEO_FILE_SIZE_MB = 500;
+export const MAX_UPLOAD_FILE_SIZE_MB = 100;
+export const VIDEO_COMPRESSION_THRESHOLD_MB = 20;
+
+export const isVideoFile = (file: File | { type?: string; name?: string }): boolean => {
+  if (!file) return false;
+  const mime = file.type || '';
+  const name = file.name || '';
+  return mime.startsWith('video/') || /\.(mp4|mov|avi|webm|mkv|3gp|m4v|flv)$/i.test(name);
+};
+
+export const validateVideoBeforeUpload = (file: File): { valid: boolean; error?: string } => {
+  const isVideo = isVideoFile(file);
+  const sizeMB = file.size / (1024 * 1024);
+
+  if (isVideo) {
+    if (sizeMB > MAX_RAW_VIDEO_FILE_SIZE_MB) {
+      return {
+        valid: false,
+        error: `Video file is too large (Max ${MAX_RAW_VIDEO_FILE_SIZE_MB}MB). Please trim the video or upload a shorter clip.`
+      };
+    }
+  } else {
+    if (sizeMB > MAX_UPLOAD_FILE_SIZE_MB) {
+      return {
+        valid: false,
+        error: `File is too large (Max ${MAX_UPLOAD_FILE_SIZE_MB}MB). Please select a smaller file.`
+      };
+    }
+  }
+
+  return { valid: true };
+};
 
 export const compressVideoForUpload = async (
   file: File,
   onProgress?: (progress: VideoCompressionProgress) => void
 ): Promise<File> => {
-  // If not a video or already small (<= 6MB), return directly without overhead
-  const isVideo = file.type.startsWith('video/') || /\.(mp4|mov|avi|webm|mkv|3gp)$/i.test(file.name);
+  const isVideo = isVideoFile(file);
   if (!isVideo) {
     return file;
   }
 
   const originalSizeMB = file.size / (1024 * 1024);
 
-  // Validate maximum limit (100MB) immediately before processing
-  if (originalSizeMB > MAX_VIDEO_FILE_SIZE_MB) {
-    throw new Error(`File is too large (Max ${MAX_VIDEO_FILE_SIZE_MB}MB). Please select a smaller file.`);
+  // Hard check: Block massive files (> 500MB) immediately
+  if (originalSizeMB > MAX_RAW_VIDEO_FILE_SIZE_MB) {
+    throw new Error(`Video file is too large (Max ${MAX_RAW_VIDEO_FILE_SIZE_MB}MB). Please trim the video or upload a shorter clip.`);
   }
 
-  if (originalSizeMB <= 6) {
-    console.log(`[VideoCompression] File is already small (${originalSizeMB.toFixed(1)}MB), uploading directly.`);
+  // If video is already 20MB or smaller, skip compression for instant upload
+  if (originalSizeMB <= VIDEO_COMPRESSION_THRESHOLD_MB) {
+    console.log(`[VideoCompression] Video is already <= ${VIDEO_COMPRESSION_THRESHOLD_MB}MB (${originalSizeMB.toFixed(1)}MB), uploading directly.`);
     return file;
   }
 
   // Check if MediaRecorder is supported
   if (typeof window === 'undefined' || typeof MediaRecorder === 'undefined') {
     console.warn('[VideoCompression] MediaRecorder not available in this environment, using original file.');
+    if (originalSizeMB > MAX_UPLOAD_FILE_SIZE_MB) {
+      throw new Error(`Video file is too large (Max ${MAX_UPLOAD_FILE_SIZE_MB}MB). Please trim the video or upload a shorter clip.`);
+    }
     return file;
   }
 
   // Detect supported video codecs in order of quality & compatibility
   const candidateTypes = [
     'video/mp4;codecs=avc1',
+    'video/mp4;codecs=h264',
     'video/mp4',
+    'video/webm;codecs=h264',
     'video/webm;codecs=vp9,opus',
     'video/webm;codecs=vp8,opus',
     'video/webm;codecs=vp8',
@@ -59,26 +96,33 @@ export const compressVideoForUpload = async (
 
   if (!selectedMimeType) {
     console.warn('[VideoCompression] No compatible MediaRecorder MIME type found, using original file.');
+    if (originalSizeMB > MAX_UPLOAD_FILE_SIZE_MB) {
+      throw new Error(`Video file is too large (Max ${MAX_UPLOAD_FILE_SIZE_MB}MB). Please trim the video or upload a shorter clip.`);
+    }
     return file;
   }
 
   onProgress?.({
     percent: 5,
-    message: `Optimizing video (${originalSizeMB.toFixed(1)}MB)...`,
+    message: `Compressing video... (5%)`,
     originalSizeMB
   });
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let isCompleted = false;
     let activeTimeout: any = null;
 
-    // Safety timeout: generous 120-second initial limit for large drone videos
+    // Safety timeout: 120 seconds max for heavy video files
     let safetyTimeout = setTimeout(() => {
       if (!isCompleted) {
         isCompleted = true;
-        console.warn('[VideoCompression] Compression reached initial timeout (120s), proceeding with original file.');
+        console.warn('[VideoCompression] Compression reached safety timeout (120s), checking fallback.');
         cleanup();
-        resolve(file);
+        if (originalSizeMB > MAX_UPLOAD_FILE_SIZE_MB) {
+          reject(new Error(`Video file is too large (Max ${MAX_UPLOAD_FILE_SIZE_MB}MB). Please trim the video or upload a shorter clip.`));
+        } else {
+          resolve(file);
+        }
       }
     }, 120000);
 
@@ -97,6 +141,9 @@ export const compressVideoForUpload = async (
     } catch (err) {
       console.warn('[VideoCompression] Failed to create object URL:', err);
       clearTimeout(safetyTimeout);
+      if (originalSizeMB > MAX_UPLOAD_FILE_SIZE_MB) {
+        return reject(new Error(`Video file is too large (Max ${MAX_UPLOAD_FILE_SIZE_MB}MB). Please trim the video or upload a shorter clip.`));
+      }
       return resolve(file);
     }
 
@@ -123,32 +170,41 @@ export const compressVideoForUpload = async (
       isCompleted = true;
       clearTimeout(safetyTimeout);
       if (activeTimeout) clearTimeout(activeTimeout);
-      console.warn('[VideoCompression] Video load error (codec may not be decodable by browser), uploading original.');
+      console.warn('[VideoCompression] Video load error (codec may not be decodable by browser).');
       cleanup();
-      resolve(file);
+      if (originalSizeMB > MAX_UPLOAD_FILE_SIZE_MB) {
+        reject(new Error(`Video file is too large (Max ${MAX_UPLOAD_FILE_SIZE_MB}MB). Please trim the video or upload a shorter clip.`));
+      } else {
+        resolve(file);
+      }
     };
 
     video.onloadedmetadata = () => {
       if (isCompleted) return;
 
-      // Dynamic timeout based on actual video duration
       clearTimeout(safetyTimeout);
       const dynamicTimeoutMs = Math.max(90000, ((video.duration || 60) / 2) * 1000 + 20000);
       activeTimeout = setTimeout(() => {
         if (!isCompleted) {
           isCompleted = true;
-          console.warn(`[VideoCompression] Compression timeout (${Math.round(dynamicTimeoutMs / 1000)}s), finalizing output.`);
+          console.warn(`[VideoCompression] Compression timeout (${Math.round(dynamicTimeoutMs / 1000)}s), finalizing.`);
           if (mediaRecorder && mediaRecorder.state !== 'inactive') {
             mediaRecorder.stop();
           } else {
             cleanup();
-            resolve(file);
+            if (originalSizeMB > MAX_UPLOAD_FILE_SIZE_MB) {
+              reject(new Error(`Video file is too large (Max ${MAX_UPLOAD_FILE_SIZE_MB}MB). Please trim the video or upload a shorter clip.`));
+            } else {
+              resolve(file);
+            }
           }
         }
       }, dynamicTimeoutMs);
 
-      // Target resolution: 720p HD (1280x720) or 540p (960x540 for >35MB) or 480p (854x480 for >60MB drone files)
-      const maxDimension = originalSizeMB > 60 ? 854 : (originalSizeMB > 35 ? 960 : 1280);
+      // Resolution strategy:
+      // For large drone videos (> 100MB): downscale to 480p (854x480) for maximum speed and small size (~15MB)
+      // For 20MB-100MB videos: downscale to 720p HD (1280x720)
+      const maxDimension = originalSizeMB > 100 ? 854 : 1280;
       let targetWidth = video.videoWidth || 1280;
       let targetHeight = video.videoHeight || 720;
 
@@ -169,7 +225,7 @@ export const compressVideoForUpload = async (
       canvas.width = targetWidth;
       canvas.height = targetHeight;
 
-      // Capture stream from canvas
+      // Capture stream from canvas at 25 FPS
       let stream: MediaStream | null = null;
       try {
         if (canvas.captureStream) {
@@ -185,15 +241,16 @@ export const compressVideoForUpload = async (
         if (isCompleted) return;
         isCompleted = true;
         cleanup();
+        if (originalSizeMB > MAX_UPLOAD_FILE_SIZE_MB) {
+          return reject(new Error(`Video file is too large (Max ${MAX_UPLOAD_FILE_SIZE_MB}MB). Please trim the video or upload a shorter clip.`));
+        }
         return resolve(file);
       }
 
-      // Optimized bitrates: aggressive for heavy drone footage (>50MB) to stay well below storage limits
-      const targetBitrate = originalSizeMB > 60
-        ? 800_000
-        : originalSizeMB > 35
-        ? 1_000_000
-        : 1_400_000;
+      // Bitrate strategy:
+      // 1.5 Mbps for massive videos (>100MB) to compress 200MB drone files down to ~15-20MB
+      // 2.0 - 2.5 Mbps for 20-100MB videos
+      const targetBitrate = originalSizeMB > 100 ? 1_500_000 : 2_000_000;
 
       try {
         mediaRecorder = new MediaRecorder(stream, {
@@ -205,6 +262,9 @@ export const compressVideoForUpload = async (
         if (isCompleted) return;
         isCompleted = true;
         cleanup();
+        if (originalSizeMB > MAX_UPLOAD_FILE_SIZE_MB) {
+          return reject(new Error(`Video file is too large (Max ${MAX_UPLOAD_FILE_SIZE_MB}MB). Please trim the video or upload a shorter clip.`));
+        }
         return resolve(file);
       }
 
@@ -223,11 +283,19 @@ export const compressVideoForUpload = async (
         const compressedBlob = new Blob(chunks, { type: selectedMimeType });
         const compressedSizeMB = compressedBlob.size / (1024 * 1024);
 
-        console.log(`[VideoCompression] Finished: ${originalSizeMB.toFixed(1)}MB -> ${compressedSizeMB.toFixed(1)}MB (${Math.round((1 - compressedSizeMB / originalSizeMB) * 100)}% smaller)`);
+        console.log(`[VideoCompression] Finished: ${originalSizeMB.toFixed(1)}MB -> ${compressedSizeMB.toFixed(1)}MB (${Math.round((1 - compressedSizeMB / originalSizeMB) * 100)}% reduction)`);
 
-        // If compression failed to reduce size or is corrupt, return original
+        // If compression resulted in larger file or corrupt size, fallback to original
         if (compressedBlob.size >= file.size || compressedBlob.size < 1000) {
+          if (originalSizeMB > MAX_UPLOAD_FILE_SIZE_MB) {
+            return reject(new Error(`Video file is too large (Max ${MAX_UPLOAD_FILE_SIZE_MB}MB). Please trim the video or upload a shorter clip.`));
+          }
           return resolve(file);
+        }
+
+        // Post-compression check: strictly ensure under 100MB limit
+        if (compressedSizeMB > MAX_UPLOAD_FILE_SIZE_MB) {
+          return reject(new Error(`Video file is too large (Max ${MAX_UPLOAD_FILE_SIZE_MB}MB). Please trim the video or upload a shorter clip.`));
         }
 
         const baseName = file.name.replace(/\.[^/.]+$/, "");
@@ -238,7 +306,7 @@ export const compressVideoForUpload = async (
 
         onProgress?.({
           percent: 100,
-          message: `Optimized: ${originalSizeMB.toFixed(1)}MB -> ${compressedSizeMB.toFixed(1)}MB (${Math.round((1 - compressedSizeMB / originalSizeMB) * 100)}% smaller)`,
+          message: `Compressing video... (100%)`,
           originalSizeMB,
           compressedSizeMB
         });
@@ -259,10 +327,10 @@ export const compressVideoForUpload = async (
         }
 
         if (video.duration) {
-          const pct = Math.min(95, Math.round((video.currentTime / video.duration) * 90) + 5);
+          const pct = Math.min(99, Math.round((video.currentTime / video.duration) * 95) + 5);
           onProgress?.({
             percent: pct,
-            message: `Compressing video: ${pct}%...`,
+            message: `Compressing video... (${pct}%)`,
             originalSizeMB
           });
         }
@@ -283,17 +351,17 @@ export const compressVideoForUpload = async (
         if (isCompleted) return;
         isCompleted = true;
         cleanup();
-        resolve(file);
+        if (originalSizeMB > MAX_UPLOAD_FILE_SIZE_MB) {
+          reject(new Error(`Video file is too large (Max ${MAX_UPLOAD_FILE_SIZE_MB}MB). Please trim the video or upload a shorter clip.`));
+        } else {
+          resolve(file);
+        }
       });
     };
   });
 };
 
-export const validateVideoSize = (file: File, maxMB = MAX_VIDEO_FILE_SIZE_MB): boolean => {
+export const validateVideoSize = (file: File, maxMB = MAX_UPLOAD_FILE_SIZE_MB): boolean => {
   const maxSize = maxMB * 1024 * 1024;
-  if (file.size > maxSize) {
-    console.warn(`Video exceeds maximum ${maxMB}MB size limit:`, file.size);
-    return false;
-  }
-  return true;
+  return file.size <= maxSize;
 };

@@ -2,14 +2,14 @@ import { useParams, Link, useNavigate } from "react-router-dom";
 import { useState, useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowLeft, Edit, Phone, MapPin, Clock, User, Users, Wrench, FileText, ShieldCheck, CheckCircle, CheckCircle2, XCircle, X, Loader2, Play, CheckSquare, Upload, PenTool, Image as ImageIcon, AlertTriangle, MessageSquare, Star, Crown, ThumbsUp, ThumbsDown, RotateCcw, ZoomIn, Download, Calendar, Navigation, HelpCircle, PlusCircle, Search, Sparkles, AlertCircle, MessageCircle, Camera, Zap, Package } from "lucide-react";
+import { ArrowLeft, Edit, Phone, MapPin, Clock, User, Users, Wrench, FileText, FileSpreadsheet, ExternalLink, ShieldCheck, CheckCircle, CheckCircle2, XCircle, X, Loader2, Play, CheckSquare, Upload, PenTool, Image as ImageIcon, AlertTriangle, MessageSquare, Star, Crown, ThumbsUp, ThumbsDown, RotateCcw, ZoomIn, Download, Calendar, Navigation, HelpCircle, PlusCircle, Search, Sparkles, AlertCircle, MessageCircle, Camera, Zap, Package } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { StatusBadge, SeverityBadge } from "@/components/Badges";
+import { StatusBadge, SeverityBadge, getEffectiveComplaintStatus } from "@/components/Badges";
 import { PhaseTimeline } from "@/components/PhaseTimeline";
 import { phaseLabels } from "@/data/mockData";
 import { useAuth } from "@/contexts/AuthContext";
@@ -21,7 +21,11 @@ import { checkAndRunMigration } from "@/utils/databaseMigration";
 import SignatureCanvas from "react-signature-canvas";
 import { compressImageForUpload } from "@/lib/imageCompression";
 import { compressVideoForUpload } from "@/lib/videoCompression";
+import { uploadEvidenceWithProgress, type UploadProgressState } from "@/lib/fileUploadHelper";
+import { UploadProgressBar } from "@/components/UploadProgressBar";
 import ImageGallery from "@/components/ImageGallery";
+import { RepeatComplaintAlert } from "@/components/RepeatComplaintAlert";
+import { getEvidenceCategory, getEvidenceFileName, getCategoryBadgeInfo } from "@/utils/evidenceFileHelpers";
 import LiveRouteTrackingModal from "@/components/LiveRouteTrackingModal";
 import { TechnicianMissionControl } from "@/components/TechnicianMissionControl";
 import { notificationService } from "@/services/notificationService";
@@ -136,6 +140,7 @@ const ComplaintDetail = () => {
   const [activePhase, setActivePhase] = useState<number>(1);
   const [canvasWidth, setCanvasWidth] = useState(750);
   const [selectedMedia, setSelectedMedia] = useState<string | null>(null);
+  const [viewingAuditRound, setViewingAuditRound] = useState<any | null>(null);
 
   useEffect(() => {
     const handleResize = () => {
@@ -169,6 +174,7 @@ const ComplaintDetail = () => {
   const [currentUserFullName, setCurrentUserFullName] = useState("");
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgressText, setUploadProgressText] = useState("");
+  const [uploadProgress, setUploadProgress] = useState<UploadProgressState | null>(null);
   const [customerPhone, setCustomerPhone] = useState<string | null>(null);
   const [customerTypeLabel, setCustomerTypeLabel] = useState<"Walk-in / Non-BTL" | "BTL Customer">("Walk-in / Non-BTL");
   const [pirSeverityInput, setPirSeverityInput] = useState("medium");
@@ -513,27 +519,140 @@ const ComplaintDetail = () => {
     }
   };
 
+  const getComplaintReworkHistory = (t: any): any[] => {
+    if (!t) return [];
+    let list: any[] = [];
+    if (typeof t.rework_history === "string") {
+      try {
+        const parsed = JSON.parse(t.rework_history);
+        if (Array.isArray(parsed) && parsed.length > 0) list = parsed;
+      } catch (e) {
+        // ignore
+      }
+    } else if (Array.isArray(t.rework_history) && t.rework_history.length > 0) {
+      list = t.rework_history;
+    }
+
+    if (list.length > 0) {
+      return list.map((item: any, idx: number) => ({
+        ...item,
+        round: item.round || item.round_number || idx + 1,
+        round_number: item.round_number || item.round || idx + 1,
+      }));
+    }
+
+    if (Array.isArray(t.feedback_history)) {
+      const rounds = t.feedback_history.filter((x: any) => x && (x.type === "rework_round" || x.round));
+      if (rounds.length > 0) {
+        return rounds.map((item: any, idx: number) => ({
+          ...item,
+          round: item.round || item.round_number || idx + 1,
+          round_number: item.round_number || item.round || idx + 1,
+        }));
+      }
+    }
+    if (Array.isArray(t.pir_decision_tree)) {
+      const rounds = t.pir_decision_tree.filter((x: any) => x && (x.type === "rework_round" || x.round));
+      if (rounds.length > 0) {
+        return rounds.map((item: any, idx: number) => ({
+          ...item,
+          round: item.round || item.round_number || idx + 1,
+          round_number: item.round_number || item.round || idx + 1,
+        }));
+      }
+    }
+    // Fallback for legacy tickets that have reassignment_reason and existing work evidence / findings
+    if (t.reassignment_reason && (t.technician_evidence?.length > 0 || t.signature_url || t.pir_findings || (t.evidence_urls && t.evidence_urls.length > 0))) {
+      const pastPirUrls = (t.evidence_urls && t.evidence_urls.length > 0)
+        ? t.evidence_urls
+        : (t.technician_evidence && !t.resolution ? t.technician_evidence : []);
+      const pastResUrls = (t.technician_evidence && t.technician_evidence.length > 0)
+        ? t.technician_evidence
+        : [];
+
+      const techList = (t.complaint_technicians && t.complaint_technicians.length > 0)
+        ? t.complaint_technicians.map((ct: any) => ({
+            id: ct.technician_id,
+            name: ct.technician?.full_name || ct.technician_id,
+            is_lead: Boolean(ct.is_lead),
+          }))
+        : (t.assigned_technician ? [{ id: t.assigned_to || "1", name: t.assigned_technician, is_lead: true }] : []);
+
+      return [{
+        type: "rework_round",
+        round: 1,
+        round_number: 1,
+        reassigned_at: t.reassigned_at || t.updated_at,
+        reassignment_reason: t.reassignment_reason,
+        technician_name: t.assigned_technician || techList.find((x: any) => x.is_lead)?.name || techList[0]?.name || "Previous Technician",
+        technicians: techList,
+        pir: {
+          findings: t.pir_findings || "",
+          severity: t.pir_findings_severity || "",
+          evidence_urls: pastPirUrls,
+          audio_url: t.pir_audio_url || null,
+        },
+        resolution: {
+          notes: t.resolution || t.resolution_notes || "",
+          evidence_urls: pastResUrls,
+          signature_url: t.signature_url || null,
+          signoff_timestamp: t.signoff_timestamp || null,
+        },
+        verification: {
+          status: "rework_required",
+          qa_notes: t.reassignment_reason,
+        }
+      }];
+    }
+    return [];
+  };
+
+  const reworkHistory = getComplaintReworkHistory(ticket);
+  const latestReworkRound = reworkHistory.length > 0 ? reworkHistory[reworkHistory.length - 1] : null;
+  const isTicketInRework = ticket?.status === 'reassigned' || ticket?.status === 'rework_required' || Boolean(ticket?.reassignment_reason);
+
   useEffect(() => {
     if (ticket) {
-      const isRemoteFix = ticket.resolution_type === 'telephonic_triage' || ticket.resolved_remotely;
-      const isFieldVisit = ticket.triage_outcome === 'field_required' || ticket.current_phase < 6;
+      if (isTicketInRework && reworkHistory.length > 0) {
+        // If ticket is in rework and active PIR in DB matches the archived round, keep active form clean!
+        const lastPirFinding = latestReworkRound?.pir?.findings || "";
+        if (!ticket.pir_findings || ticket.pir_findings === lastPirFinding) {
+          setPirFindings("");
+          setPirEvidenceUrls([]);
+        } else {
+          setPirFindings(ticket.pir_findings || "");
+          setPirEvidenceUrls(ticket.evidence_urls || []);
+        }
 
-      if (isRemoteFix && isFieldVisit) {
-        setResolutionNote("");
+        const lastResNote = latestReworkRound?.resolution?.notes || "";
+        if (!ticket.resolution || ticket.resolution === lastResNote) {
+          setResolutionNote("");
+          setResolutionEvidenceUrls([]);
+        } else {
+          setResolutionNote(ticket.resolution || "");
+          setResolutionEvidenceUrls(ticket.technician_evidence || []);
+        }
       } else {
-        setResolutionNote(ticket.resolution || "");
+        const isRemoteFix = ticket.resolution_type === 'telephonic_triage' || ticket.resolved_remotely;
+        const isFieldVisit = ticket.triage_outcome === 'field_required' || ticket.current_phase < 6;
+
+        if (isRemoteFix && isFieldVisit) {
+          setResolutionNote("");
+        } else {
+          setResolutionNote(ticket.resolution || "");
+        }
+        setPirFindings(ticket.pir_findings || "");
+        setPirAudioUrl(ticket.pir_audio_url || "");
+        const resolvedPirUrls = (ticket.evidence_urls && ticket.evidence_urls.length > 0)
+          ? ticket.evidence_urls
+          : (ticket.technician_evidence && !ticket.resolution ? ticket.technician_evidence : []);
+        setPirEvidenceUrls(resolvedPirUrls);
+        const resolvedResUrls = (ticket.resolution || ticket.signoff_timestamp)
+          ? (ticket.technician_evidence || [])
+          : [];
+        setResolutionEvidenceUrls(resolvedResUrls);
+        setEvidenceUrls(resolvedPirUrls);
       }
-      setPirFindings(ticket.pir_findings || "");
-      setPirAudioUrl(ticket.pir_audio_url || "");
-      const resolvedPirUrls = (ticket.evidence_urls && ticket.evidence_urls.length > 0)
-        ? ticket.evidence_urls
-        : (ticket.technician_evidence && !ticket.resolution ? ticket.technician_evidence : []);
-      setPirEvidenceUrls(resolvedPirUrls);
-      const resolvedResUrls = (ticket.resolution || ticket.signoff_timestamp)
-        ? (ticket.technician_evidence || [])
-        : [];
-      setResolutionEvidenceUrls(resolvedResUrls);
-      setEvidenceUrls(resolvedPirUrls);
       
       if (ticket.pir_findings_severity) setPirSeverityInput(ticket.pir_findings_severity);
       if (ticket.supervisor_severity) setSupSeverityInput(ticket.supervisor_severity);
@@ -858,81 +977,24 @@ const ComplaintDetail = () => {
   const uploadToSupabase = async (file: File, folder: string): Promise<string> => {
     setIsUploading(true);
     try {
-      // Early validation for maximum allowed file size (100MB) before any compression attempt
-      if (file.size > 100 * 1024 * 1024) {
-        const errorMsg = "File is too large (Max 100MB). Please select a smaller file.";
-        toast.error(errorMsg);
-        throw new Error(errorMsg);
-      }
-
-      let fileToUpload = file;
-      if (file.type.startsWith('image/') || /\.(jpe?g|png|webp|heic|bmp)$/i.test(file.name)) {
-        setUploadProgressText(`Compressing photo (${(file.size / 1024).toFixed(0)}KB -> ~250KB)...`);
-        try {
-          fileToUpload = await compressImageForUpload(file, {
-            maxSizeMB: 0.25,
-            maxWidthOrHeight: 1600,
-            useWebWorker: true,
-          }, (pct) => {
-            setUploadProgressText(`Compressing photo: ${pct}%...`);
-          });
-          console.log(`[Upload] Image compressed: ${(file.size / 1024).toFixed(1)}KB -> ${(fileToUpload.size / 1024).toFixed(1)}KB`);
-        } catch (err) {
-          console.warn('Image compression fallback to original:', err);
+      const publicUrl = await uploadEvidenceWithProgress(file, {
+        bucket: 'complaint-media',
+        folder,
+        onProgress: (p) => {
+          setUploadProgress(p);
+          setUploadProgressText(p.message);
         }
-      } else if (file.type.startsWith('video/') || /\.(mp4|mov|avi|webm|mkv|3gp)$/i.test(file.name)) {
-        try {
-          fileToUpload = await compressVideoForUpload(file, (prog) => {
-            setUploadProgressText(prog.message);
-          });
-        } catch (err: any) {
-          console.warn('Video compression failed, checking size:', err);
-          if (err?.message?.includes("Max 100MB")) {
-            toast.error(err.message);
-            throw err;
-          }
-        }
-      }
-
-      // Enforce 100MB file upload limit for all file types
-      if (fileToUpload.size > 100 * 1024 * 1024) {
-        toast.error(`File is ${(fileToUpload.size / (1024 * 1024)).toFixed(1)}MB. Maximum allowed size is 100MB. Please choose a smaller file.`);
-        throw new Error("File size exceeds 100MB limit");
-      }
-
-      setUploadProgressText(`Uploading ${(fileToUpload.size / (1024 * 1024)).toFixed(1)}MB to cloud...`);
-      const fileExt = fileToUpload.name.split('.').pop();
-      const fileName = `${folder}/${Date.now()}-${Math.random().toString(36).substring(2)}.${fileExt}`;
-      const { data, error } = await supabase.storage
-        .from('complaint-media')
-        .upload(fileName, fileToUpload, {
-          cacheControl: '3600',
-          upsert: false,
-          contentType: fileToUpload.type || (fileExt === 'mp4' ? 'video/mp4' : fileExt === 'webm' ? 'video/webm' : undefined)
-        });
-      if (error) throw error;
-      const { data: { publicUrl } } = supabase.storage
-        .from('complaint-media')
-        .getPublicUrl(fileName);
+      });
       return publicUrl;
     } catch (error: any) {
       console.error('Detailed Upload error in Detail page:', error);
-      const rawMsg = error.message || error.error_description || '';
-      const isSizeError = rawMsg.toLowerCase().includes("payload too large") ||
-                          rawMsg.toLowerCase().includes("entity too large") ||
-                          rawMsg.toLowerCase().includes("exceeds") ||
-                          rawMsg.toLowerCase().includes("size limit") ||
-                          error?.statusCode === 413 ||
-                          error?.status === 413;
-      if (isSizeError) {
-        toast.error("Video is too large. Please compress it or upload a shorter clip.");
-      } else {
-        toast.error(`Upload failed: ${rawMsg || 'Unknown error occurred during upload.'}`);
-      }
       throw error;
     } finally {
-      setIsUploading(false);
-      setUploadProgressText("");
+      setTimeout(() => {
+        setIsUploading(false);
+        setUploadProgress(null);
+        setUploadProgressText("");
+      }, 1000);
     }
   };
 
@@ -1011,6 +1073,7 @@ const ComplaintDetail = () => {
       }
       queryClient.invalidateQueries({ queryKey: ['complaint', id] });
       queryClient.invalidateQueries({ queryKey: ['complaints'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard-complaints'] });
       toast.success("Ticket updated!");
     },
     onError: (err: any) => toast.error(err.message || "Update failed"),
@@ -1100,29 +1163,75 @@ const ComplaintDetail = () => {
     hasResolution: Boolean(ticket.resolution),
   });
 
+  // Active rework detection (Ticket returned from QA or marked for rework and not yet closed in current cycle)
+  const isReworkActive = Boolean(
+    ticket &&
+    (
+      ticket.status === 'reassigned' ||
+      ticket.status === 'rework_required' ||
+      ticket.status === 'resolution_submitted' ||
+      ticket.status === 'pending_verification' ||
+      ticket.status === 'awaiting_verification' ||
+      Boolean(ticket.reassignment_reason) ||
+      Boolean(ticket.reassigned_at) ||
+      (Array.isArray(reworkHistory) && reworkHistory.length > 0) ||
+      (Array.isArray(ticket.feedback_history) && ticket.feedback_history.some((x: any) => x && (x.type === "rework_round" || x.round))) ||
+      (Array.isArray(ticket.pir_decision_tree) && ticket.pir_decision_tree.some((x: any) => x && (x.type === "rework_round" || x.round))) ||
+      (typeof ticket.supervisor_notes === "string" && (
+        ticket.supervisor_notes.toLowerCase().includes("reassign") ||
+        ticket.supervisor_notes.toLowerCase().includes("rework")
+      )) ||
+      (typeof ticket.resolution === "string" && ticket.resolution.toLowerCase().startsWith("rejected:"))
+    ) &&
+    // A ticket is NOT active rework if it was cleanly closed AFTER the rework cycle began
+    !(
+      ((ticket.status || "").toLowerCase() === 'closed' || (ticket.status || "").toLowerCase() === 'verified') &&
+      Boolean(ticket.closure_timestamp || ticket.closed_at) &&
+      (!ticket.reassigned_at || new Date(ticket.closure_timestamp || ticket.closed_at).getTime() >= new Date(ticket.reassigned_at).getTime()) &&
+      (!reworkHistory.length || !reworkHistory[reworkHistory.length - 1]?.reassigned_at || new Date(ticket.closure_timestamp || ticket.closed_at).getTime() >= new Date(reworkHistory[reworkHistory.length - 1].reassigned_at).getTime())
+    )
+  );
+
+  const isReassigned = isReworkActive;
+
   // Phase 6 is completed if: standard verified (happiness code), force closed by admin, or closed status
+  // IMPORTANT: For an active rework cycle, prior closures from Round 1 do NOT mark Round 2 as closed.
   const isPhase6ClosedOrVerified = Boolean(
     ticket &&
+    !isReworkActive &&
     (
       // Standard verified flow (happiness code verified)
       (
-        (ticket.status === 'closed' || 
-         ticket.status === 'verified' || 
-         ticket.status === 'Closed' || 
-         ticket.status === 'qa_verified'
+        ((ticket.status || "").toLowerCase() === 'closed' || 
+         (ticket.status || "").toLowerCase() === 'verified' || 
+         (ticket.status || "").toLowerCase() === 'qa_verified'
         ) &&
         Boolean(ticket.verified_at) &&
         Boolean(ticket.happiness_code_verified)
       ) ||
-      // Force closed by admin (bypasses happiness code)
-      Boolean(ticket.force_closed) ||
+      // Force closed by admin (bypasses happiness code, but requires closed status)
+      (
+        Boolean(ticket.force_closed) && 
+        ((ticket.status || "").toLowerCase() === 'closed' || (ticket.status || "").toLowerCase() === 'verified')
+      ) ||
       // Closed with closure timestamp (covers force close path)
-      (ticket.status === 'closed' && Boolean(ticket.closure_timestamp || ticket.closed_at))
+      ((ticket.status || "").toLowerCase() === 'closed' && Boolean(ticket.closure_timestamp || ticket.closed_at))
     )
   );
 
+  // Strict arrival check for current round:
+  // Button MUST ONLY show if arrival_timestamp is null/undefined/empty.
+  // Once arrival_timestamp exists or arrival is recorded, the button is permanently hidden and green badge is shown.
+  const hasArrivedOnSite = Boolean(
+    (ticket?.arrival_timestamp &&
+      String(ticket.arrival_timestamp).trim() !== "" &&
+      ticket.arrival_timestamp !== "null" &&
+      ticket.arrival_timestamp !== "undefined") ||
+    arrivalCoords
+  );
+
   const canVerify = isSupervisorOrAdmin &&
-    (ticket.status === "completed" || ticket.status === "Resolution & Sign-off" || ticket.status === "awaiting_signoff" || currentPhase === 6 || ticket.status === "closed" || ticket.status === "verified" || ticket.status === "pending_verification" || ticket.status === "resolution_submitted");
+    (isReworkActive || ticket.status === "completed" || ticket.status === "Resolution & Sign-off" || ticket.status === "awaiting_signoff" || currentPhase === 6 || ticket.status === "closed" || ticket.status === "verified" || ticket.status === "pending_verification" || ticket.status === "resolution_submitted");
 
   const canEdit = isRole("admin", "supervisor");
 
@@ -1130,10 +1239,13 @@ const ComplaintDetail = () => {
     if (!ticket) return false;
     if (!isRole("admin", "supervisor")) return false;
     
+    // Strict limit: if 2 reassignments have already been completed, do not allow a 3rd reassignment
+    if (reworkHistory.length >= 2) return false;
+
     const isClosed = ticket.status === 'closed' || ticket.status === 'Closed' || ticket.status === 'Resolved' || ticket.status === 'resolved' || Boolean(ticket.closure_timestamp) || Boolean(ticket.closed_at);
     if (!isClosed) return true;
     
-    // For verified/closed tickets, allow reassignment within 48 hours from the closure timestamp
+    // For verified/closed tickets (with < 2 reassignments), allow reassignment within 48 hours of closure
     const closedDateStr = ticket.closure_timestamp || ticket.closed_at || ticket.feedback_timestamp || ticket.updated_at;
     if (!closedDateStr) return true;
     
@@ -1159,9 +1271,11 @@ const ComplaintDetail = () => {
     return Math.max(0, Math.round((48 - hoursSinceClosed) * 10) / 10);
   };
 
-  const isReassigned = Boolean(ticket.reassigned_at) && ticket.status === 'assigned' && !ticket.happiness_code;
-
   const handleConfirmReassign = async () => {
+    if (reworkHistory.length >= 2) {
+      toast.error("Maximum rework limit reached (2/2 reassignments completed). Further reassignment is not permitted.");
+      return;
+    }
     if (!reassignReason.trim() || reassignReason.trim().length < 10) {
       toast.error("Reassignment reason must be at least 10 characters.");
       return;
@@ -1255,6 +1369,7 @@ const ComplaintDetail = () => {
       setActivePhase(3);
       queryClient.invalidateQueries({ queryKey: ['complaint', id] });
       queryClient.invalidateQueries({ queryKey: ['complaints'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard-complaints'] });
       refetch();
     } catch (err: any) {
       toast.error(err.message || "Failed to reassign technicians");
@@ -1264,6 +1379,10 @@ const ComplaintDetail = () => {
   };
 
   const handleConfirmFieldVisit = async () => {
+    if (reworkHistory.length >= 2) {
+      toast.error("Maximum rework limit reached (2/2 reassignments completed). Further reassignment is not permitted.");
+      return;
+    }
     if (fieldVisitSelectedTechs.length === 0) {
       toast.error("Please select at least one technician.");
       return;
@@ -1418,83 +1537,35 @@ const ComplaintDetail = () => {
   };
 
   const getFileType = (url: string): 'image' | 'video' | 'audio' | 'document' => {
-    const lowercaseUrl = url.toLowerCase();
-    if (
-      lowercaseUrl.endsWith('.mp3') ||
-      lowercaseUrl.endsWith('.wav') ||
-      lowercaseUrl.endsWith('.m4a') ||
-      lowercaseUrl.endsWith('.ogg') ||
-      lowercaseUrl.endsWith('.aac') ||
-      lowercaseUrl.includes('/audios/') ||
-      lowercaseUrl.includes('/pir-audio/')
-    ) {
-      return 'audio';
-    }
-    if (
-      lowercaseUrl.endsWith('.mp4') ||
-      lowercaseUrl.endsWith('.webm') ||
-      lowercaseUrl.endsWith('.mov') ||
-      lowercaseUrl.endsWith('.quicktime') ||
-      lowercaseUrl.endsWith('.avi') ||
-      lowercaseUrl.endsWith('.mkv') ||
-      lowercaseUrl.endsWith('.3gp') ||
-      lowercaseUrl.includes('video')
-    ) {
-      return 'video';
-    }
-    if (
-      lowercaseUrl.endsWith('.png') ||
-      lowercaseUrl.endsWith('.jpg') ||
-      lowercaseUrl.endsWith('.jpeg') ||
-      lowercaseUrl.endsWith('.gif') ||
-      lowercaseUrl.endsWith('.webp') ||
-      lowercaseUrl.endsWith('.svg') ||
-      lowercaseUrl.includes('/images/') ||
-      lowercaseUrl.includes('/evidence/')
-    ) {
-      return 'image';
-    }
+    const category = getEvidenceCategory(url);
+    if (category === 'image') return 'image';
+    if (category === 'video') return 'video';
+    if (category === 'audio') return 'audio';
     return 'document';
   };
 
   const SmartFilePreview = ({ url, idx, onRemove, className }: { url: string; idx: number; onRemove?: () => void; className?: string }) => {
     const resolved = resolveSupabaseUrl(url);
-    const fileType = getFileType(url);
-    const filename = decodeURIComponent(url.split('/').pop() || `File ${idx + 1}`).split('?')[0];
-    const ext = filename.includes('.') ? filename.split('.').pop()?.toUpperCase() : 'FILE';
+    const category = getEvidenceCategory(url);
+    const filename = getEvidenceFileName(url, `File_${idx + 1}`);
 
-    if (fileType === 'image') {
+    if (category === 'image') {
       return (
-        <a key={idx} href={resolved} target="_blank" rel="noreferrer" className={cn("relative border rounded-lg overflow-hidden hover:opacity-90 transition-opacity bg-slate-900 block group", className)}>
-          <img src={resolved} alt={`Evidence ${idx + 1}`} className="w-full h-full object-cover" />
-          {onRemove && (
-            <button type="button" onClick={onRemove} className="absolute top-1 right-1 bg-red-600 text-white rounded-full p-0.5 opacity-80 hover:opacity-100 transition-opacity shadow-xs">
-              <X className="w-3 h-3" />
-            </button>
-          )}
-        </a>
-      );
-    }
-
-    if (fileType === 'video') {
-      return (
-        <div key={idx} className={cn("relative border rounded-lg bg-slate-900 overflow-hidden group shadow-xs", className)}>
-          <video src={resolved} controls className="w-full h-full object-cover block print:hidden" />
-          <div className="block print:hidden relative w-full h-full min-h-[120px] flex items-center justify-center bg-slate-950">
-            <video src={resolved} className="w-full h-full object-cover" muted playsInline />
-            <div className="absolute inset-0 flex items-center justify-center bg-black/40">
-              <div className="w-8 h-8 rounded-full bg-black/60 flex items-center justify-center text-white shadow-sm">
-                <Play className="w-4 h-4 fill-white ml-0.5" />
-              </div>
+        <div key={idx} className={cn("relative w-36 sm:w-44 h-28 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden bg-slate-100 dark:bg-slate-900 group shadow-xs shrink-0", className)}>
+          <a href={resolved} target="_blank" rel="noreferrer" className="w-full h-full block relative print:hidden">
+            <img src={resolved} alt={filename} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+            <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+              <ZoomIn className="w-5 h-5 text-white" />
             </div>
-            <span className="absolute bottom-1.5 left-1.5 text-[9px] font-bold bg-black/70 text-white px-1.5 rounded">VIDEO</span>
-          </div>
-          <div className="hidden print:flex items-center gap-2 p-2 bg-slate-100 border border-slate-300 rounded">
-            <Play className="w-4 h-4 text-slate-700" />
-            <span className="text-xs font-medium text-slate-800">🎬 {filename}</span>
+            <span className="absolute bottom-1.5 left-1.5 text-[9px] font-bold bg-black/60 text-white px-1.5 py-0.5 rounded backdrop-blur-xs">
+              PHOTO
+            </span>
+          </a>
+          <div className="hidden print:block w-full h-full">
+            <img src={resolved} alt={filename} className="w-28 h-20 object-cover rounded border" />
           </div>
           {onRemove && (
-            <button type="button" onClick={onRemove} className="absolute top-1 right-1 bg-red-600 text-white rounded-full p-0.5 opacity-80 hover:opacity-100 transition-opacity shadow-xs print:hidden">
+            <button type="button" onClick={onRemove} className="absolute top-1.5 right-1.5 bg-red-600 text-white rounded-full p-1 opacity-90 hover:opacity-100 transition-opacity shadow-xs z-10 print:hidden" title="Remove attachment">
               <X className="w-3 h-3" />
             </button>
           )}
@@ -1502,43 +1573,164 @@ const ComplaintDetail = () => {
       );
     }
 
-    if (fileType === 'audio') {
+    if (category === 'video') {
       return (
-        <div key={idx} className={cn("w-full max-w-sm border rounded-xl p-3 bg-slate-100/60 flex flex-col gap-2 shadow-sm", className)}>
-          <audio src={resolved} controls className="w-full h-9 rounded-lg block print:hidden" />
-          <div className="block print:hidden">
-            <span className="text-xs font-bold text-[#0083a2] flex items-center gap-1.5">
+        <div key={idx} className={cn("relative w-36 sm:w-44 h-28 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-950 overflow-hidden group shadow-xs shrink-0", className)}>
+          <a href={resolved} target="_blank" rel="noreferrer" className="w-full h-full block relative print:hidden">
+            <video src={resolved} className="w-full h-full object-cover opacity-80" muted playsInline />
+            <div className="absolute inset-0 flex items-center justify-center bg-black/30">
+              <div className="w-8 h-8 rounded-full bg-black/60 group-hover:bg-black/80 flex items-center justify-center text-white shadow-sm transition-all">
+                <Play className="w-4 h-4 fill-white ml-0.5" />
+              </div>
+            </div>
+            <span className="absolute bottom-1.5 left-1.5 text-[9px] font-bold bg-black/70 text-white px-1.5 py-0.5 rounded">
+              VIDEO
+            </span>
+          </a>
+          <div className="hidden print:flex items-center gap-1.5 p-2 bg-slate-100 border border-slate-300 rounded text-xs">
+            <Play className="w-3.5 h-3.5 text-slate-700" />
+            <span className="font-medium text-slate-800 truncate">🎬 {filename}</span>
+          </div>
+          {onRemove && (
+            <button type="button" onClick={onRemove} className="absolute top-1.5 right-1.5 bg-red-600 text-white rounded-full p-1 opacity-90 hover:opacity-100 transition-opacity shadow-xs z-10 print:hidden" title="Remove attachment">
+              <X className="w-3 h-3" />
+            </button>
+          )}
+        </div>
+      );
+    }
+
+    if (category === 'pdf') {
+      return (
+        <div key={idx} className={cn("relative w-36 sm:w-44 h-28 rounded-xl border border-red-200 dark:border-red-900/60 bg-red-50/40 dark:bg-red-950/20 hover:bg-red-50 dark:hover:bg-red-950/40 p-2.5 flex flex-col justify-between group shadow-xs transition-colors shrink-0", className)}>
+          <div className="flex items-start justify-between gap-1">
+            <div className="p-1 rounded bg-red-500/10 text-red-600 dark:text-red-400">
+              <FileText className="w-4.5 h-4.5" />
+            </div>
+            <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded bg-red-600 text-white uppercase tracking-wider">
+              PDF
+            </span>
+            {onRemove && (
+              <button type="button" onClick={onRemove} className="text-red-600 hover:text-red-700 p-0.5 print:hidden" title="Remove attachment">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+          <div className="min-w-0 my-1">
+            <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 line-clamp-2 leading-tight" title={filename}>
+              {filename}
+            </p>
+          </div>
+          <a
+            href={resolved}
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center justify-between pt-1 border-t border-red-200/60 dark:border-red-900/40 text-[10px] text-red-600 dark:text-red-400 font-semibold hover:underline print:hidden"
+          >
+            <span>View PDF</span>
+            <ExternalLink className="w-3 h-3" />
+          </a>
+          <div className="hidden print:flex items-center gap-1.5 p-1 bg-slate-100 border border-slate-300 rounded text-[10px]">
+            <FileText className="w-3 h-3 text-red-600" />
+            <span className="font-medium text-slate-800 truncate">📄 {filename}</span>
+          </div>
+        </div>
+      );
+    }
+
+    if (category === 'spreadsheet') {
+      return (
+        <div key={idx} className={cn("relative w-36 sm:w-44 h-28 rounded-xl border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/40 dark:bg-emerald-950/20 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 p-2.5 flex flex-col justify-between group shadow-xs transition-colors shrink-0", className)}>
+          <div className="flex items-start justify-between gap-1">
+            <div className="p-1 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+              <FileSpreadsheet className="w-4.5 h-4.5" />
+            </div>
+            <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded bg-emerald-600 text-white uppercase tracking-wider">
+              CSV/XLS
+            </span>
+            {onRemove && (
+              <button type="button" onClick={onRemove} className="text-emerald-600 hover:text-emerald-700 p-0.5 print:hidden" title="Remove attachment">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+          <div className="min-w-0 my-1">
+            <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 line-clamp-2 leading-tight" title={filename}>
+              {filename}
+            </p>
+          </div>
+          <a
+            href={resolved}
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center justify-between pt-1 border-t border-emerald-200/60 dark:border-emerald-900/40 text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold hover:underline print:hidden"
+          >
+            <span>Open Sheet</span>
+            <ExternalLink className="w-3 h-3" />
+          </a>
+          <div className="hidden print:flex items-center gap-1.5 p-1 bg-slate-100 border border-slate-300 rounded text-[10px]">
+            <FileSpreadsheet className="w-3 h-3 text-emerald-600" />
+            <span className="font-medium text-slate-800 truncate">📊 {filename}</span>
+          </div>
+        </div>
+      );
+    }
+
+    if (category === 'audio') {
+      return (
+        <div key={idx} className={cn("w-full max-w-sm border border-amber-200 rounded-xl p-3 bg-amber-50/50 flex flex-col gap-2 shadow-xs shrink-0", className)}>
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-amber-700 flex items-center gap-1.5">
               🎵 Audio Note {idx + 1}
             </span>
-            <audio src={resolved} controls className="w-full h-9 rounded-lg" />
+            {onRemove && (
+              <button type="button" onClick={onRemove} className="text-xs text-red-600 hover:text-red-700 font-medium print:hidden" title="Remove attachment">
+                Remove
+              </button>
+            )}
           </div>
+          <audio src={resolved} controls className="w-full h-8 rounded-lg block print:hidden" />
           <div className="hidden print:flex items-center gap-2 p-2 bg-slate-100 border border-slate-300 rounded">
             <span className="text-xs font-medium text-slate-800">🎵 {filename}</span>
           </div>
-          {onRemove && (
-            <button type="button" onClick={onRemove} className="text-xs text-red-600 hover:text-red-700 font-medium print:hidden">Remove</button>
-          )}
         </div>
       );
     }
 
     return (
-      <>
-        <a key={idx} href={resolved} target="_blank" rel="noreferrer" className={cn("flex items-center gap-3 p-3 border border-slate-200 rounded-lg hover:bg-slate-50 transition-all bg-slate-50 shadow-sm max-w-xs w-full group block print:hidden", className)}>
-          <div className="p-2 rounded bg-red-50 text-red-500 shrink-0">
-            <FileText className="w-6 h-6" />
+      <div key={idx} className={cn("relative w-36 sm:w-44 h-28 rounded-xl border border-indigo-200 dark:border-indigo-900/60 bg-indigo-50/40 dark:bg-indigo-950/20 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 p-2.5 flex flex-col justify-between group shadow-xs transition-colors shrink-0", className)}>
+        <div className="flex items-start justify-between gap-1">
+          <div className="p-1 rounded bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">
+            <FileText className="w-4.5 h-4.5" />
           </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium text-slate-700 truncate">{filename}</p>
-            <p className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wide">Document</p>
-          </div>
-          <span className="text-[10px] font-semibold text-primary uppercase tracking-wide border border-primary/20 rounded px-2 py-1 bg-primary/5">View</span>
-        </a>
-        <div className="hidden print:flex items-center gap-2 p-2 bg-slate-100 border border-slate-300 rounded">
-          <FileText className="w-4 h-4 text-slate-700" />
-          <span className="text-xs font-medium text-slate-800">📄 {filename}</span>
+          <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded bg-indigo-600 text-white uppercase tracking-wider">
+            DOC
+          </span>
+          {onRemove && (
+            <button type="button" onClick={onRemove} className="text-indigo-600 hover:text-indigo-700 p-0.5 print:hidden" title="Remove attachment">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
-      </>
+        <div className="min-w-0 my-1">
+          <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 line-clamp-2 leading-tight" title={filename}>
+            {filename}
+          </p>
+        </div>
+        <a
+          href={resolved}
+          target="_blank"
+          rel="noreferrer"
+          className="flex items-center justify-between pt-1 border-t border-indigo-200/60 dark:border-indigo-900/40 text-[10px] text-indigo-600 dark:text-indigo-400 font-semibold hover:underline print:hidden"
+        >
+          <span>Open Doc</span>
+          <ExternalLink className="w-3 h-3" />
+        </a>
+        <div className="hidden print:flex items-center gap-1.5 p-1 bg-slate-100 border border-slate-300 rounded text-[10px]">
+          <FileText className="w-3 h-3 text-indigo-600" />
+          <span className="font-medium text-slate-800 truncate">📄 {filename}</span>
+        </div>
+      </div>
     );
   };
 
@@ -1791,57 +1983,77 @@ const ComplaintDetail = () => {
     await saveJourneyStart(startLocJson);
   };
 
-  // Robust GPS arrival capture for technicians marking "I Arrived"
+  // Robust GPS arrival capture for technicians marking "I Arrived" (Strictly one click per round by Lead Technician)
   const handleArrivedGPS = async () => {
     if (!isLeadTechnician) {
-      toast.error(`⚠️ Only the Lead Technician (${leadTechnicianName}) can mark arrival.`);
+      toast.error(`⚠️ Only the designated Lead Technician (${leadTechnicianName}) can mark arrival.`);
       return;
     }
-    if (!navigator.geolocation) {
-      toast.error('Geolocation is not supported by your browser');
+
+    if (hasArrivedOnSite) {
+      toast.info("Arrival has already been recorded for this round.");
       return;
     }
 
     setIsCapturingArrivalGps(true);
+    let coords: { lat: number; lng: number } | null = null;
+
+    if (navigator.geolocation) {
+      try {
+        const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(
+            resolve,
+            reject,
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+          );
+        });
+        coords = { lat: position.coords.latitude, lng: position.coords.longitude };
+        setArrivalCoords(coords);
+      } catch (gpsError) {
+        console.warn("GPS capture timed out or denied, logging arrival timestamp directly:", gpsError);
+        toast.info("Could not capture GPS coordinates. Logging arrival timestamp directly.");
+      }
+    }
+
     try {
-      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-        navigator.geolocation.getCurrentPosition(
-          resolve,
-          (error) => {
-            switch(error.code) {
-              case error.PERMISSION_DENIED:
-                reject(new Error('Please allow GPS access in your browser settings'));
-                break;
-              case error.POSITION_UNAVAILABLE:
-                reject(new Error('Location information is unavailable'));
-                break;
-              case error.TIMEOUT:
-                reject(new Error('GPS request timed out. Please try again.'));
-                break;
-              default:
-                reject(new Error('An unknown error occurred while capturing GPS'));
-            }
-          },
-          { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
-        );
-      });
-
-      const coords = { lat: position.coords.latitude, lng: position.coords.longitude };
-      setArrivalCoords(coords);
-
       const nowIso = new Date().toISOString();
-      await updateMutation.mutateAsync({
-        arrival_timestamp: nowIso,
-        arrival_lat: coords.lat,
-        arrival_lng: coords.lng,
-        status: "in-progress",
-        current_phase: 4
-      } as any);
+      const targetStatus = isReworkActive ? "reassigned" : "in-progress";
 
-      toast.success(`GPS location captured successfully (${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)})`);
+      const arrivalPayload: any = {
+        arrival_timestamp: nowIso,
+        status: targetStatus,
+        current_phase: 4,
+      };
+      if (coords) {
+        arrivalPayload.arrival_lat = coords.lat;
+        arrivalPayload.arrival_lng = coords.lng;
+      }
+      if (!ticket.start_journey_timestamp) {
+        arrivalPayload.start_journey_timestamp = nowIso;
+      }
+
+      await updateMutation.mutateAsync(arrivalPayload);
+
+      // Immediately write into queryClient cache so refresh and UI never flash
+      queryClient.setQueryData(['complaint', ticket.id], (old: any) => {
+        if (!old) return old;
+        return {
+          ...old,
+          ...arrivalPayload,
+        };
+      });
+      queryClient.invalidateQueries({ queryKey: ['complaint', ticket.id] });
+      queryClient.invalidateQueries({ queryKey: ['complaints'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard-complaints'] });
+
+      if (coords) {
+        toast.success(`GPS location captured successfully (${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)})`);
+      } else {
+        toast.success("Arrival recorded successfully!");
+      }
     } catch (error) {
-      console.error('GPS Error:', error);
-      toast.error(error instanceof Error ? error.message : 'Could not get GPS location. Please enable location services and try again.');
+      console.error('Arrival Save Error:', error);
+      toast.error(error instanceof Error ? error.message : 'Could not save arrival status. Please try again.');
     } finally {
       setIsCapturingArrivalGps(false);
     }
@@ -1928,8 +2140,17 @@ const ComplaintDetail = () => {
       user?.id
     );
 
+    const isReworkActive = Boolean(
+      ticket.status === 'reassigned' ||
+      ticket.status === 'rework_required' ||
+      ticket.reassignment_reason ||
+      ticket.reassigned_at ||
+      (Array.isArray(reworkHistory) && reworkHistory.length > 0)
+    );
+    const targetStatus = isReworkActive ? "reassigned" : "in-progress";
+
     updateMutation.mutate({
-      status: "in-progress",
+      status: targetStatus,
       current_phase: 4,
       start_journey_timestamp: new Date().toISOString(),
       pir_decision_tree: startLocJson
@@ -1965,6 +2186,15 @@ const ComplaintDetail = () => {
 
       const nowIso = new Date().toISOString();
 
+      const isReworkActive = Boolean(
+        ticket.status === 'reassigned' ||
+        ticket.status === 'rework_required' ||
+        ticket.reassignment_reason ||
+        ticket.reassigned_at ||
+        (Array.isArray(reworkHistory) && reworkHistory.length > 0)
+      );
+      const targetStatus = isReworkActive ? "reassigned" : "in-progress";
+
       // 2. Perform database update immediately to advance straight to Phase 5 without supervisor approval
       await updateMutation.mutateAsync({
         pir_findings: pirFindings,
@@ -1975,7 +2205,7 @@ const ComplaintDetail = () => {
         arrival_lat: gps?.lat || ticket.arrival_lat || null,
         arrival_lng: gps?.lng || ticket.arrival_lng || null,
         current_phase: 5,
-        status: "in-progress",
+        status: targetStatus,
         pir_status: "approved",
         pir_approved_at: nowIso,
         pir_resubmitted_at: nowIso
@@ -2334,6 +2564,10 @@ const ComplaintDetail = () => {
 
   // Phase 6 Return for Rework Handlers
   const handleOpenReworkModal = () => {
+    if (reworkHistory.length >= 2) {
+      toast.error("Maximum rework limit reached (2/2 reassignments completed). Further reassignment is not permitted.");
+      return;
+    }
     const currentIds = (ticket.complaint_technicians && ticket.complaint_technicians.length > 0)
       ? ticket.complaint_technicians.map((ct: any) => ct.technician_id)
       : (ticket.assigned_to ? [ticket.assigned_to] : []);
@@ -2348,6 +2582,10 @@ const ComplaintDetail = () => {
   };
 
   const handleConfirmRework = async () => {
+    if (reworkHistory.length >= 2) {
+      toast.error("Maximum rework limit reached (2/2 reassignments completed). Further reassignment is not permitted.");
+      return;
+    }
     if (!reworkScheduledDate) {
       toast.error("Please specify a new scheduled date for rework");
       return;
@@ -2367,24 +2605,103 @@ const ComplaintDetail = () => {
 
     setIsSubmittingRework(true);
     try {
+      const existingHistory = getComplaintReworkHistory(ticket);
+      const pastPirUrls = (ticket.evidence_urls && ticket.evidence_urls.length > 0)
+        ? ticket.evidence_urls
+        : (ticket.technician_evidence && !ticket.resolution ? ticket.technician_evidence : []);
+      const pastResUrls = (ticket.technician_evidence && ticket.technician_evidence.length > 0)
+        ? ticket.technician_evidence
+        : [];
+
+      const previousRoundTechs = (ticket.complaint_technicians && ticket.complaint_technicians.length > 0)
+        ? ticket.complaint_technicians.map((ct: any) => ({
+            id: ct.technician_id,
+            name: ct.technician?.full_name || ct.technician_id,
+            is_lead: Boolean(ct.is_lead),
+          }))
+        : (ticket.assigned_technician ? [{ id: ticket.assigned_to || "1", name: ticket.assigned_technician, is_lead: true }] : []);
+
+      const newRoundNumber = existingHistory.length + 1;
+      const roundSnapshot = {
+        type: "rework_round",
+        round: newRoundNumber,
+        round_number: newRoundNumber,
+        reassigned_at: new Date().toISOString(),
+        reassigned_by: currentUserFullName || user?.name || user?.email || "Supervisor / QA",
+        reassignment_reason: reworkInstructions.trim(),
+        technician_name: ticket.assigned_technician || previousRoundTechs.find((t: any) => t.is_lead)?.name || previousRoundTechs[0]?.name || "Previous Technician",
+        technicians: previousRoundTechs,
+        scheduled_date: reworkScheduledDate,
+        scheduled_time: reworkScheduledTime,
+        pir: {
+          findings: ticket.pir_findings || "",
+          severity: ticket.pir_findings_severity || "",
+          evidence_urls: pastPirUrls,
+          audio_url: ticket.pir_audio_url || null,
+        },
+        resolution: {
+          notes: ticket.resolution || ticket.resolution_notes || "",
+          evidence_urls: pastResUrls,
+          signature_url: ticket.signature_url || null,
+          signoff_timestamp: ticket.signoff_timestamp || null,
+        },
+        verification: {
+          status: "rework_required",
+          qa_notes: verificationNote || reworkInstructions.trim(),
+        },
+      };
+
+      const updatedHistory = [...existingHistory, roundSnapshot];
+
       await updateMutation.mutateAsync({
-        status: "assigned",
+        status: "reassigned",
         current_phase: reworkTargetPhase,
         scheduled_date: reworkScheduledDate,
         scheduled_time: reworkScheduledTime,
         assigned_to: leadId,
         assigned_technician: leadName,
         reassignment_reason: reworkInstructions.trim(),
-        supervisor_notes: `[Rework Required - Phase ${reworkTargetPhase}] ${reworkInstructions.trim()}`,
+        supervisor_notes: `[Reassigned for Rework] ${reworkInstructions.trim()}`,
+        rework_history: updatedHistory,
+        feedback_history: updatedHistory,
+        pir_decision_tree: updatedHistory,
+        // Reset active form inputs for new round:
+        pir_findings: "",
+        evidence_urls: [],
+        pir_audio_url: null,
+        resolution: null,
+        resolution_notes: null,
+        technician_evidence: [],
+        signature_url: null,
+        signoff_timestamp: null,
+        start_journey_timestamp: null,
+        arrival_timestamp: null,
+        arrival_lat: null,
+        arrival_lng: null,
         happiness_code: null,
         happiness_code_sent_at: null,
         happiness_code_verified: false,
         feedback_collected: false,
-        // Preserve previous customer feedback and resolution notes for reference until new ones are collected
-        signature_url: null,
-        technician_evidence: null,
-        signoff_timestamp: null
+        closure_timestamp: null,
+        closed_at: null,
+        closed_by: null,
+        verified_by: null,
+        verified_at: null,
+        force_closed: false,
+        force_closed_by: null,
+        force_close_reason: null,
+        force_close_comments: null,
+        customer_satisfaction: null,
+        feedback_comments: null,
+        feedback_contact_method: null,
+        feedback_timestamp: null,
       } as any);
+
+      setPirFindings("");
+      setPirEvidenceUrls([]);
+      setPirAudioUrl("");
+      setResolutionEvidenceUrls([]);
+      setResolutionNote("");
 
       try {
         await supabase.from("complaint_technicians").delete().eq("complaint_id", ticket.id);
@@ -2429,6 +2746,7 @@ const ComplaintDetail = () => {
       toast.success(`Ticket returned for rework to Phase ${reworkTargetPhase} successfully!`);
       queryClient.invalidateQueries({ queryKey: ['complaint', ticket.id] });
       queryClient.invalidateQueries({ queryKey: ['complaints'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard-complaints'] });
     } catch (err: any) {
       console.error("Failed to return ticket for rework:", err);
       toast.error(err?.message || "Failed to return ticket for rework");
@@ -2827,6 +3145,10 @@ const ComplaintDetail = () => {
   };
 
   const handleReject = async () => {
+    if (reworkHistory.length >= 2) {
+      toast.error("Maximum rework limit reached (2/2 reassignments completed). Further reassignment is not permitted.");
+      return;
+    }
     if (!verificationNote.trim()) {
       toast.error("Add reason");
       return;
@@ -2855,15 +3177,69 @@ const ComplaintDetail = () => {
       user?.id
     );
 
+    const existingHistory = getComplaintReworkHistory(ticket);
+    const newRoundNumber = existingHistory.length + 1;
+    const nowIso = new Date().toISOString();
+
+    const previousRoundTechs = (ticket.complaint_technicians && ticket.complaint_technicians.length > 0)
+      ? ticket.complaint_technicians.map((ct: any) => ({
+          id: ct.technician_id,
+          name: ct.technician?.full_name || ct.technician_id,
+          is_lead: Boolean(ct.is_lead),
+        }))
+      : (ticket.assigned_technician ? [{ id: ticket.assigned_to || "1", name: ticket.assigned_technician, is_lead: true }] : []);
+
+    const roundSnapshot = {
+      type: "rework_round",
+      round: newRoundNumber,
+      round_number: newRoundNumber,
+      reassigned_at: nowIso,
+      reassigned_by: currentUserFullName || user?.name || user?.email || "Supervisor / QA",
+      reassignment_reason: verificationNote.trim(),
+      technician_name: ticket.assigned_technician || previousRoundTechs.find((t: any) => t.is_lead)?.name || previousRoundTechs[0]?.name || "Previous Technician",
+      technicians: previousRoundTechs,
+      pir: {
+        findings: ticket.pir_findings || "",
+        severity: ticket.pir_findings_severity || "",
+        evidence_urls: ticket.evidence_urls || [],
+        audio_url: ticket.pir_audio_url || null,
+      },
+      resolution: {
+        notes: ticket.resolution || ticket.resolution_notes || "",
+        evidence_urls: ticket.technician_evidence || [],
+        signature_url: ticket.signature_url || null,
+        signoff_timestamp: ticket.signoff_timestamp || null,
+      },
+      verification: {
+        status: "rework_required",
+        qa_notes: verificationNote.trim(),
+      }
+    };
+    const updatedHistory = [...existingHistory, roundSnapshot];
+
     updateMutation.mutate({
-      status: "in-progress",
-      current_phase: 4,
+      status: "reassigned",
+      current_phase: 3,
+      reassignment_reason: verificationNote.trim(),
+      reassigned_at: nowIso,
+      rework_history: updatedHistory,
+      feedback_history: updatedHistory,
+      pir_decision_tree: updatedHistory,
       resolution: `Rejected: ${verificationNote}`,
       feedback_collected: false,
-      feedback_contact_method: 'phone'
+      feedback_contact_method: 'phone',
+      closure_timestamp: null,
+      closed_at: null,
+      closed_by: null,
+      verified_by: null,
+      verified_at: null,
+      force_closed: false,
+      force_closed_by: null,
+      happiness_code_verified: false,
     } as any);
     setFeedbackContactMethod("phone");
     setShowVerification(false);
+    toast.warning("Resolution rejected. Ticket returned to Phase 3 for rework.");
   };
 
   const handleTakeBack = async () => {
@@ -2932,104 +3308,15 @@ const ComplaintDetail = () => {
 
   const renderEvidenceFiles = (urls?: string[] | null) => {
     if (!urls || urls.length === 0) return null;
-    
-    const getFileType = (url: string) => {
-      const lowercaseUrl = url.toLowerCase();
-      if (
-        lowercaseUrl.endsWith('.mp3') ||
-        lowercaseUrl.endsWith('.wav') ||
-        lowercaseUrl.endsWith('.m4a') ||
-        lowercaseUrl.endsWith('.ogg') ||
-        lowercaseUrl.endsWith('.aac') ||
-        lowercaseUrl.includes('/audios/') ||
-        lowercaseUrl.includes('/pir-audio/')
-      ) {
-        return 'audio';
-      }
-      if (
-        lowercaseUrl.endsWith('.mp4') ||
-        lowercaseUrl.endsWith('.webm') ||
-        lowercaseUrl.endsWith('.ogg') ||
-        lowercaseUrl.endsWith('.mov') ||
-        lowercaseUrl.endsWith('.quicktime') ||
-        lowercaseUrl.includes('video')
-      ) {
-        return 'video';
-      }
-      if (
-        lowercaseUrl.endsWith('.png') ||
-        lowercaseUrl.endsWith('.jpg') ||
-        lowercaseUrl.endsWith('.jpeg') ||
-        lowercaseUrl.endsWith('.gif') ||
-        lowercaseUrl.endsWith('.webp') ||
-        lowercaseUrl.endsWith('.svg') ||
-        lowercaseUrl.includes('/images/') ||
-        lowercaseUrl.includes('/evidence/')
-      ) {
-        return 'image';
-      }
-      return 'document';
-    };
-
-    const mediaUrls = urls.filter(url => {
-      const type = getFileType(url);
-      return type === 'image' || type === 'video';
-    });
-
-    const audioUrls = urls.filter(url => getFileType(url) === 'audio');
-    const docUrls = urls.filter(url => getFileType(url) === 'document');
-
-    // Fallback: if no media detected but URLs exist, treat all as images
-    const finalMediaUrls = mediaUrls.length > 0 ? mediaUrls : (docUrls.length > 0 && urls.length > 0 ? urls : []);
 
     return (
-      <div className="space-y-3 mt-2 w-full">
-        {finalMediaUrls.length > 0 && (
-          <ImageGallery
-            images={finalMediaUrls}
-            title="Attached Media"
-            uploader="technician"
-            emptyMessage="No media files attached"
-          />
-        )}
-
-        {audioUrls.map((url, idx) => {
-          const resolved = resolveSupabaseUrl(url);
-          return (
-            <div key={idx} className="w-full max-w-md border rounded-xl p-3.5 bg-slate-100/60 flex flex-col gap-2 shadow-sm">
-              <span className="text-xs font-bold text-[#0083a2] flex items-center gap-1.5">
-                🎵 Audio Note {idx + 1}
-              </span>
-              <audio src={resolved} controls className="w-full h-9 rounded-lg animate-fade-in" />
-            </div>
-          );
-        })}
-
-        {docUrls.length > 0 && (
-          <div className="flex flex-wrap gap-2.5">
-            {docUrls.map((url, idx) => {
-              const resolved = resolveSupabaseUrl(url);
-              const filename = decodeURIComponent(url.split('/').pop() || 'File').split('?')[0];
-              return (
-                <a
-                  key={idx}
-                  href={resolved}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex items-center gap-2.5 p-3 border border-slate-200 rounded-xl hover:bg-slate-50 transition-all bg-white shadow-sm max-w-xs w-full"
-                >
-                  <div className="p-2 rounded bg-primary/10 text-primary shrink-0">
-                    <FileText className="w-4.5 h-4.5" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-bold text-slate-800 truncate">{filename}</p>
-                    <p className="text-[10px] text-muted-foreground font-semibold">Click to view/download</p>
-                  </div>
-                </a>
-              );
-            })}
-          </div>
-        )}
+      <div className="mt-2 w-full">
+        <ImageGallery
+          images={urls}
+          title="Attached Evidence"
+          uploader="technician"
+          emptyMessage="No evidence files attached"
+        />
       </div>
     );
   };
@@ -3353,28 +3640,43 @@ const ComplaintDetail = () => {
               </div>
             </div>
 
-            <div className="mt-3 bg-slate-50 border p-3 rounded-lg">
+            <div className="mt-3 bg-slate-50 dark:bg-slate-900/40 border p-3 rounded-lg">
               <span className="text-xs text-muted-foreground block mb-1 font-medium">📋 PIR Findings:</span>
-              <p className="text-slate-700 font-normal whitespace-pre-line break-words bg-white border p-2.5 rounded overflow-hidden">
-                {ticket.pir_findings || 'No findings submitted yet'}
+              <p className="text-slate-700 dark:text-slate-200 font-normal whitespace-pre-line break-words bg-white dark:bg-slate-900 border p-2.5 rounded overflow-hidden">
+                {ticket.pir_findings || latestReworkRound?.pir?.findings || 'No PIR diagnostic findings submitted yet'}
               </p>
             </div>
 
-            {ticket.pir_audio_url && (
-              <div className="mt-3 bg-slate-50 border p-3 rounded-lg space-y-1">
+            {(ticket.pir_audio_url || latestReworkRound?.pir?.audio_url) && (
+              <div className="mt-3 bg-slate-50 dark:bg-slate-900/40 border p-3 rounded-lg space-y-1">
                 <span className="text-xs text-muted-foreground block font-medium flex items-center gap-1">
                   🎵 Recorded Audio Note:
                 </span>
-                <audio src={resolveSupabaseUrl(ticket.pir_audio_url)} controls className="w-full max-w-md h-10 mt-1" />
+                <audio src={resolveSupabaseUrl(ticket.pir_audio_url || latestReworkRound?.pir?.audio_url)} controls className="w-full max-w-md h-10 mt-1" />
               </div>
             )}
 
-            {ticket.technician_evidence && ticket.technician_evidence.length > 0 && (
-              <div className="mt-3">
-                <span className="text-xs text-muted-foreground block mb-2 font-medium">📸 PIR / Technician Uploaded Files:</span>
-                {renderEvidenceFiles(ticket.technician_evidence)}
-              </div>
-            )}
+            {/* Strictly show PIR Diagnostic Evidence (Before) in Phase 4 - Never show Resolution Evidence */}
+            {(() => {
+              const pirUrls = (ticket.evidence_urls && ticket.evidence_urls.length > 0)
+                ? ticket.evidence_urls
+                : ((ticket.technician_evidence && ticket.technician_evidence.length > 0 && !ticket.resolution && !ticket.signoff_timestamp)
+                    ? ticket.technician_evidence
+                    : (latestReworkRound?.pir?.evidence_urls && latestReworkRound.pir.evidence_urls.length > 0
+                        ? latestReworkRound.pir.evidence_urls
+                        : []));
+
+              return (pirUrls && pirUrls.length > 0) ? (
+                <div className="mt-3">
+                  <span className="text-xs text-muted-foreground block mb-2 font-medium">📸 PIR Diagnostic Files ({pirUrls.length}):</span>
+                  {renderEvidenceFiles(pirUrls)}
+                </div>
+              ) : (
+                <div className="mt-3 bg-slate-50 dark:bg-slate-900/40 border border-dashed rounded-lg p-3 text-center text-xs text-muted-foreground italic">
+                  No PIR diagnostic files uploaded
+                </div>
+              );
+            })()}
 
             {/* Display Approved PIR Validation Details if present */}
             {(ticket.pir_findings_severity || ticket.supervisor_severity || ticket.target_duration_hours || ticket.target_end_time) ? (
@@ -3509,48 +3811,42 @@ const ComplaintDetail = () => {
             <div className="bg-white p-3 rounded-lg border">
               <span className="text-xs text-muted-foreground block mb-1">🔧 Resolution Note:</span>
               <p className="text-slate-700 font-normal whitespace-pre-line break-words bg-slate-50 border p-2 rounded overflow-hidden">
-                {ticket.resolution || 'Pending completion'}
+                {ticket.resolution || ticket.resolution_notes || latestReworkRound?.resolution?.notes || 'Pending completion'}
               </p>
             </div>
             
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3">
-              {/* Box 1: Technician's Diagnostic Evidence (Before) / PIR */}
-              <div className="bg-white dark:bg-slate-900 p-3.5 rounded-lg border space-y-2">
-                <span className="text-xs text-muted-foreground block font-semibold">
-                  📸 Technician's Diagnostic Evidence (Before) / PIR:
-                </span>
-                {((ticket.evidence_urls && ticket.evidence_urls.length > 0) || (pirEvidenceUrls && pirEvidenceUrls.length > 0)) ? (
-                  renderEvidenceFiles(ticket.evidence_urls && ticket.evidence_urls.length > 0 ? ticket.evidence_urls : pirEvidenceUrls)
-                ) : (
-                  <p className="text-xs text-muted-foreground italic bg-slate-50 dark:bg-slate-800/50 p-3 rounded border border-dashed text-center">
-                    No diagnostic images provided
-                  </p>
-                )}
-              </div>
+            {/* Technician's Resolution Evidence (After) */}
+            <div className="bg-white dark:bg-slate-900 p-3.5 rounded-lg border space-y-2 mt-3">
+              <span className="text-xs text-muted-foreground block font-semibold">
+                ✅ Technician's Resolution Evidence (After):
+              </span>
+              {(() => {
+                const resUrls = (ticket.technician_evidence && ticket.technician_evidence.length > 0 && (Boolean(ticket.resolution) || Boolean(ticket.signoff_timestamp)))
+                  ? ticket.technician_evidence
+                  : (latestReworkRound?.resolution?.evidence_urls && latestReworkRound.resolution.evidence_urls.length > 0
+                      ? latestReworkRound.resolution.evidence_urls
+                      : (ticket.technician_evidence && ticket.technician_evidence.length > 0
+                          ? ticket.technician_evidence
+                          : []));
 
-              {/* Box 2: Technician's Resolution Evidence (After) */}
-              <div className="bg-white dark:bg-slate-900 p-3.5 rounded-lg border space-y-2">
-                <span className="text-xs text-muted-foreground block font-semibold">
-                  ✅ Technician's Resolution Evidence (After):
-                </span>
-                {ticket.technician_evidence && ticket.technician_evidence.length > 0 ? (
-                  renderEvidenceFiles(ticket.technician_evidence)
+                return resUrls && resUrls.length > 0 ? (
+                  renderEvidenceFiles(resUrls)
                 ) : (
                   <p className="text-xs text-muted-foreground italic bg-slate-50 dark:bg-slate-800/50 p-3 rounded border border-dashed text-center">
                     No resolution images provided
                   </p>
-                )}
-              </div>
+                );
+              })()}
             </div>
 
-            {ticket.signature_url && (
+            {(ticket.signature_url || latestReworkRound?.resolution?.signature_url) && (
               <div className="bg-white dark:bg-slate-900 p-3.5 rounded-lg border flex flex-col sm:flex-row sm:items-center justify-between gap-3 mt-3">
                 <div>
                   <span className="text-xs text-muted-foreground block mb-2 font-medium">✍️ Customer Signature:</span>
-                  <img src={resolveSupabaseUrl(ticket.signature_url)} alt="Customer Signature" className="max-h-16 border rounded bg-white p-1" />
+                  <img src={resolveSupabaseUrl(ticket.signature_url || latestReworkRound?.resolution?.signature_url)} alt="Customer Signature" className="max-h-16 border rounded bg-white p-1" />
                 </div>
                 <span className="text-[10px] text-muted-foreground mt-2 block sm:mt-0 sm:text-right">
-                  Signed Off At: {ticket.signoff_timestamp ? formatIndianDateTime(ticket.signoff_timestamp) : 'N/A'}
+                  Signed Off At: {ticket.signoff_timestamp ? formatIndianDateTime(ticket.signoff_timestamp) : (latestReworkRound?.resolution?.signoff_timestamp ? formatIndianDateTime(latestReworkRound.resolution.signoff_timestamp) : 'N/A')}
                 </span>
               </div>
             )}
@@ -3641,7 +3937,7 @@ const ComplaintDetail = () => {
                 </span>
               )}
               {ticket.severity && <SeverityBadge severity={ticket.severity as any} />}
-              {ticket.status && <StatusBadge status={ticket.status} />}
+              {ticket.status && <StatusBadge status={getEffectiveComplaintStatus(ticket)} ticket={ticket} />}
             </div>
             <h1 className="text-xl md:text-2xl font-display font-extrabold text-foreground tracking-tight break-words" title={ticket.title}>
               {ticket.title}
@@ -3724,8 +4020,11 @@ const ComplaintDetail = () => {
               variant="outline"
               className="border-warning/60 text-warning hover:bg-warning/10 font-semibold shrink-0 whitespace-nowrap"
               onClick={() => {
-                const elem = document.getElementById("phase-6-verification-section");
-                if (elem) elem.scrollIntoView({ behavior: "smooth" });
+                setActivePhase(6);
+                setTimeout(() => {
+                  const elem = document.getElementById("phase-6-verification-section");
+                  if (elem) elem.scrollIntoView({ behavior: "smooth" });
+                }, 100);
               }}
             >
               <ShieldCheck className="w-4 h-4 mr-2 shrink-0" /> Verify & QA Close
@@ -3756,9 +4055,23 @@ const ComplaintDetail = () => {
           arrivalLng={ticket.arrival_lng}
           arrivalTimestamp={ticket.arrival_timestamp}
           isLeadOrAdmin={isLeadTechnician}
-          complaint={ticket}
-          onArrivalLogged={() => {
+          onArrivalLogged={(lat, lng, time) => {
+            if (lat && lng) {
+              setArrivalCoords({ lat, lng });
+            }
+            queryClient.setQueryData(['complaint', ticket.id], (old: any) => {
+              if (!old) return old;
+              return {
+                ...old,
+                arrival_timestamp: time,
+                ...(lat ? { arrival_lat: lat } : {}),
+                ...(lng ? { arrival_lng: lng } : {}),
+                current_phase: 4,
+              };
+            });
             queryClient.invalidateQueries({ queryKey: ["complaint", id] });
+            queryClient.invalidateQueries({ queryKey: ["complaints"] });
+            queryClient.invalidateQueries({ queryKey: ["dashboard-complaints"] });
           }}
         />
       )}
@@ -3789,16 +4102,116 @@ const ComplaintDetail = () => {
         </div>
       )}
 
-      {/* Reassignment Notice Banner */}
-      {ticket.reassignment_reason && (
-        <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-xl p-4 border-l-4 border-l-amber-500 bg-amber-500/10">
+      {/* Repeat Complaint Detection Alert */}
+      <RepeatComplaintAlert
+        currentTicketId={ticket.id}
+        customerId={ticket.customer_id}
+        customerPhone={ticket.customer_phone}
+        customerName={ticket.customer_name}
+        assets={assetsToService}
+        ticketTitle={ticket.title}
+      />
+
+      {/* Reassignment Notice & Rework Flow Pipeline */}
+      {(ticket.reassignment_reason || ticket.status === "rework_required") && (
+        <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-xl p-4 sm:p-5 border-l-4 border-l-amber-500 bg-amber-500/10 space-y-3">
           <div className="flex items-start gap-3">
-            <RotateCcw className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+            <div className="w-9 h-9 rounded-xl bg-amber-500/20 text-amber-700 dark:text-amber-300 flex items-center justify-center flex-shrink-0 mt-0.5">
+              <RotateCcw className="w-5 h-5 text-amber-600 animate-spin-reverse" />
+            </div>
             <div className="flex-1 min-w-0">
-              <p className="font-semibold text-sm text-amber-900 dark:text-amber-200">🔄 Ticket Returned for Rework / Reassigned</p>
-              <p className="text-xs text-amber-800 dark:text-amber-300 mt-1">
-                <strong>Supervisor Instructions:</strong> {ticket.reassignment_reason}
-              </p>
+              <div className="flex items-center gap-2 flex-wrap">
+                <p className="font-bold text-sm text-amber-950 dark:text-amber-100">Ticket In Rework Cycle</p>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-200 dark:bg-amber-900/60 text-amber-900 dark:text-amber-200 uppercase tracking-wider">
+                  Reassigned from QA
+                </span>
+              </div>
+              {ticket.reassignment_reason && (
+                <p className="text-xs text-amber-900/90 dark:text-amber-200/90 mt-1">
+                  <strong>Supervisor / QA Instructions:</strong> {ticket.reassignment_reason}
+                </p>
+              )}
+            </div>
+          </div>
+
+          {/* Rework Flow Pipeline: QA ➔ REWORK ➔ FIELD VISIT ➔ RESOLUTION ➔ QA CLOSE */}
+          <div className="bg-white/80 dark:bg-slate-900/70 rounded-xl p-3 sm:p-4 border border-amber-200/70 dark:border-amber-800/40">
+            <p className="text-[11px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-2.5 flex items-center gap-1.5">
+              <span>🔄 Rework Execution Pipeline</span>
+              <span className="text-[10px] font-normal text-muted-foreground">(Continuing from Field Visit)</span>
+            </p>
+            <div className="flex items-center justify-between gap-1 overflow-x-auto pb-1 text-xs">
+              {/* Step 1: QA Rejection */}
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                <div className="w-7 h-7 rounded-full bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300 font-bold flex items-center justify-center text-[11px] border border-rose-300">
+                  QA
+                </div>
+                <div className="hidden sm:block text-[11px] leading-tight">
+                  <div className="font-semibold text-rose-700 dark:text-rose-300">Verification</div>
+                  <div className="text-[9px] text-muted-foreground">Action needed</div>
+                </div>
+              </div>
+
+              <div className="h-0.5 w-4 sm:w-8 bg-amber-400 flex-shrink-0" />
+
+              {/* Step 2: Rework Reassigned */}
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                <div className="w-7 h-7 rounded-full bg-amber-500 text-white font-bold flex items-center justify-center text-[11px] shadow-sm">
+                  ✓
+                </div>
+                <div className="hidden sm:block text-[11px] leading-tight">
+                  <div className="font-semibold text-amber-700 dark:text-amber-300">Rework</div>
+                  <div className="text-[9px] text-muted-foreground">Reassigned</div>
+                </div>
+              </div>
+
+              <div className="h-0.5 w-4 sm:w-8 bg-amber-400 flex-shrink-0" />
+
+              {/* Step 3: Field Visit / Execution (Current Active) */}
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                <div className={cn(
+                  "w-7 h-7 rounded-full font-bold flex items-center justify-center text-[11px] ring-2 ring-blue-500 ring-offset-1",
+                  currentPhase >= 3 ? "bg-blue-600 text-white animate-pulse" : "bg-muted text-muted-foreground"
+                )}>
+                  FV
+                </div>
+                <div className="hidden sm:block text-[11px] leading-tight">
+                  <div className="font-bold text-blue-700 dark:text-blue-300">Field Visit</div>
+                  <div className="text-[9px] text-muted-foreground">Phase 3-4 Onsite</div>
+                </div>
+              </div>
+
+              <div className="h-0.5 w-4 sm:w-8 bg-slate-300 dark:bg-slate-700 flex-shrink-0" />
+
+              {/* Step 4: Resolution */}
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                <div className={cn(
+                  "w-7 h-7 rounded-full font-bold flex items-center justify-center text-[11px]",
+                  currentPhase >= 5 ? "bg-blue-600 text-white" : "bg-muted text-muted-foreground"
+                )}>
+                  RES
+                </div>
+                <div className="hidden sm:block text-[11px] leading-tight">
+                  <div className="font-semibold text-slate-700 dark:text-slate-300">Resolution</div>
+                  <div className="text-[9px] text-muted-foreground">Phase 5 Sign-off</div>
+                </div>
+              </div>
+
+              <div className="h-0.5 w-4 sm:w-8 bg-slate-300 dark:bg-slate-700 flex-shrink-0" />
+
+              {/* Step 5: Final Close */}
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                <div className={cn(
+                  "w-7 h-7 rounded-full font-bold flex items-center justify-center text-[11px]",
+                  currentPhase >= 6 && (ticket.status === 'closed' || ticket.status === 'verified') ? "bg-emerald-600 text-white" : "bg-muted text-muted-foreground"
+                )}>
+                  QA
+                </div>
+                <div className="hidden sm:block text-[11px] leading-tight">
+                  <div className="font-semibold text-slate-700 dark:text-slate-300">Close Ticket</div>
+                  <div className="text-[9px] text-muted-foreground">Phase 6 Verified</div>
+                </div>
+              </div>
             </div>
           </div>
         </motion.div>
@@ -4110,25 +4523,31 @@ const ComplaintDetail = () => {
                   Lead Technician: <span className="text-primary font-bold">{ticket.assigned_technician}</span>
                 </p>
                 {((isRole("supervisor") && ticket.assigned_supervisor === currentUserFullName) || isRole("admin")) && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="text-xs font-semibold bg-white dark:bg-slate-900 border-emerald-300 hover:border-primary"
-                    onClick={() => {
-                      const initialIds = (ticket.complaint_technicians && ticket.complaint_technicians.length > 0)
-                        ? ticket.complaint_technicians.map((ct: any) => ct.technician_id)
-                        : (ticket.assigned_to ? [ticket.assigned_to] : []);
-                      setFieldVisitSelectedTechs(initialIds);
-                      const initialLead = ticket.complaint_technicians?.find((ct: any) => ct.is_lead)?.technician_id || initialIds[0] || null;
-                      setFieldVisitLeadTechId(initialLead);
-                      setFieldVisitScheduledDate(ticket.scheduled_date || new Date().toISOString().split("T")[0]);
-                      setFieldVisitScheduledTime(ticket.scheduled_time ? ticket.scheduled_time.slice(0, 5) : "10:00");
-                      setFieldVisitSupervisorNotes(getCleanSupervisorNotes(ticket.supervisor_notes));
-                      setShowFieldVisitModal(true);
-                    }}
-                  >
-                    <Wrench className="w-3.5 h-3.5 mr-1.5 text-primary" /> Modify / Reassign Team
-                  </Button>
+                  reworkHistory.length >= 2 ? (
+                    <span className="text-xs text-amber-800 dark:text-amber-300 bg-amber-100 dark:bg-amber-950/60 px-3 py-1.5 rounded-lg border border-amber-300 font-semibold flex items-center gap-1.5 shadow-2xs">
+                      🔒 Reassignment Locked (Max 2 Rounds Completed)
+                    </span>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="text-xs font-semibold bg-white dark:bg-slate-900 border-emerald-300 hover:border-primary"
+                      onClick={() => {
+                        const initialIds = (ticket.complaint_technicians && ticket.complaint_technicians.length > 0)
+                          ? ticket.complaint_technicians.map((ct: any) => ct.technician_id)
+                          : (ticket.assigned_to ? [ticket.assigned_to] : []);
+                        setFieldVisitSelectedTechs(initialIds);
+                        const initialLead = ticket.complaint_technicians?.find((ct: any) => ct.is_lead)?.technician_id || initialIds[0] || null;
+                        setFieldVisitLeadTechId(initialLead);
+                        setFieldVisitScheduledDate(ticket.scheduled_date || new Date().toISOString().split("T")[0]);
+                        setFieldVisitScheduledTime(ticket.scheduled_time ? ticket.scheduled_time.slice(0, 5) : "10:00");
+                        setFieldVisitSupervisorNotes(getCleanSupervisorNotes(ticket.supervisor_notes));
+                        setShowFieldVisitModal(true);
+                      }}
+                    >
+                      <Wrench className="w-3.5 h-3.5 mr-1.5 text-primary" /> Modify / Reassign Team
+                    </Button>
+                  )
                 )}
               </div>
 
@@ -4147,32 +4566,57 @@ const ComplaintDetail = () => {
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2 shrink-0">
-                    {!ticket.start_journey_timestamp && (
-                      <Button onClick={handleStartJourney} size="sm" className="gradient-primary text-white text-xs font-semibold shadow-xs" disabled={updateMutation.isPending}>
-                        {updateMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> : <Play className="w-3.5 h-3.5 mr-1.5" />}
-                        Start Journey
-                      </Button>
-                    )}
-                    {isLeadTechnician && (
-                      <Button
-                        size="sm"
-                        onClick={async () => {
-                          const nowIso = new Date().toISOString();
-                          await updateMutation.mutateAsync({
-                            current_phase: 4,
-                            status: "in-progress",
-                            arrival_timestamp: ticket.arrival_timestamp || nowIso,
-                          } as any);
-                          setActivePhase(4);
-                          toast.success("Proceeding to Phase 4: Site Visit & PIR Diagnosis");
-                        }}
-                        variant={ticket.start_journey_timestamp ? "default" : "outline"}
-                        className={`text-xs font-semibold shadow-xs ${ticket.start_journey_timestamp ? "gradient-primary text-white" : "border-primary/40 text-primary hover:bg-primary/10"}`}
-                        disabled={updateMutation.isPending}
-                      >
-                        <MapPin className="w-3.5 h-3.5 mr-1.5" />
-                        Arrive on Site • Begin PIR Diagnosis
-                      </Button>
+                    {hasArrivedOnSite ? (
+                      <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-700 rounded-lg text-emerald-800 dark:text-emerald-300 text-xs font-semibold">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                        <span>Arrived on Site ({formatIndianDateTime(ticket.arrival_timestamp || new Date().toISOString())})</span>
+                        <Button
+                          size="sm"
+                          onClick={() => setActivePhase(4)}
+                          className="gradient-primary text-white text-xs h-7 px-2.5 font-semibold ml-1"
+                        >
+                          Open Phase 4 PIR →
+                        </Button>
+                      </div>
+                    ) : (
+                      <>
+                        {!ticket.start_journey_timestamp && (
+                          <Button onClick={handleStartJourney} size="sm" className="gradient-primary text-white text-xs font-semibold shadow-xs" disabled={updateMutation.isPending}>
+                            {updateMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> : <Play className="w-3.5 h-3.5 mr-1.5" />}
+                            Start Journey
+                          </Button>
+                        )}
+                        {isLeadTechnician ? (
+                          <Button
+                            size="sm"
+                            onClick={async () => {
+                              const nowIso = new Date().toISOString();
+                              const targetStatus = isReworkActive ? "reassigned" : "in-progress";
+
+                              await updateMutation.mutateAsync({
+                                current_phase: 4,
+                                status: targetStatus,
+                                arrival_timestamp: nowIso,
+                                ...(!ticket.start_journey_timestamp ? { start_journey_timestamp: nowIso } : {}),
+                              } as any);
+                              queryClient.setQueryData(['complaint', ticket.id], (old: any) => old ? { ...old, arrival_timestamp: nowIso, current_phase: 4, status: targetStatus } : old);
+                              setActivePhase(4);
+                              toast.success("Proceeding to Phase 4: Site Visit & PIR Diagnosis");
+                            }}
+                            variant={ticket.start_journey_timestamp ? "default" : "outline"}
+                            className={`text-xs font-semibold shadow-xs ${ticket.start_journey_timestamp ? "gradient-primary text-white" : "border-primary/40 text-primary hover:bg-primary/10"}`}
+                            disabled={updateMutation.isPending}
+                          >
+                            <MapPin className="w-3.5 h-3.5 mr-1.5" />
+                            Arrive on Site • Begin PIR Diagnosis
+                          </Button>
+                        ) : (
+                          <div className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 rounded-lg text-amber-800 dark:text-amber-300 text-xs font-medium">
+                            <Clock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                            <span>Awaiting Lead Arrival</span>
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
                 </div>
@@ -4191,8 +4635,247 @@ const ComplaintDetail = () => {
         </motion.div>
       )}
 
-      {/* Technician Actions for Phase 4, 5, 6 */}
-      {canTechnicianAct && currentPhase >= 4 && (
+      {/* 🔄 Dedicated Rework History & Audit Trail Table */}
+      {reworkHistory.length > 0 && (
+        <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl p-4 sm:p-5 border border-amber-200 dark:border-amber-800/60 shadow-sm space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-amber-200/60 dark:border-amber-800/40 pb-2.5">
+            <div className="flex items-center gap-2">
+              <RotateCcw className="w-5 h-5 text-amber-600 animate-spin-reverse" />
+              <div>
+                <h3 className="font-bold text-sm sm:text-base text-amber-950 dark:text-amber-200">
+                  🔄 Rework History & Audit Trail ({reworkHistory.length} Previous Round{reworkHistory.length > 1 ? "s" : ""})
+                </h3>
+                <p className="text-[11px] text-muted-foreground">
+                  Audited record of previous technician submissions, findings, evidence files, and QA feedback.
+                </p>
+              </div>
+            </div>
+            <span className="text-[11px] font-semibold text-amber-800 dark:text-amber-300 bg-amber-100 dark:bg-amber-950/60 px-2.5 py-0.5 rounded-full border border-amber-300 w-fit">
+              Audited Multi-Round Log
+            </span>
+          </div>
+
+          <div className="overflow-x-auto rounded-xl border border-border/60">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="bg-amber-500/10 border-b border-border/80 text-[11px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
+                  <th className="py-2.5 px-3">Round</th>
+                  <th className="py-2.5 px-3">Technicians</th>
+                  <th className="py-2.5 px-3">Date/Time</th>
+                  <th className="py-2.5 px-3">PIR Summary</th>
+                  <th className="py-2.5 px-3">Resolution Summary</th>
+                  <th className="py-2.5 px-3">Evidence</th>
+                  <th className="py-2.5 px-3">QA Feedback</th>
+                  <th className="py-2.5 px-3 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border/40">
+                {reworkHistory.map((roundItem: any, rIdx: number) => {
+                  const pirCount = roundItem.pir?.evidence_urls?.length || 0;
+                  const resCount = roundItem.resolution?.evidence_urls?.length || 0;
+                  const totalFiles = pirCount + resCount;
+                  const isAlt = rIdx % 2 === 1;
+
+                  const roundTechs: Array<{ id?: string; name: string; is_lead?: boolean }> =
+                    Array.isArray(roundItem.technicians) && roundItem.technicians.length > 0
+                      ? roundItem.technicians
+                      : roundItem.technician_name
+                      ? [{ name: roundItem.technician_name, is_lead: true }]
+                      : [];
+
+                  return (
+                    <tr key={rIdx} className={cn("hover:bg-amber-500/5 transition-colors", isAlt ? "bg-muted/30" : "bg-transparent")}>
+                      <td className="py-2.5 px-3 font-bold text-amber-700 dark:text-amber-400 whitespace-nowrap">
+                        Round {roundItem.round_number || roundItem.round || rIdx + 1}
+                      </td>
+                      <td className="py-2.5 px-3 font-medium text-foreground">
+                        {roundTechs.length > 0 ? (
+                          <div className="flex flex-wrap items-center gap-1.5 max-w-[260px]">
+                            {roundTechs.map((tech, tIdx) => (
+                              <span
+                                key={tIdx}
+                                className={cn(
+                                  "inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] border shadow-2xs",
+                                  tech.is_lead
+                                    ? "bg-amber-100 text-amber-900 border-amber-300 dark:bg-amber-950/70 dark:text-amber-200 dark:border-amber-700/60 font-semibold"
+                                    : "bg-muted/70 text-slate-700 dark:text-slate-300 border-border/70 font-normal"
+                                )}
+                              >
+                                {tech.is_lead && <Crown className="w-3 h-3 text-amber-600 dark:text-amber-400 shrink-0 fill-amber-500/30" />}
+                                <span className="truncate max-w-[130px]">{tech.name}</span>
+                                {tech.is_lead && <span className="text-[9px] uppercase tracking-wider font-bold text-amber-700 dark:text-amber-300">(Lead)</span>}
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground whitespace-nowrap">
+                            {roundItem.technician_name || "Technician"}
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-2.5 px-3 text-muted-foreground whitespace-nowrap">
+                        {roundItem.reassigned_at ? formatIndianDateTime(roundItem.reassigned_at) : "N/A"}
+                      </td>
+                      <td className="py-2.5 px-3 text-slate-600 dark:text-slate-300 max-w-[150px] truncate" title={roundItem.pir?.findings || ""}>
+                        {roundItem.pir?.findings ? (roundItem.pir.findings.slice(0, 50) + (roundItem.pir.findings.length > 50 ? "..." : "")) : <span className="text-slate-400 italic">None</span>}
+                      </td>
+                      <td className="py-2.5 px-3 text-slate-600 dark:text-slate-300 max-w-[150px] truncate" title={roundItem.resolution?.notes || ""}>
+                        {roundItem.resolution?.notes ? (roundItem.resolution.notes.slice(0, 50) + (roundItem.resolution.notes.length > 50 ? "..." : "")) : <span className="text-slate-400 italic">None</span>}
+                      </td>
+                      <td className="py-2.5 px-3 whitespace-nowrap">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-primary/10 text-primary border border-primary/20">
+                          {totalFiles} file{totalFiles !== 1 ? "s" : ""}
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-3 text-rose-700 dark:text-rose-400 max-w-[180px] truncate font-medium" title={roundItem.reassignment_reason || roundItem.verification?.qa_notes || ""}>
+                        {roundItem.reassignment_reason || roundItem.verification?.qa_notes || <span className="text-slate-400 italic">None</span>}
+                      </td>
+                      <td className="py-2.5 px-3 text-right whitespace-nowrap">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setViewingAuditRound(roundItem)}
+                          className="h-7 px-2.5 text-xs font-semibold hover:bg-amber-50 dark:hover:bg-amber-950/40 border-amber-300 text-amber-800 dark:text-amber-300"
+                        >
+                          View Details
+                        </Button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </motion.div>
+      )}
+
+      {/* Rework Audit Round Detail Lightbox Modal */}
+      <Dialog open={Boolean(viewingAuditRound)} onOpenChange={(open) => !open && setViewingAuditRound(null)}>
+        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <RotateCcw className="w-5 h-5 text-amber-600" />
+              Round {viewingAuditRound?.round_number || viewingAuditRound?.round || 1} Audited Submission Details
+            </DialogTitle>
+            <DialogDescription>
+              {viewingAuditRound?.technicians && viewingAuditRound.technicians.length > 0 ? (
+                <span className="inline-flex flex-wrap items-center gap-1.5 mt-1 mr-2">
+                  <span>Assigned Technicians:</span>
+                  {viewingAuditRound.technicians.map((t: any, idx: number) => (
+                    <span
+                      key={idx}
+                      className={cn(
+                        "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] border",
+                        t.is_lead
+                          ? "bg-amber-100 text-amber-900 border-amber-300 font-semibold dark:bg-amber-950 dark:text-amber-200"
+                          : "bg-muted text-slate-700 dark:text-slate-300 border-border"
+                      )}
+                    >
+                      {t.is_lead && <Crown className="w-3 h-3 text-amber-600 fill-amber-500/30" />}
+                      {t.name} {t.is_lead ? "(Lead)" : ""}
+                    </span>
+                  ))}
+                  <span className="text-muted-foreground">•</span>
+                </span>
+              ) : (
+                <>Technician: <strong>{viewingAuditRound?.technician_name || "Technician"}</strong> • </>
+              )}
+              {" "}Recorded on {viewingAuditRound?.reassigned_at ? formatIndianDateTime(viewingAuditRound.reassigned_at) : ""}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 pt-2 text-xs">
+            {/* QA Feedback */}
+            {viewingAuditRound?.reassignment_reason && (
+              <div className="p-3.5 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800">
+                <p className="font-bold text-rose-900 dark:text-rose-200 uppercase tracking-wider text-[10px] mb-1">
+                  ⚠️ Supervisor / QA Rejection Reason & Instructions
+                </p>
+                <p className="text-slate-800 dark:text-slate-200 whitespace-pre-wrap">{viewingAuditRound.reassignment_reason}</p>
+              </div>
+            )}
+
+            {/* Diagnostic / PIR Section */}
+            <div className="border border-border/80 rounded-xl p-4 space-y-2.5 bg-muted/20">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-slate-800 dark:text-slate-200 text-xs flex items-center gap-1.5">
+                  <FileText className="w-4 h-4 text-primary" /> Phase 4 Diagnostic / PIR Report
+                </span>
+                {viewingAuditRound?.pir?.severity && (
+                  <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-muted text-muted-foreground border">
+                    Severity: {viewingAuditRound.pir.severity}
+                  </span>
+                )}
+              </div>
+              <p className="text-slate-700 dark:text-slate-300 whitespace-pre-wrap bg-white/70 dark:bg-slate-900/60 p-2.5 rounded-lg border border-border/60">
+                {viewingAuditRound?.pir?.findings || "No PIR diagnostic text recorded."}
+              </p>
+              {viewingAuditRound?.pir?.audio_url && (
+                <div className="text-xs text-muted-foreground bg-card p-2 rounded-lg border flex items-center justify-between">
+                  <span>🎵 PIR Audio Note</span>
+                  <a href={viewingAuditRound.pir.audio_url} target="_blank" rel="noreferrer" className="text-primary hover:underline font-medium">Listen</a>
+                </div>
+              )}
+              {viewingAuditRound?.pir?.evidence_urls && viewingAuditRound.pir.evidence_urls.length > 0 && (
+                <div>
+                  <p className="font-semibold text-muted-foreground text-[11px] mb-1.5">
+                    PIR Diagnostic Attachments ({viewingAuditRound.pir.evidence_urls.length} file(s)):
+                  </p>
+                  <div className="flex flex-wrap gap-2.5">
+                    {viewingAuditRound.pir.evidence_urls.map((url: string, idx: number) => (
+                      <div key={idx} className="relative group">
+                        <SmartFilePreview url={url} idx={idx} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Resolution Section */}
+            <div className="border border-border/80 rounded-xl p-4 space-y-2.5 bg-muted/20">
+              <span className="font-bold text-slate-800 dark:text-slate-200 text-xs flex items-center gap-1.5">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600" /> Phase 5 Resolution & Work Done
+              </span>
+              <p className="text-slate-700 dark:text-slate-300 whitespace-pre-wrap bg-white/70 dark:bg-slate-900/60 p-2.5 rounded-lg border border-border/60">
+                {viewingAuditRound?.resolution?.notes || "No resolution notes recorded."}
+              </p>
+              {viewingAuditRound?.resolution?.evidence_urls && viewingAuditRound.resolution.evidence_urls.length > 0 && (
+                <div>
+                  <p className="font-semibold text-muted-foreground text-[11px] mb-1.5">
+                    Work Proof Attachments ({viewingAuditRound.resolution.evidence_urls.length} file(s)):
+                  </p>
+                  <div className="flex flex-wrap gap-2.5">
+                    {viewingAuditRound.resolution.evidence_urls.map((url: string, idx: number) => (
+                      <div key={idx} className="relative group">
+                        <SmartFilePreview url={url} idx={idx} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {viewingAuditRound?.resolution?.signature_url && (
+                <div className="p-3 bg-white/70 dark:bg-slate-900/60 rounded-lg border border-border/60">
+                  <p className="font-semibold text-muted-foreground text-[11px] mb-1">Customer Sign-Off Signature:</p>
+                  <img src={resolveSupabaseUrl(viewingAuditRound.resolution.signature_url)} alt="Customer Signature" className="max-h-20 object-contain rounded border bg-white p-1" />
+                  {viewingAuditRound.resolution.signoff_timestamp && (
+                    <p className="text-[10px] text-muted-foreground mt-1">Signed at: {formatIndianDateTime(viewingAuditRound.resolution.signoff_timestamp)}</p>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setViewingAuditRound(null)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Technician Actions for Phase 4 & 5: Site Visit, PIR & Resolution */}
+      {canTechnicianAct && (currentPhase === 4 || currentPhase === 5) && (
         <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-xl p-5 border-l-4 border-l-primary">
 
           {/* Phase 4: Site Visit & PIR Diagnosis */}
@@ -4217,175 +4900,265 @@ const ComplaintDetail = () => {
                 {isLeadTechnician ? (
                   /* Lead Technician: PIR Diagnostic Input Form */
                   <div className="space-y-4">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Button
-                        type="button"
-                        onClick={handleArrivedGPS}
-                        disabled={Boolean(isCapturingArrivalGps || ticket.arrival_timestamp)}
-                        className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold shadow-xs disabled:opacity-50"
-                      >
-                        {isCapturingArrivalGps ? (
-                          <><Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> Capturing GPS...</>
-                        ) : (
-                          <><MapPin className="w-3.5 h-3.5 mr-1.5" /> {ticket.arrival_timestamp ? 'Arrived (GPS) ✓' : 'I Arrived (GPS)'}</>
-                        )}
-                      </Button>
-                      {arrivalCoords && (
-                        <span className="text-[10px] text-muted-foreground font-mono">
-                          {arrivalCoords.lat.toFixed(5)}, {arrivalCoords.lng.toFixed(5)}
+                    {/* Original Complaint Proofs Notice */}
+                    {ticket.complaint_images && ticket.complaint_images.length > 0 && (
+                      <div className="p-3 rounded-lg bg-blue-50/70 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 text-xs space-y-1.5">
+                        <span className="font-semibold text-blue-900 dark:text-blue-300 flex items-center gap-1.5">
+                          📷 Initial Complaint Proofs (Phase 1 • Permanent Record)
                         </span>
-                      )}
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-sm font-semibold text-foreground flex items-center gap-1.5">
-                        <FileText className="w-4 h-4 text-primary" /> PIR Findings & Site Diagnostic *
-                      </label>
-                      <Textarea
-                        value={pirFindings}
-                        onChange={e => setPirFindings(e.target.value)}
-                        placeholder="Describe field findings, root cause, parts observed, voltage/pressure readings..."
-                        rows={4}
-                        className="bg-white dark:bg-slate-900"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div>
-                        <label className="text-xs font-semibold text-foreground block mb-1">Technician Observed Severity</label>
-                        <Select value={pirSeverityInput} onValueChange={setPirSeverityInput}>
-                          <SelectTrigger className="bg-white dark:bg-slate-900"><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="low">Low - Minor Issue</SelectItem>
-                            <SelectItem value="medium">Medium - Normal Attention</SelectItem>
-                            <SelectItem value="high">High - Serious Issue</SelectItem>
-                            <SelectItem value="critical">Critical - Urgent Fix Needed</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div>
-                        <label className="text-xs font-semibold text-foreground block mb-1">Arrival Status</label>
-                        <div className="p-2 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 rounded-md text-xs font-medium text-emerald-800 dark:text-emerald-300 flex items-center gap-1.5 h-10">
-                          <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                          <span>Arrived on site {ticket.arrival_timestamp ? `at ${formatIndianDateTime(ticket.arrival_timestamp)}` : "just now"}</span>
-                        </div>
-                      </div>
-                    </div>
-
-                     {/* Original Complaint Proofs Notice */}
-                     {ticket.complaint_images && ticket.complaint_images.length > 0 && (
-                       <div className="p-3 rounded-lg bg-blue-50/70 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 text-xs space-y-1.5">
-                         <span className="font-semibold text-blue-900 dark:text-blue-300 flex items-center gap-1.5">
-                           📷 Initial Complaint Proofs (Phase 1 • Permanent Record)
-                         </span>
-                         <div className="flex flex-wrap gap-2.5 pt-1">
-                           {ticket.complaint_images.map((url: string, idx: number) => (
-                             <div key={idx} className="relative group">
-                               <SmartFilePreview url={url} idx={idx} />
-                             </div>
-                           ))}
-                         </div>
-                       </div>
-                     )}
-
-                    {/* Evidence Upload */}
-                    <div className="space-y-1">
-                      <label className="text-sm font-semibold text-foreground flex items-center gap-1.5">
-                        <Upload className="w-4 h-4 text-primary" /> Upload Diagnostic Evidence (Photos, Videos, PDFs, Audio & Documents) (Optional)
-                      </label>
-                      <input
-                        type="file"
-                        multiple
-                        accept="image/*,video/*,audio/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt,.csv,.ppt,.pptx,.mp3,.wav,.m4a,.ogg,.aac"
-                        onChange={async (e) => {
-                          const files = Array.from(e.target.files || []);
-                          if (files.length === 0) return;
-                          setIsUploading(true);
-                          try {
-                            const uploadPromises = files.map(async (file) => {
-                              try {
-                                if (file.type.startsWith('audio/')) {
-                                  const url = await uploadToSupabase(file, 'pir-audio');
-                                  setPirAudioUrl(url);
-                                  toast.success(`Audio note "${file.name}" uploaded`);
-                                  return null;
-                                } else {
-                                  const url = await uploadToSupabase(file, 'evidence');
-                                  return url;
-                                }
-                              } catch (err) {
-                                console.error("Upload error:", file.name, err);
-                                toast.error(`Failed to upload ${file.name}`);
-                                return null;
-                              }
-                            });
-                            const results = await Promise.all(uploadPromises);
-                            const successfulUrls = results.filter((u): u is string => !!u);
-                            if (successfulUrls.length > 0) {
-                              setPirEvidenceUrls(prev => [...prev, ...successfulUrls]);
-                              setEvidenceUrls(prev => [...prev, ...successfulUrls]);
-                              toast.success(`${successfulUrls.length} file(s) uploaded!`);
-                            }
-                          } finally {
-                            setIsUploading(false);
-                            setUploadProgressText("");
-                            e.target.value = '';
-                          }
-                        }}
-                        className="text-sm file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary/10 file:text-primary hover:file:bg-primary/20 cursor-pointer w-full"
-                        disabled={isUploading}
-                      />
-                    </div>
-
-                    {isUploading && (
-                      <div className="flex items-center gap-2 text-xs font-semibold text-primary bg-primary/10 p-2.5 rounded-xl border border-primary/20 animate-pulse">
-                        <Loader2 className="w-4 h-4 animate-spin text-primary shrink-0" />
-                        <span>{uploadProgressText || "Optimizing and uploading files... Please wait."}</span>
-                      </div>
-                    )}
-
-                    {pirAudioUrl && (
-                      <div className="text-xs text-muted-foreground bg-card p-2 rounded-lg border flex items-center justify-between">
-                        <span>🎵 PIR Audio Note Attached</span>
-                        <a href={pirAudioUrl} target="_blank" rel="noreferrer" className="text-primary hover:underline font-medium">Listen</a>
-                      </div>
-                    )}
-
-                    {pirEvidenceUrls.length > 0 && (
-                      <div>
-                        <p className="text-xs font-medium mb-1.5">Uploaded PIR Diagnostic Attachments ({pirEvidenceUrls.length} file(s)):</p>
-                        <div className="flex flex-wrap gap-2.5">
-                          {pirEvidenceUrls.map((url, i) => (
-                            <div key={i} className="relative group">
-                              <SmartFilePreview url={url} idx={i} onRemove={() => {
-                                setPirEvidenceUrls(prev => prev.filter((_, idx) => idx !== i));
-                                setEvidenceUrls(prev => prev.filter(u => u !== url));
-                              }} />
+                        <div className="flex flex-wrap gap-2.5 pt-1">
+                          {ticket.complaint_images.map((url: string, idx: number) => (
+                            <div key={idx} className="relative group">
+                              <SmartFilePreview url={url} idx={idx} />
                             </div>
                           ))}
                         </div>
                       </div>
                     )}
 
-                    {/* Action Button */}
-                    <div className="flex justify-end pt-3 border-t px-4 py-3">
-                      <Button
-                        size="default"
-                        onClick={handleSubmitPIR}
-                        disabled={isSubmittingPIR || updateMutation.isPending || isUploading}
-                        className="w-full sm:w-auto gradient-primary text-white font-semibold shadow-sm text-sm sm:text-base whitespace-normal break-words text-center"
-                      >
-                        {isSubmittingPIR || updateMutation.isPending || isUploading ? (
-                          <>
-                            <Loader2 className="w-4 h-4 animate-spin mr-2" />
-                            Saving PIR...
-                          </>
-                        ) : (
-                          <>
-                            <CheckCircle2 className="w-4 h-4 mr-2" />
-                            Save PIR & Proceed to Resolution Notes (Phase 5)
-                          </>
+                    {/* 📦 TOP BLOCK: Previous Round PIR Findings & Evidence (Preserved & Read-Only for Rework) */}
+                    {(reworkHistory.length > 0 || (latestReworkRound?.pir && (latestReworkRound.pir.findings || (latestReworkRound.pir.evidence_urls && latestReworkRound.pir.evidence_urls.length > 0) || latestReworkRound.pir.audio_url))) && (
+                      <div className="p-4 rounded-xl bg-amber-500/10 border-2 border-amber-300 dark:border-amber-700/60 text-xs space-y-3">
+                        <div className="flex items-center justify-between border-b border-amber-200 dark:border-amber-800/80 pb-2">
+                          <span className="font-bold text-amber-950 dark:text-amber-200 text-xs sm:text-sm flex items-center gap-2">
+                            📦 PIR History (Round {latestReworkRound?.round || 1} • Read-Only Reference)
+                          </span>
+                          <span className="text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-amber-200 dark:bg-amber-900/60 text-amber-900 dark:text-amber-300 flex items-center gap-1">
+                            🔒 Protected Historical Audit
+                          </span>
+                        </div>
+                        {latestReworkRound?.pir?.findings && (
+                          <div className="p-3 bg-white/90 dark:bg-slate-900/80 rounded-lg border border-amber-200/70">
+                            <p className="text-[10px] font-bold text-amber-800 dark:text-amber-400 uppercase tracking-wider mb-1">Previous Diagnostic Findings</p>
+                            <p className="text-xs text-slate-800 dark:text-slate-200 whitespace-pre-wrap">{latestReworkRound.pir.findings}</p>
+                          </div>
                         )}
-                      </Button>
+                        {latestReworkRound?.pir?.severity && (
+                          <div className="text-xs text-muted-foreground flex items-center gap-1.5">
+                            <span className="font-semibold text-foreground">Observed Severity:</span>
+                            <span className="capitalize font-medium text-amber-800 dark:text-amber-400">{latestReworkRound.pir.severity}</span>
+                          </div>
+                        )}
+                        {latestReworkRound?.pir?.evidence_urls && latestReworkRound.pir.evidence_urls.length > 0 && (
+                          <div className="space-y-1.5">
+                            <p className="text-[10px] font-bold text-amber-800 dark:text-amber-400 uppercase tracking-wider mb-1.5">
+                              Previous Diagnostic Evidence ({latestReworkRound.pir.evidence_urls.length} file(s) • Read-Only)
+                            </p>
+                            <div className="flex flex-wrap gap-2.5">
+                              {latestReworkRound.pir.evidence_urls.map((url: string, idx: number) => (
+                                <div key={idx} className="relative group">
+                                  {/* Note: NO onRemove handler so technician cannot delete previous evidence! */}
+                                  <SmartFilePreview url={url} idx={idx} />
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {latestReworkRound?.pir?.audio_url && (
+                          <div className="text-xs text-muted-foreground bg-white/80 dark:bg-slate-900/80 p-2 rounded-lg border border-amber-200/60 flex items-center justify-between">
+                            <span>🎵 Previous PIR Audio Note Attached</span>
+                            <a href={latestReworkRound.pir.audio_url} target="_blank" rel="noreferrer" className="text-primary hover:underline font-semibold text-xs">Listen</a>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* 📝 BOTTOM BLOCK: Current PIR Diagnosis (Round X) */}
+                    <div className="p-4 sm:p-5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
+                      <div className="flex items-center justify-between border-b pb-2.5">
+                        <span className="font-bold text-foreground text-xs sm:text-sm flex items-center gap-2">
+                          <FileText className="w-4 h-4 text-primary" />
+                          📝 Current PIR Diagnosis {reworkHistory.length > 0 ? `(Round ${reworkHistory.length + 1} - Active)` : ""}
+                        </span>
+                        <span className="text-[10px] font-semibold text-primary bg-primary/10 border border-primary/20 px-2.5 py-0.5 rounded-full">
+                          Fresh Inspection
+                        </span>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        {hasArrivedOnSite ? (
+                          <div className="flex items-center gap-2 px-3.5 py-2 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-700 rounded-xl text-emerald-800 dark:text-emerald-300 text-xs font-semibold shadow-2xs">
+                            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                            <span>✅ Arrived on Site at {formatIndianDateTime(ticket.arrival_timestamp || new Date().toISOString())}</span>
+                            {(ticket.arrival_lat || arrivalCoords?.lat) && (ticket.arrival_lng || arrivalCoords?.lng) ? (
+                              <span className="font-mono text-[10px] text-emerald-700 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-900/60 px-2 py-0.5 rounded border border-emerald-300/60">
+                                (GPS: {(ticket.arrival_lat || arrivalCoords?.lat)?.toFixed(5)}, {(ticket.arrival_lng || arrivalCoords?.lng)?.toFixed(5)})
+                              </span>
+                            ) : (
+                              <span className="text-[10px] text-emerald-700/80 dark:text-emerald-400/80 italic">
+                                (Manual Arrival Logged)
+                              </span>
+                            )}
+                          </div>
+                        ) : isLeadTechnician ? (
+                          <Button
+                            type="button"
+                            onClick={handleArrivedGPS}
+                            disabled={isCapturingArrivalGps}
+                            className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold shadow-xs h-9 px-4"
+                          >
+                            {isCapturingArrivalGps ? (
+                              <><Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> Capturing GPS...</>
+                            ) : (
+                              <><MapPin className="w-3.5 h-3.5 mr-1.5" /> I Have Arrived (GPS)</>
+                            )}
+                          </Button>
+                        ) : (
+                          <div className="flex items-center gap-2 px-3 py-1.5 bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 rounded-lg text-amber-800 dark:text-amber-300 text-xs font-medium">
+                            <Clock className="w-4 h-4 text-amber-600 shrink-0" />
+                            <span>⏳ Awaiting Arrival (Lead Technician: <strong>{leadTechnicianName}</strong>)</span>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-sm font-semibold text-foreground flex items-center gap-1.5">
+                          <FileText className="w-4 h-4 text-primary" /> PIR Findings & Site Diagnostic *
+                        </label>
+                        <Textarea
+                          value={pirFindings}
+                          onChange={e => setPirFindings(e.target.value)}
+                          placeholder="Describe field findings, root cause, parts observed, voltage/pressure readings..."
+                          rows={4}
+                          className="bg-slate-50/50 dark:bg-slate-950/50"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="text-xs font-semibold text-foreground block mb-1">Technician Observed Severity</label>
+                          <Select value={pirSeverityInput} onValueChange={setPirSeverityInput}>
+                            <SelectTrigger className="bg-slate-50/50 dark:bg-slate-950/50"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="low">Low - Minor Issue</SelectItem>
+                              <SelectItem value="medium">Medium - Normal Attention</SelectItem>
+                              <SelectItem value="high">High - Serious Issue</SelectItem>
+                              <SelectItem value="critical">Critical - Urgent Fix Needed</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div>
+                          <label className="text-xs font-semibold text-foreground block mb-1">Arrival Status</label>
+                          <div className={cn(
+                            "p-2 rounded-md text-xs font-medium flex items-center gap-1.5 h-10 border",
+                            hasArrivedOnSite 
+                              ? "bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300"
+                              : "bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300"
+                          )}>
+                            {hasArrivedOnSite ? (
+                              <>
+                                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                                <span>Arrived on site {ticket.arrival_timestamp ? `at ${formatIndianDateTime(ticket.arrival_timestamp)}` : ""}</span>
+                              </>
+                            ) : (
+                              <>
+                                <Clock className="w-4 h-4 text-amber-600 shrink-0" />
+                                <span>Awaiting arrival confirmation</span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Evidence Upload */}
+                      <div className="space-y-1 pt-1">
+                        <label className="text-sm font-semibold text-foreground flex items-center gap-1.5">
+                          <Upload className="w-4 h-4 text-primary" /> Upload Diagnostic Evidence (Photos, Videos, PDFs, Audio & Documents) (Optional)
+                        </label>
+                        <input
+                          type="file"
+                          multiple
+                          accept="image/*,video/*,audio/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt,.csv,.ppt,.pptx,.mp3,.wav,.m4a,.ogg,.aac"
+                          onChange={async (e) => {
+                            const files = Array.from(e.target.files || []);
+                            if (files.length === 0) return;
+                            setIsUploading(true);
+                            try {
+                              const successfulUrls: string[] = [];
+                              for (const file of files) {
+                                try {
+                                  if (file.type.startsWith('audio/')) {
+                                    const url = await uploadToSupabase(file, 'pir-audio');
+                                    setPirAudioUrl(url);
+                                    toast.success(`Audio note "${file.name}" uploaded`);
+                                  } else {
+                                    const url = await uploadToSupabase(file, 'evidence');
+                                    successfulUrls.push(url);
+                                  }
+                                } catch (err) {
+                                  console.error("Upload error:", file.name, err);
+                                }
+                              }
+                              if (successfulUrls.length > 0) {
+                                setPirEvidenceUrls(prev => [...prev, ...successfulUrls]);
+                                setEvidenceUrls(prev => [...prev, ...successfulUrls]);
+                                toast.success(`${successfulUrls.length} file(s) uploaded!`);
+                              }
+                            } finally {
+                              setIsUploading(false);
+                              setUploadProgressText("");
+                              e.target.value = '';
+                            }
+                          }}
+                          className="text-sm file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary/10 file:text-primary hover:file:bg-primary/20 cursor-pointer w-full"
+                          disabled={isUploading}
+                        />
+                      </div>
+
+                      {uploadProgress && (
+                        <UploadProgressBar progress={uploadProgress} className="mt-2" />
+                      )}
+                      {!uploadProgress && isUploading && (
+                        <div className="flex items-center gap-2 text-xs font-semibold text-primary bg-primary/10 p-2.5 rounded-xl border border-primary/20 animate-pulse">
+                          <Loader2 className="w-4 h-4 animate-spin text-primary shrink-0" />
+                          <span>{uploadProgressText || "Optimizing and uploading files... Please wait."}</span>
+                        </div>
+                      )}
+
+                      {pirAudioUrl && (
+                        <div className="text-xs text-muted-foreground bg-card p-2 rounded-lg border flex items-center justify-between">
+                          <span>🎵 PIR Audio Note Attached</span>
+                          <a href={pirAudioUrl} target="_blank" rel="noreferrer" className="text-primary hover:underline font-medium">Listen</a>
+                        </div>
+                      )}
+
+                      {pirEvidenceUrls.length > 0 && (
+                        <div>
+                          <p className="text-xs font-medium mb-1.5">Uploaded PIR Diagnostic Attachments ({pirEvidenceUrls.length} file(s)):</p>
+                          <div className="flex flex-wrap gap-2.5">
+                            {pirEvidenceUrls.map((url, i) => (
+                              <div key={i} className="relative group">
+                                <SmartFilePreview url={url} idx={i} onRemove={() => {
+                                  setPirEvidenceUrls(prev => prev.filter((_, idx) => idx !== i));
+                                  setEvidenceUrls(prev => prev.filter(u => u !== url));
+                                }} />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Action Button */}
+                      <div className="flex justify-end pt-3 border-t">
+                        <Button
+                          size="default"
+                          onClick={handleSubmitPIR}
+                          disabled={isSubmittingPIR || updateMutation.isPending || isUploading}
+                          className="w-full sm:w-auto gradient-primary text-white font-semibold shadow-sm text-sm sm:text-base whitespace-normal break-words text-center"
+                        >
+                          {isSubmittingPIR || updateMutation.isPending || isUploading ? (
+                            <>
+                              <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                              Saving PIR...
+                            </>
+                          ) : (
+                            <>
+                              <CheckCircle2 className="w-4 h-4 mr-2" />
+                              Save PIR & Proceed to Resolution Notes (Phase 5)
+                            </>
+                          )}
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 ) : isAssistingTechnician ? (
@@ -4511,43 +5284,7 @@ const ComplaintDetail = () => {
                 </div>
               )}
               
-              {/* Reassignment Notice - Show previous data for reference */}
-              {isReassigned && (
-                <div className="p-4 rounded-xl bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 text-xs space-y-3">
-                  <p className="font-bold text-amber-800 dark:text-amber-300 flex items-center gap-1.5">
-                    <RotateCcw className="w-4 h-4 text-amber-600 dark:text-amber-400" />
-                    Reassigned Ticket - Previous Work Reference
-                  </p>
-                  <p className="text-amber-900 dark:text-amber-100">
-                    This ticket was reassigned on <strong>{new Date(ticket.reassigned_at).toLocaleString()}</strong>. 
-                    The previous technician's work is shown below for reference. Please review before proceeding.
-                  </p>
-                  
-                  {(ticket.pir_findings || ticket.resolution || ticket.resolution_notes) && (
-                    <div className="space-y-2">
-                      {ticket.pir_findings && (
-                        <div className="bg-white/50 dark:bg-slate-900/50 p-3 rounded-lg border border-amber-200 dark:border-amber-700">
-                          <p className="text-[10px] font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wider mb-1">Previous PIR Findings</p>
-                          <p className="text-xs text-slate-700 dark:text-slate-300 whitespace-pre-wrap">{ticket.pir_findings}</p>
-                        </div>
-                      )}
-                      {(ticket.resolution || ticket.resolution_notes) && (
-                        <div className="bg-white/50 dark:bg-slate-900/50 p-3 rounded-lg border border-amber-200 dark:border-amber-700">
-                          <p className="text-[10px] font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wider mb-1">Previous Resolution Notes</p>
-                          <p className="text-xs text-slate-700 dark:text-slate-300 whitespace-pre-wrap">{ticket.resolution || ticket.resolution_notes}</p>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  
-                  {ticket.reassignment_reason && (
-                    <div className="bg-white/50 dark:bg-slate-900/50 p-3 rounded-lg border border-amber-200 dark:border-amber-700">
-                      <p className="text-[10px] font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wider mb-1">Reassignment Reason</p>
-                      <p className="text-xs text-slate-700 dark:text-slate-300 whitespace-pre-wrap">{ticket.reassignment_reason}</p>
-                    </div>
-                  )}
-                </div>
-              )}
+
               
               {/* PIR Summary Card */}
               {ticket.pir_findings && !isReassigned && (
@@ -4652,226 +5389,273 @@ const ComplaintDetail = () => {
                       </Button>
                     </div>
 
-                    {/* Previous Resolution Notes Reference Box */}
-                    {(ticket.resolution || ticket.resolution_notes) && 
-                      !(ticket.resolution_type === 'telephonic_triage' || ticket.resolved_remotely || ticket.triage_outcome === 'field_required') && (
-                      <div className="p-3 rounded-xl bg-blue-50/70 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 text-xs space-y-1">
-                        <p className="font-semibold text-blue-800 dark:text-blue-300 flex items-center gap-1.5">
-                          <FileText className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-                          Previous Resolution Notes (For Reference):
-                        </p>
-                        <p className="text-slate-700 dark:text-slate-300 whitespace-pre-wrap">{ticket.resolution || ticket.resolution_notes}</p>
+                    {/* 📦 TOP BLOCK: Previous Round Resolution & Sign-Off History (Preserved & Read-Only for Rework) */}
+                    {(reworkHistory.length > 0 || (latestReworkRound?.resolution && (latestReworkRound.resolution.notes || (latestReworkRound.resolution.evidence_urls && latestReworkRound.resolution.evidence_urls.length > 0) || latestReworkRound.resolution.signature_url))) && (
+                      <div className="p-4 rounded-xl bg-amber-500/10 border-2 border-amber-300 dark:border-amber-700/60 text-xs space-y-3">
+                        <div className="flex items-center justify-between border-b border-amber-200 dark:border-amber-800/80 pb-2">
+                          <span className="font-bold text-amber-950 dark:text-amber-200 text-xs sm:text-sm flex items-center gap-2">
+                            📦 Resolution History (Round {latestReworkRound?.round || 1} • Read-Only Reference)
+                          </span>
+                          <span className="text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-amber-200 dark:bg-amber-900/60 text-amber-900 dark:text-amber-300 flex items-center gap-1">
+                            🔒 Protected Historical Audit
+                          </span>
+                        </div>
+                        {latestReworkRound?.resolution?.notes && (
+                          <div className="p-3 bg-white/90 dark:bg-slate-900/80 rounded-lg border border-amber-200/70">
+                            <p className="text-[10px] font-bold text-amber-800 dark:text-amber-400 uppercase tracking-wider mb-1">Previous Resolution Notes</p>
+                            <p className="text-xs text-slate-800 dark:text-slate-200 whitespace-pre-wrap">{latestReworkRound.resolution.notes}</p>
+                          </div>
+                        )}
+                        {latestReworkRound?.resolution?.evidence_urls && latestReworkRound.resolution.evidence_urls.length > 0 && (
+                          <div className="space-y-1.5">
+                            <p className="text-[10px] font-bold text-amber-800 dark:text-amber-400 uppercase tracking-wider mb-1.5">
+                              Previous Work Completion Attachments ({latestReworkRound.resolution.evidence_urls.length} file(s) • Read-Only)
+                            </p>
+                            <div className="flex flex-wrap gap-2.5">
+                              {latestReworkRound.resolution.evidence_urls.map((url: string, idx: number) => (
+                                <div key={idx} className="relative group">
+                                  {/* Note: NO onRemove handler so technician cannot delete previous evidence! */}
+                                  <SmartFilePreview url={url} idx={idx} />
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {latestReworkRound?.resolution?.signature_url && (
+                          <div className="p-3 bg-white/90 dark:bg-slate-900/80 rounded-lg border border-amber-200/70">
+                            <p className="text-[10px] font-bold text-amber-800 dark:text-amber-400 uppercase tracking-wider mb-1">Previous Customer Signature</p>
+                            <img src={resolveSupabaseUrl(latestReworkRound.resolution.signature_url)} alt="Previous Signature" className="max-h-16 max-w-full object-contain rounded bg-white p-1 border border-border" />
+                            {latestReworkRound.resolution.signoff_timestamp && (
+                              <p className="text-[10px] text-muted-foreground mt-1">Signed: {formatIndianDateTime(latestReworkRound.resolution.signoff_timestamp)}</p>
+                            )}
+                          </div>
+                        )}
                       </div>
                     )}
 
-                    {/* 1. Final Resolution Notes */}
-                    <div className="space-y-1.5">
-                      <label className="text-sm font-semibold text-foreground flex items-center gap-1.5">
-                        <FileText className="w-4 h-4 text-primary" /> Final Resolution & Work Done Notes *
-                      </label>
-                      <Textarea
-                        placeholder="Describe work completed in detail: parts repaired/replaced, diagnostic checks executed, calibration, tests verified with customer..."
-                        value={resolutionNote}
-                        onChange={(e) => setResolutionNote(e.target.value)}
-                        rows={4}
-                        className="bg-white dark:bg-slate-900 border-border focus:border-primary text-sm"
-                      />
-                    </div>
-
-                    {/* 2. Upload Proof / Work Evidence (Images & Videos) */}
-                    <div className="space-y-2">
-                      <label className="text-sm font-semibold text-foreground flex items-center gap-1.5">
-                        <Camera className="w-4 h-4 text-primary" /> Attach Work Completion Proof (Photos, Videos, PDFs, Audio & Documents)
-                      </label>
-                      <div className="border-2 border-dashed border-primary/30 hover:border-primary/60 rounded-xl p-4 bg-white/70 dark:bg-slate-900/70 transition-colors text-center">
-                        <input
-                          id="resolution-evidence-input"
-                          type="file"
-                          multiple
-                          accept="image/*,video/*,audio/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt,.csv,.ppt,.pptx,.mp3,.wav,.m4a,.ogg,.aac"
-                          onChange={async (e) => {
-                            const files = Array.from(e.target.files || []);
-                            if (files.length === 0) return;
-                            setIsUploading(true);
-                            try {
-                              const uploadPromises = files.map(async (file) => {
-                                try {
-                                  return await uploadToSupabase(file, 'evidence');
-                                } catch (err) {
-                                  toast.error(`Failed to upload ${file.name}`);
-                                  return null;
-                                }
-                              });
-                              const results = await Promise.all(uploadPromises);
-                              const successfulUrls = results.filter((u): u is string => !!u);
-                              if (successfulUrls.length > 0) {
-                                setResolutionEvidenceUrls((prev) => [...prev, ...successfulUrls]);
-                                setEvidenceUrls((prev) => [...prev, ...successfulUrls]);
-                                toast.success(`${successfulUrls.length} work completion file(s) optimized & uploaded!`);
-                              }
-                            } finally {
-                              setIsUploading(false);
-                              setUploadProgressText("");
-                              e.target.value = '';
-                            }
-                          }}
-                          className="hidden"
-                          disabled={isUploading}
-                        />
-                        <label
-                          htmlFor="resolution-evidence-input"
-                          className="inline-flex items-center gap-2 px-4 py-2 bg-primary/10 text-primary font-semibold rounded-lg cursor-pointer hover:bg-primary/20 transition-colors text-xs sm:text-sm"
-                        >
-                          <Upload className="w-4 h-4" /> {isUploading ? (uploadProgressText || "Optimizing & Uploading...") : "Choose Work Completion Files"}
-                        </label>
-                        {isUploading && (
-                          <div className="flex items-center justify-center gap-2 text-xs font-semibold text-primary mt-2 animate-pulse">
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            <span>{uploadProgressText || "Compressing and uploading media..."}</span>
-                          </div>
-                        )}
-                        <p className="text-xs text-muted-foreground mt-2">
-                          Supported: JPG, PNG, WEBP, MP4, MOV, PDF, DOC, XLS, Audio. Upload after-fix photos and documents of repaired equipment.
-                        </p>
+                    {/* 📝 BOTTOM BLOCK: Current Resolution & Customer Sign-Off (Round X) */}
+                    <div className="p-4 sm:p-5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
+                      <div className="flex items-center justify-between border-b pb-2.5">
+                        <span className="font-bold text-foreground text-xs sm:text-sm flex items-center gap-2">
+                          <Wrench className="w-4 h-4 text-success" />
+                          📝 Current Resolution & Sign-Off {reworkHistory.length > 0 ? `(Round ${reworkHistory.length + 1} - Active)` : ""}
+                        </span>
+                        <span className="text-[10px] font-semibold text-success bg-success/10 border border-success/20 px-2.5 py-0.5 rounded-full">
+                          Fresh Submission
+                        </span>
                       </div>
 
-                       {/* Evidence Thumbnails Grid */}
-                       {resolutionEvidenceUrls.length > 0 && (
-                         <div className="space-y-1.5 mt-3">
-                           <p className="text-xs font-semibold text-muted-foreground">Work Completion Attachments ({resolutionEvidenceUrls.length}):</p>
-                           <div className="flex flex-wrap gap-2.5">
-                             {resolutionEvidenceUrls.map((url, i) => (
-                               <div key={i} className="relative group">
+                      {/* 1. Final Resolution Notes */}
+                      <div className="space-y-1.5">
+                        <label className="text-sm font-semibold text-foreground flex items-center gap-1.5">
+                          <FileText className="w-4 h-4 text-primary" /> Final Resolution & Work Done Notes *
+                        </label>
+                        <Textarea
+                          placeholder="Describe work completed in detail: parts repaired/replaced, diagnostic checks executed, calibration, tests verified with customer..."
+                          value={resolutionNote}
+                          onChange={(e) => setResolutionNote(e.target.value)}
+                          rows={4}
+                          className="bg-slate-50/50 dark:bg-slate-950/50 border-border focus:border-primary text-sm"
+                        />
+                      </div>
+
+                      {/* 2. Upload Proof / Work Evidence (Images & Videos) */}
+                      <div className="space-y-2">
+                        <label className="text-sm font-semibold text-foreground flex items-center gap-1.5">
+                          <Camera className="w-4 h-4 text-primary" /> Attach Work Completion Proof (Photos, Videos, PDFs, Audio & Documents)
+                        </label>
+                        <div className="border-2 border-dashed border-primary/30 hover:border-primary/60 rounded-xl p-4 bg-slate-50/40 dark:bg-slate-950/40 transition-colors text-center">
+                          <input
+                            id="resolution-evidence-input"
+                            type="file"
+                            multiple
+                            accept="image/*,video/*,audio/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt,.csv,.ppt,.pptx,.mp3,.wav,.m4a,.ogg,.aac"
+                            onChange={async (e) => {
+                              const files = Array.from(e.target.files || []);
+                              if (files.length === 0) return;
+                              setIsUploading(true);
+                              try {
+                                const successfulUrls: string[] = [];
+                                for (const file of files) {
+                                  try {
+                                    const url = await uploadToSupabase(file, 'evidence');
+                                    successfulUrls.push(url);
+                                  } catch (err: any) {
+                                    console.error("Upload error:", file.name, err);
+                                  }
+                                }
+                                if (successfulUrls.length > 0) {
+                                  setResolutionEvidenceUrls((prev) => [...prev, ...successfulUrls]);
+                                  setEvidenceUrls((prev) => [...prev, ...successfulUrls]);
+                                  toast.success(`${successfulUrls.length} work completion file(s) optimized & uploaded!`);
+                                }
+                              } finally {
+                                setIsUploading(false);
+                                setUploadProgressText("");
+                                e.target.value = '';
+                              }
+                            }}
+                            className="hidden"
+                            disabled={isUploading}
+                          />
+                          <label
+                            htmlFor="resolution-evidence-input"
+                            className="inline-flex items-center gap-2 px-4 py-2 bg-primary/10 text-primary font-semibold rounded-lg cursor-pointer hover:bg-primary/20 transition-colors text-xs sm:text-sm"
+                          >
+                            <Upload className="w-4 h-4" /> {isUploading ? (uploadProgressText || "Optimizing & Uploading...") : "Choose Work Completion Files"}
+                          </label>
+                          {uploadProgress && (
+                            <UploadProgressBar progress={uploadProgress} className="mt-3" />
+                          )}
+                          {!uploadProgress && isUploading && (
+                            <div className="flex items-center justify-center gap-2 text-xs font-semibold text-primary mt-2 animate-pulse">
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              <span>{uploadProgressText || "Compressing and uploading media..."}</span>
+                            </div>
+                          )}
+                          <p className="text-xs text-muted-foreground mt-2">
+                            Supported: JPG, PNG, WEBP, MP4, MOV, PDF, DOC, XLS, Audio. Upload after-fix photos and documents of repaired equipment.
+                          </p>
+                        </div>
+
+                        {/* Evidence Thumbnails Grid */}
+                        {resolutionEvidenceUrls.length > 0 && (
+                          <div className="space-y-1.5 mt-3">
+                            <p className="text-xs font-semibold text-muted-foreground">Work Completion Attachments ({resolutionEvidenceUrls.length}):</p>
+                            <div className="flex flex-wrap gap-2.5">
+                              {resolutionEvidenceUrls.map((url, i) => (
+                                <div key={i} className="relative group">
                                   <SmartFilePreview url={url} idx={i} onRemove={() => {
                                     setResolutionEvidenceUrls((prev) => prev.filter((_, idx) => idx !== i));
                                     setEvidenceUrls((prev) => prev.filter((u) => u !== url));
                                   }} />
-                               </div>
-                             ))}
-                           </div>
-                         </div>
-                       )}
-                    </div>
-
-                    {/* 3. Customer Sign-off / Signature */}
-                    <div className="space-y-3 pt-2">
-                      <label className="text-sm font-semibold text-foreground flex items-center gap-1.5">
-                        <PenTool className="w-4 h-4 text-primary" /> Customer Sign-Off & Signature (Optional)
-                      </label>
-
-                       <div className="flex flex-col sm:flex-row gap-2 border-b border-border">
-                        <button
-                          type="button"
-                          onClick={() => setSignatureMode("draw")}
-                          className={`flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${signatureMode === "draw" ? "text-primary border-b-2 border-primary font-semibold" : "text-muted-foreground hover:text-foreground"}`}
-                        >
-                          <PenTool className="w-4 h-4" /> ✍️ Draw Signature
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setSignatureMode("upload")}
-                          className={`flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${signatureMode === "upload" ? "text-primary border-b-2 border-primary font-semibold" : "text-muted-foreground hover:text-foreground"}`}
-                        >
-                          <ImageIcon className="w-4 h-4" /> 📸 Upload Signature Photo
-                        </button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
 
-                      {signatureMode === "draw" && (
-                        <div className="space-y-2">
-                          <div className="border-2 border-dashed border-primary/40 rounded-xl p-2 bg-white w-full overflow-hidden shadow-2xs">
-                            <SignatureCanvas
-                              ref={sigRef}
-                              penColor="black"
-                              onEnd={() => setHasDrawnSignature(true)}
-                              canvasProps={{ width: canvasWidth, height: 160, className: 'signature-canvas rounded-lg max-w-full bg-white' }}
-                            />
-                          </div>
-                          <div className="flex items-center justify-between text-xs text-muted-foreground">
-                            <span>Please ask the customer to draw their signature in the box above</span>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => {
-                                sigRef.current?.clear();
-                                setHasDrawnSignature(false);
-                              }}
-                              className="text-xs h-7"
-                            >
-                              Clear Signature
-                            </Button>
-                          </div>
-                        </div>
-                      )}
+                      {/* 3. Customer Sign-off / Signature */}
+                      <div className="space-y-3 pt-2">
+                        <label className="text-sm font-semibold text-foreground flex items-center gap-1.5">
+                          <PenTool className="w-4 h-4 text-primary" /> Customer Sign-Off & Signature (Optional)
+                        </label>
 
-                      {signatureMode === "upload" && (
-                        <div className="space-y-2">
-                          <div className="border-2 border-dashed border-primary/40 rounded-xl p-4 bg-white dark:bg-slate-900 text-center">
-                            {uploadedSignaturePreview ? (
-                              <div className="space-y-3">
-                                <div className="flex items-center justify-center">
-                                  <img src={uploadedSignaturePreview} alt="Uploaded Signature Preview" className="max-h-32 border rounded bg-white p-1 shadow-xs" />
-                                </div>
-                                <div className="flex items-center justify-between max-w-sm mx-auto">
-                                  <p className="text-xs text-success font-medium">✓ Signature uploaded successfully</p>
-                                  <Button variant="ghost" size="sm" onClick={clearUploadedSignature} className="text-xs text-destructive h-7">
-                                    <XCircle className="w-3.5 h-3.5 mr-1" /> Remove
-                                  </Button>
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="py-3">
-                                <ImageIcon className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
-                                <p className="text-sm font-medium text-foreground mb-1">Upload Customer Signature Image</p>
-                                <p className="text-xs text-muted-foreground mb-3">Upload a photo or scanned copy of customer's signed work report</p>
-                                <input
-                                  id="signature-upload-input"
-                                  type="file"
-                                  accept="image/png,image/jpeg,image/jpg"
-                                  onChange={handleSignatureUpload}
-                                  disabled={isUploading}
-                                  className="hidden"
-                                />
-                                <label
-                                  htmlFor="signature-upload-input"
-                                  className="inline-flex items-center gap-2 px-4 py-2 bg-primary/10 text-primary font-semibold rounded-lg cursor-pointer hover:bg-primary/20 transition-colors text-xs"
-                                >
-                                  <Upload className="w-4 h-4" /> Browse Signature Image
-                                </label>
-                              </div>
-                            )}
-                          </div>
+                        <div className="flex flex-col sm:flex-row gap-2 border-b border-border">
+                          <button
+                            type="button"
+                            onClick={() => setSignatureMode("draw")}
+                            className={`flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${signatureMode === "draw" ? "text-primary border-b-2 border-primary font-semibold" : "text-muted-foreground hover:text-foreground"}`}
+                          >
+                            <PenTool className="w-4 h-4" /> ✍️ Draw Signature
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setSignatureMode("upload")}
+                            className={`flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors ${signatureMode === "upload" ? "text-primary border-b-2 border-primary font-semibold" : "text-muted-foreground hover:text-foreground"}`}
+                          >
+                            <ImageIcon className="w-4 h-4" /> 📸 Upload Signature Photo
+                          </button>
                         </div>
-                      )}
-                    </div>
 
-                    {/* 4. Complete Sign-Off Action Button */}
-                    <div className="flex flex-col sm:flex-row gap-3 justify-end pt-4 border-t">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={() => setShowResolution(false)}
-                        className="w-full sm:w-auto text-xs"
-                      >
-                        Cancel
-                      </Button>
-                      <Button
-                        size="default"
-                        onClick={handleFinalSignOff}
-                        disabled={isSubmittingSignOff || updateMutation.isPending || isUploading}
-                        className="bg-success hover:bg-success/90 text-success-foreground w-full sm:w-auto font-semibold shadow-sm text-sm"
-                      >
-                        {isSubmittingSignOff || updateMutation.isPending ? (
-                          <>
-                            <Loader2 className="w-4 h-4 animate-spin mr-2" />
-                            Submitting Resolution & Sign-Off...
-                          </>
-                        ) : (
-                          <>
-                            <CheckCircle2 className="w-4 h-4 mr-2" />
-                            Complete Sign-off & Submit Resolution
-                          </>
+                        {signatureMode === "draw" && (
+                          <div className="space-y-2">
+                            <div className="border-2 border-dashed border-primary/40 rounded-xl p-2 bg-white w-full overflow-hidden shadow-2xs">
+                              <SignatureCanvas
+                                ref={sigRef}
+                                penColor="black"
+                                onEnd={() => setHasDrawnSignature(true)}
+                                canvasProps={{ width: canvasWidth, height: 160, className: 'signature-canvas rounded-lg max-w-full bg-white' }}
+                              />
+                            </div>
+                            <div className="flex items-center justify-between text-xs text-muted-foreground">
+                              <span>Please ask the customer to draw their signature in the box above</span>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => {
+                                  sigRef.current?.clear();
+                                  setHasDrawnSignature(false);
+                                }}
+                                className="text-xs h-7"
+                              >
+                                Clear Signature
+                              </Button>
+                            </div>
+                          </div>
                         )}
-                      </Button>
+
+                        {signatureMode === "upload" && (
+                          <div className="space-y-2">
+                            <div className="border-2 border-dashed border-primary/40 rounded-xl p-4 bg-white dark:bg-slate-900 text-center">
+                              {uploadedSignaturePreview ? (
+                                <div className="space-y-3">
+                                  <div className="flex items-center justify-center">
+                                    <img src={uploadedSignaturePreview} alt="Uploaded Signature Preview" className="max-h-32 border rounded bg-white p-1 shadow-xs" />
+                                  </div>
+                                  <div className="flex items-center justify-between max-w-sm mx-auto">
+                                    <p className="text-xs text-success font-medium">✓ Signature uploaded successfully</p>
+                                    <Button variant="ghost" size="sm" onClick={clearUploadedSignature} className="text-xs text-destructive h-7">
+                                      <XCircle className="w-3.5 h-3.5 mr-1" /> Remove
+                                    </Button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="py-3">
+                                  <ImageIcon className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
+                                  <p className="text-sm font-medium text-foreground mb-1">Upload Customer Signature Image</p>
+                                  <p className="text-xs text-muted-foreground mb-3">Upload a photo or scanned copy of customer's signed work report</p>
+                                  <input
+                                    id="signature-upload-input"
+                                    type="file"
+                                    accept="image/png,image/jpeg,image/jpg"
+                                    onChange={handleSignatureUpload}
+                                    disabled={isUploading}
+                                    className="hidden"
+                                  />
+                                  <label
+                                    htmlFor="signature-upload-input"
+                                    className="inline-flex items-center gap-2 px-4 py-2 bg-primary/10 text-primary font-semibold rounded-lg cursor-pointer hover:bg-primary/20 transition-colors text-xs"
+                                  >
+                                    <Upload className="w-4 h-4" /> Browse Signature Image
+                                  </label>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* 4. Complete Sign-Off Action Button */}
+                      <div className="flex flex-col sm:flex-row gap-3 justify-end pt-4 border-t">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => setShowResolution(false)}
+                          className="w-full sm:w-auto text-xs"
+                        >
+                          Cancel
+                        </Button>
+                        <Button
+                          size="default"
+                          onClick={handleFinalSignOff}
+                          disabled={isSubmittingSignOff || updateMutation.isPending || isUploading}
+                          className="bg-success hover:bg-success/90 text-success-foreground w-full sm:w-auto font-semibold shadow-sm text-sm"
+                        >
+                          {isSubmittingSignOff || updateMutation.isPending ? (
+                            <>
+                              <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                              Submitting Resolution & Sign-Off...
+                            </>
+                          ) : (
+                            <>
+                              <CheckCircle2 className="w-4 h-4 mr-2" />
+                              Complete Sign-off & Submit Resolution
+                            </>
+                          )}
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 )
@@ -4907,18 +5691,20 @@ const ComplaintDetail = () => {
               )}
             </motion.div>
           )}
+        </motion.div>
+      )}
 
-          {/* Phase 6: QA Verification, Customer Satisfaction & Final Closure */}
-          {(currentPhase === 6 || ticket.status === 'pending_verification' || ticket.status === 'resolution_submitted') && (
-            <motion.div
-              id="phase-6-verification-section"
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className={cn(
-                "glass-card rounded-xl p-5 border-l-4 space-y-4 transition-all",
-                isPhase6ClosedOrVerified ? "border-l-success border-success/40 bg-success/[0.04]" : "border-l-warning"
-              )}
-            >
+      {/* Phase 6: QA Verification, Customer Satisfaction & Final Closure */}
+      {(currentPhase === 6 || ticket.status === 'pending_verification' || ticket.status === 'resolution_submitted' || isPhase6ClosedOrVerified || (isSupervisorOrAdmin && activePhase === 6)) && (
+        <motion.div
+          id="phase-6-verification-section"
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className={cn(
+            "glass-card rounded-xl p-5 border-l-4 space-y-4 transition-all",
+            isPhase6ClosedOrVerified ? "border-l-success border-success/40 bg-success/[0.04]" : "border-l-warning"
+          )}
+        >
               <div className="flex items-center justify-between border-b pb-3">
                 <div className="flex items-center gap-2">
                   <ShieldCheck className={cn("w-5 h-5", isPhase6ClosedOrVerified ? "text-success" : "text-warning")} />
@@ -4931,21 +5717,75 @@ const ComplaintDetail = () => {
                     <span className="text-xs font-bold bg-success/20 text-success border border-success/30 px-3 py-1 rounded-full flex items-center gap-1.5 shadow-xs">
                       <CheckCircle2 className="w-3.5 h-3.5" /> Closed & Verified ✓
                     </span>
-                  ) : ticket.force_closed ? (
+                  ) : (ticket.force_closed && !isReworkActive) ? (
                     <span className="text-xs font-bold bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 px-3 py-1 rounded-full border border-amber-300">
                       Closed (Force Closure)
                     </span>
-                  ) : ticket.status === 'closed' ? (
+                  ) : (ticket.status === 'closed' && !isReworkActive) ? (
                     <span className="text-xs font-bold bg-muted text-muted-foreground px-3 py-1 rounded-full">
                       Ticket Closed
                     </span>
                   ) : (
-                    <span className="text-xs font-bold bg-warning/20 text-warning px-3 py-1 rounded-full">
-                      Ready for Final QA & Closure
+                    <span className="text-xs font-bold bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-700 px-3 py-1 rounded-full">
+                      {isReworkActive ? "🔄 Rework QA Verification & Final Closure" : "Ready for Final QA & Closure"}
                     </span>
                   )}
                 </div>
               </div>
+
+              {/* Previous QA Verification & Rework History (For Supervisor / Admin Review) */}
+              {reworkHistory.length > 0 && (
+                <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-300 dark:border-amber-800 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-xs text-amber-950 dark:text-amber-200 flex items-center gap-1.5">
+                      <RotateCcw className="w-4 h-4 text-amber-600" /> Previous QA Rejection & Rework History ({reworkHistory.length} round{reworkHistory.length > 1 ? "s" : ""})
+                    </span>
+                    <span className="text-[10px] font-semibold text-amber-800 dark:text-amber-300">
+                      QA Audit Trail
+                    </span>
+                  </div>
+                  {reworkHistory.map((rnd: any, rIdx: number) => {
+                    const rndTechs: Array<{ id?: string; name: string; is_lead?: boolean }> =
+                      Array.isArray(rnd.technicians) && rnd.technicians.length > 0
+                        ? rnd.technicians
+                        : rnd.technician_name
+                        ? [{ name: rnd.technician_name, is_lead: true }]
+                        : [];
+
+                    return (
+                      <div key={rIdx} className="p-3 bg-white/80 dark:bg-slate-900/70 rounded-lg border border-amber-200/80 space-y-2 text-xs">
+                        <div className="flex items-center justify-between font-semibold text-amber-900 dark:text-amber-300">
+                          <span>Round {rnd.round_number || rnd.round || rIdx + 1} Rejection Note / Rework Instructions:</span>
+                          <span className="text-[10px] text-muted-foreground">{rnd.reassigned_at ? formatIndianDateTime(rnd.reassigned_at) : ""}</span>
+                        </div>
+                        <p className="text-slate-800 dark:text-slate-200 whitespace-pre-wrap">{rnd.reassignment_reason || rnd.verification?.qa_notes || "Rework requested"}</p>
+                        {rndTechs.length > 0 ? (
+                          <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                            <span className="text-[11px] text-muted-foreground">Assigned Technicians (Round {rnd.round_number || rnd.round || rIdx + 1}):</span>
+                            {rndTechs.map((t, tIdx) => (
+                              <span
+                                key={tIdx}
+                                className={cn(
+                                  "text-[11px] px-2 py-0.5 rounded-md border inline-flex items-center gap-1",
+                                  t.is_lead
+                                    ? "bg-amber-100 text-amber-900 border-amber-300 font-semibold dark:bg-amber-950/70 dark:text-amber-200"
+                                    : "bg-muted text-slate-700 dark:text-slate-300 border-border/70"
+                                )}
+                              >
+                                {t.is_lead && <Crown className="w-3 h-3 text-amber-600 dark:text-amber-400 shrink-0 fill-amber-500/30" />}
+                                <span>{t.name}</span>
+                                {t.is_lead && <span className="text-[9px] uppercase tracking-wider font-bold text-amber-700 dark:text-amber-300">(Lead)</span>}
+                              </span>
+                            ))}
+                          </div>
+                        ) : rnd.technician_name ? (
+                          <p className="text-[11px] text-muted-foreground">Assigned Tech (Round {rnd.round_number || rnd.round || rIdx + 1}): {rnd.technician_name}</p>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
 
               {/* Verified & Closed Celebration Banner */}
               {isPhase6ClosedOrVerified && (
@@ -4990,16 +5830,18 @@ const ComplaintDetail = () => {
                 </div>
               )}
 
-              {/* 48-Hour Post-Closure Reassignment Action Strip (Admin / Supervisor) */}
-              {isSupervisorOrAdmin && (isPhase6ClosedOrVerified || ticket.status === 'closed' || Boolean(ticket.closure_timestamp) || Boolean(ticket.closed_at)) && (
+              {/* Post-Closure Reassignment Strip (Admin / Supervisor) */}
+              {isSupervisorOrAdmin && !isReworkActive && (isPhase6ClosedOrVerified || ticket.status === 'closed' || Boolean(ticket.closure_timestamp) || Boolean(ticket.closed_at)) && (
                 <div className="p-3.5 rounded-xl border border-primary/30 bg-primary/5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-xs">
                   <div className="flex items-center gap-2.5">
                     <div className="p-1.5 rounded-lg bg-primary/10 text-primary shrink-0">
                       <RotateCcw className="w-4 h-4" />
                     </div>
                     <div>
-                      <span className="font-semibold text-foreground">48-Hour Post-Closure Reassignment:</span>{" "}
-                      {canReassign() ? (
+                      <span className="font-semibold text-foreground">Post-Closure Status:</span>{" "}
+                      {reworkHistory.length >= 2 ? (
+                        <span className="text-destructive font-medium">Maximum 2 reassignments completed. Further rework or reassignment is permanently locked.</span>
+                      ) : canReassign() ? (
                         getReassignRemainingHours() !== null ? (
                           <span className="text-primary font-bold">{getReassignRemainingHours()} hours remaining to reassign this ticket after closure</span>
                         ) : (
@@ -5031,7 +5873,7 @@ const ComplaintDetail = () => {
                     </Button>
                   ) : (
                     <span className="text-xs text-muted-foreground bg-muted px-2.5 py-1 rounded-md border font-medium shrink-0">
-                      🔒 Window Expired
+                      {reworkHistory.length >= 2 ? "🔒 Max Rounds Reached" : "🔒 Window Expired"}
                     </span>
                   )}
                 </div>
@@ -5057,11 +5899,11 @@ const ComplaintDetail = () => {
                 )}
               </div>
 
-              {!ticket.force_closed && (
+              {(!ticket.force_closed || isReworkActive) && (
                 <div>
                   {/* Customer Satisfaction Feedback & Happiness Code (Strictly visible only to Supervisors & Admins in Phase 6) */}
                   {isSupervisorOrAdmin ? (
-                    !showVerificationForm && !ticket.feedback_collected ? (
+                    !showVerificationForm && !ticket.feedback_collected && !isReworkActive ? (
                       /* By default in Phase 6, show ONLY a button: "Collect Customer Feedback & Verify" */
                       <div className="p-4 rounded-xl bg-primary/5 border border-primary/20 flex flex-col sm:flex-row items-center justify-between gap-4">
                         <div>
@@ -5244,9 +6086,26 @@ const ComplaintDetail = () => {
                           </div>
                         ) : (
                           <div className="p-3 rounded-lg bg-success/10 border border-success/20 text-xs space-y-1">
-                            <p className="font-semibold text-success flex items-center gap-1.5">
-                              <CheckCircle2 className="w-4 h-4" /> Feedback Recorded
-                            </p>
+                            <div className="flex items-center justify-between">
+                              <p className="font-semibold text-success flex items-center gap-1.5">
+                                <CheckCircle2 className="w-4 h-4" /> Feedback Recorded
+                              </p>
+                              {isSupervisorOrAdmin && !isPhase6ClosedOrVerified && (
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => {
+                                    setFeedbackSatisfaction((ticket.customer_satisfaction as any) || "satisfied");
+                                    setFeedbackComments(ticket.feedback_comments ? ticket.feedback_comments.replace(/\[Force Closed[^\]]*\]/gi, '').trim() : "");
+                                    updateMutation.mutateAsync({ feedback_collected: false } as any);
+                                  }}
+                                  className="h-6 px-2 text-[11px] text-primary hover:text-primary hover:bg-primary/10"
+                                >
+                                  <Edit className="w-3 h-3 mr-1" /> Update Feedback
+                                </Button>
+                              )}
+                            </div>
                             <p><strong>Satisfaction:</strong> {ticket.customer_satisfaction?.replace('_', ' ')}</p>
                             {ticket.feedback_comments && <p><strong>Comments:</strong> {ticket.feedback_comments}</p>}
                           </div>
@@ -5290,18 +6149,26 @@ const ComplaintDetail = () => {
                       <p className="text-[11px] text-muted-foreground">Re-dispatch for pending parts/tests.</p>
                     </button>
 
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPhase6Action("rework");
-                        handleOpenReworkModal();
-                      }}
-                      className="p-3 rounded-xl border-2 border-destructive/30 hover:border-destructive bg-destructive/5 hover:bg-destructive/10 text-destructive text-left transition-all"
-                    >
-                      <RotateCcw className="w-5 h-5 mb-1.5 text-destructive" />
-                      <p className="text-xs font-bold">Return for Rework</p>
-                      <p className="text-[11px] text-muted-foreground">Reassign & schedule rework visit.</p>
-                    </button>
+                    {reworkHistory.length >= 2 ? (
+                      <div className="p-3 rounded-xl border-2 border-border/60 bg-muted/40 text-muted-foreground text-left opacity-75 cursor-not-allowed">
+                        <RotateCcw className="w-5 h-5 mb-1.5 text-muted-foreground" />
+                        <p className="text-xs font-bold">Rework Locked</p>
+                        <p className="text-[11px]">Max 2 reassignments reached.</p>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPhase6Action("rework");
+                          handleOpenReworkModal();
+                        }}
+                        className="p-3 rounded-xl border-2 border-destructive/30 hover:border-destructive bg-destructive/5 hover:bg-destructive/10 text-destructive text-left transition-all"
+                      >
+                        <RotateCcw className="w-5 h-5 mb-1.5 text-destructive" />
+                        <p className="text-xs font-bold">Return for Rework</p>
+                        <p className="text-[11px] text-muted-foreground">Reassign & schedule rework visit.</p>
+                      </button>
+                    )}
                   </div>
 
                   {phase6Action === "follow_up" && (
@@ -5407,8 +6274,6 @@ const ComplaintDetail = () => {
               )}
             </motion.div>
           )}
-        </motion.div>
-      )}
 
       {/* Timeline & Details */}
       <motion.div initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-xl p-6">
@@ -5504,13 +6369,13 @@ const ComplaintDetail = () => {
                   />
                 </div>
               )}
-              {/* Phase 3: Diagnostic Evidence (Before / PIR) */}
+              {/* Phase 4: Diagnostic Evidence (Before / PIR) */}
               {((ticket.evidence_urls && ticket.evidence_urls.length > 0) ||
                 (ticket.technician_evidence && ticket.technician_evidence.length > 0 && !ticket.resolution && !ticket.signoff_timestamp)) && (
                 <div className="pt-3 border-t mt-3">
                   <ImageGallery
                     images={ticket.evidence_urls && ticket.evidence_urls.length > 0 ? ticket.evidence_urls : ticket.technician_evidence!}
-                    title="📸 Phase 3: Diagnostic Evidence (Before / PIR)"
+                    title="📸 Phase 4: Diagnostic Evidence (Before / PIR)"
                     uploader="technician"
                   />
                 </div>
@@ -5740,7 +6605,7 @@ const ComplaintDetail = () => {
                   Assignment History ({formatComplaintTicketId(ticket)})
                 </span>
                 <span className="text-[11px] font-semibold text-muted-foreground">
-                  Current Status: <span className="text-primary font-bold uppercase">{ticket.status || "unassigned"}</span>
+                  Current Status: <span className="text-primary font-bold uppercase">{getEffectiveComplaintStatus(ticket)}</span>
                 </span>
               </div>
 
@@ -6193,21 +7058,6 @@ const ComplaintDetail = () => {
                 Assign a new field team or update lead responsibility for this complaint ticket.
               </DialogDescription>
             </DialogHeader>
-
-            {/* 48h Post-Closure Notice Banner */}
-            {(isPhase6ClosedOrVerified || ticket?.status === 'closed' || Boolean(ticket?.closure_timestamp) || Boolean(ticket?.closed_at)) && (
-              <div className="mt-3 p-3 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-300 text-xs flex items-start gap-2">
-                <Clock className="w-4 h-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
-                <div>
-                  <span className="font-semibold">48-Hour Post-Closure Reassignment Window:</span>{" "}
-                  {getReassignRemainingHours() !== null ? (
-                    <span><strong>{getReassignRemainingHours()} hours remaining</strong> to reassign this ticket after closure. Once 48 hours pass, reassignment will be locked.</span>
-                  ) : (
-                    <span>Ticket was previously closed. Reassignment is available for 48 hours after closure.</span>
-                  )}
-                </div>
-              </div>
-            )}
 
             {/* Reference: PIR & Resolution Notes for Reassignment */}
             {(ticket.pir_findings || ticket.resolution || ticket.resolution_notes) && (

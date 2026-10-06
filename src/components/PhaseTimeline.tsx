@@ -16,7 +16,9 @@ export function PhaseTimeline({ currentPhase, status, activePhase, onPhaseClick,
   
   const isPendingVerification = normalizedStatus === "pending_verification" || normalizedStatus === "resolution_submitted";
   const isPhase5Completed = currentPhase >= 6 || isPendingVerification || normalizedStatus === "closed" || normalizedStatus === "verified" || normalizedStatus === "qa_verified";
-  const isPhase6Completed = normalizedStatus === "closed" || normalizedStatus === "verified" || normalizedStatus === "qa_verified";
+  const isPhase6Completed = isPhase6Verified !== undefined 
+    ? isPhase6Verified 
+    : (normalizedStatus === "closed" || normalizedStatus === "verified" || normalizedStatus === "qa_verified");
   const isPhase6Ready = !isPhase6Completed && (isPendingVerification || (currentPhase === 5 && !isPhase6Completed));
   
   console.log('[PhaseTimeline] Phase State Debug:', {

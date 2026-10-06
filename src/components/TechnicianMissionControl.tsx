@@ -46,13 +46,34 @@ export const TechnicianMissionControl: React.FC<TechnicianMissionControlProps> =
   dispatchedAt,
   onDispatched,
 }) => {
+  const effectiveArrivalTimestamp = arrivalTimestamp || complaint?.arrival_timestamp;
+  const effectiveArrivalLat = arrivalLat ?? complaint?.arrival_lat;
+  const effectiveArrivalLng = arrivalLng ?? complaint?.arrival_lng;
+
   const [isLoggingArrival, setIsLoggingArrival] = useState(false);
   const [loggedArrival, setLoggedArrival] = useState<{ lat: number; lng: number; time: string } | null>(
-    arrivalTimestamp && arrivalLat && arrivalLng
-      ? { lat: arrivalLat, lng: arrivalLng, time: arrivalTimestamp }
+    effectiveArrivalTimestamp && effectiveArrivalLat != null && effectiveArrivalLng != null
+      ? { lat: Number(effectiveArrivalLat), lng: Number(effectiveArrivalLng), time: effectiveArrivalTimestamp }
       : null
   );
-  const [arrivedWithoutGps, setArrivedWithoutGps] = useState(false);
+  const [arrivedWithoutGps, setArrivedWithoutGps] = useState(
+    Boolean(effectiveArrivalTimestamp && (effectiveArrivalLat == null || effectiveArrivalLng == null))
+  );
+
+  useEffect(() => {
+    if (effectiveArrivalTimestamp) {
+      if (effectiveArrivalLat != null && effectiveArrivalLng != null) {
+        setLoggedArrival({ lat: Number(effectiveArrivalLat), lng: Number(effectiveArrivalLng), time: effectiveArrivalTimestamp });
+        setArrivedWithoutGps(false);
+      } else {
+        setLoggedArrival(null);
+        setArrivedWithoutGps(true);
+      }
+    } else {
+      setLoggedArrival(null);
+      setArrivedWithoutGps(false);
+    }
+  }, [effectiveArrivalTimestamp, effectiveArrivalLat, effectiveArrivalLng]);
 
   // Check if ticket has already started journey (Phase >= 4 or start timestamp exists)
   const isInitiallyDispatched = Boolean(
@@ -184,8 +205,17 @@ export const TechnicianMissionControl: React.FC<TechnicianMissionControlProps> =
     const saveArrivalRecord = async (lat?: number | null, lng?: number | null) => {
       try {
         if (ticketType === "complaint") {
+          const isReworkActive = Boolean(
+            complaint?.status === 'reassigned' ||
+            complaint?.status === 'rework_required' ||
+            complaint?.reassignment_reason ||
+            complaint?.reassigned_at ||
+            (Array.isArray(complaint?.rework_history) && complaint.rework_history.length > 0)
+          );
+          const targetStatus = isReworkActive ? "reassigned" : "in-progress";
+
           const payload: any = {
-            status: "in-progress",
+            status: targetStatus,
             current_phase: 4,
             arrival_timestamp: nowIso,
             start_journey_timestamp: complaint?.start_journey_timestamp || nowIso,
@@ -365,12 +395,14 @@ export const TechnicianMissionControl: React.FC<TechnicianMissionControlProps> =
               {loggedArrival.lat.toFixed(4)}, {loggedArrival.lng.toFixed(4)}
             </span>
           </div>
-        ) : arrivedWithoutGps ? (
-          <div className="flex flex-col items-center justify-center py-2 px-3 rounded-xl bg-slate-800 border border-slate-500/40 text-center">
-            <span className="text-[11px] font-bold text-slate-300 flex items-center gap-1">
-              <CheckCircle2 className="w-3.5 h-3.5" /> Arrived
+        ) : (arrivedWithoutGps || Boolean(effectiveArrivalTimestamp)) ? (
+          <div className="flex flex-col items-center justify-center py-2 px-3 rounded-xl bg-slate-800 border border-emerald-500/40 text-center">
+            <span className="text-[11px] font-bold text-emerald-400 flex items-center gap-1">
+              <CheckCircle2 className="w-3.5 h-3.5" /> Arrived on Site
             </span>
-            <span className="text-[10px] text-slate-500 font-mono">No GPS coordinates</span>
+            <span className="text-[10px] text-slate-400 font-mono">
+              {effectiveArrivalTimestamp ? new Date(effectiveArrivalTimestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Logged"}
+            </span>
           </div>
         ) : !isDispatched ? (
           <Button

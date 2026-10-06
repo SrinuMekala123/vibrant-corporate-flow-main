@@ -9,7 +9,7 @@ import { supabase } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { StatCard } from "@/components/StatCard";
-import { StatusBadge, SeverityBadge } from "@/components/Badges";
+import { StatusBadge, SeverityBadge, getEffectiveComplaintStatus } from "@/components/Badges";
 import {
   MapPin,
   Clock,
@@ -216,9 +216,12 @@ const TechnicianDashboard = () => {
   // Filter complaints based on status
   const filteredComplaints = useMemo(() => {
     return (allComplaints || []).filter((c) => {
-      if (activeTab === "active") return c.status !== "completed" && c.status !== "verified";
+      const effStatus = getEffectiveComplaintStatus(c);
+      if (activeTab === "reassigned") return effStatus === "reassigned";
+      if (activeTab === "active") return c.status !== "completed" && c.status !== "verified" && c.status !== "closed";
       if (activeTab === "completed") return c.status === "completed";
       if (activeTab === "closed") return c.status === "closed";
+      if (activeTab === "verified") return c.status === "verified";
       return true;
     });
   }, [allComplaints, activeTab]);
@@ -226,6 +229,7 @@ const TechnicianDashboard = () => {
   // Filter installations based on status
   const filteredInstallations = useMemo(() => {
     return (allInstallations || []).filter((inst) => {
+      if (activeTab === "reassigned") return false;
       const s = (inst.status || "").toLowerCase();
       if (activeTab === "active") {
         return !s.includes("completed") && !s.includes("handed over") && !s.includes("verified");
@@ -283,7 +287,10 @@ const TechnicianDashboard = () => {
   }, [user, queryClient]);
 
   // Calculate Unified Stats
-  const activeComplaintsCount = (allComplaints || []).filter(c => c.status !== "completed" && c.status !== "verified").length;
+  const reassignedComplaintsCount = useMemo(() => {
+    return (allComplaints || []).filter(c => getEffectiveComplaintStatus(c) === "reassigned").length;
+  }, [allComplaints]);
+  const activeComplaintsCount = (allComplaints || []).filter(c => c.status !== "completed" && c.status !== "verified" && c.status !== "closed").length;
   const activeInstallationsCount = (allInstallations || []).filter(i => {
     const s = (i.status || "").toLowerCase();
     return !s.includes("completed") && !s.includes("handed over") && !s.includes("verified");
@@ -443,19 +450,27 @@ const TechnicianDashboard = () => {
 
         {/* Status Horizon Filter (Active, Completed, Closed, All) */}
         <div className="flex items-center gap-1.5 p-1 rounded-xl bg-muted/65 max-w-md border border-border/40">
-          {(["active", "completed", "verified", "reassigned", "all"] as const).map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={`flex-1 text-center py-2 px-3 text-xs font-bold capitalize rounded-lg transition-all ${
-                activeTab === tab
-                  ? "bg-card text-foreground shadow-sm border border-border/20"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {tab}
-            </button>
-          ))}
+          {(["active", "completed", "verified", "reassigned", "all"] as const).map((tab) => {
+            const count = tab === "reassigned" ? reassignedComplaintsCount : null;
+            return (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={`flex-1 text-center py-2 px-3 text-xs font-bold capitalize rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                  activeTab === tab
+                    ? "bg-card text-foreground shadow-sm border border-border/20"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <span>{tab}</span>
+                {count !== null && count > 0 && (
+                  <span className="px-1.5 py-0.2 text-[10px] font-black rounded-full bg-amber-500 text-white animate-pulse">
+                    {count}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -592,7 +607,7 @@ const TechnicianDashboard = () => {
                             <span className="font-medium">{custName}</span>
                           </td>
                           <td className="py-2.5 px-3">
-                            <StatusBadge status={ticket.status} />
+                            <StatusBadge status={ticket.status} ticket={ticket} />
                           </td>
                           <td className="py-2.5 px-3">
                             <SeverityBadge severity={ticket.severity as any} />
@@ -840,7 +855,7 @@ const TechnicianDashboard = () => {
 
                           <span className="text-xs text-muted-foreground">•</span>
                           <SeverityBadge severity={ticket.severity as any} />
-                          <StatusBadge status={ticket.status} />
+                          <StatusBadge status={ticket.status} ticket={ticket} />
                           
                           {/* Assignment Role Badge */}
                           {isLead ? (

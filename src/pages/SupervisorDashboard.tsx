@@ -237,7 +237,7 @@ const SupervisorDashboard = () => {
                     <span className="text-xs font-mono font-bold text-primary">{formatComplaintTicketId(t)}</span>
                     <span className="text-xs text-muted-foreground">•</span>
                     {t.severity && <SeverityBadge severity={t.severity as any} />}
-                    {t.status && <StatusBadge status={t.status} />}
+                    {t.status && <StatusBadge status={t.status} ticket={t} />}
                   </div>
                   <p className="font-bold text-sm text-foreground truncate mt-1 group-hover:text-primary transition-colors" title={t.title}>{t.title}</p>
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground mt-1">

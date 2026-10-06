@@ -18,6 +18,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { compressImageForUpload } from "@/lib/imageCompression";
 import { compressVideoForUpload } from "@/lib/videoCompression";
+import { uploadEvidenceWithProgress, type UploadProgressState } from "@/lib/fileUploadHelper";
+import { UploadProgressBar } from "@/components/UploadProgressBar";
 import { notificationService } from "@/services/notificationService";
 import DatePicker from "react-datepicker";
 import "react-datepicker/dist/react-datepicker.css";
@@ -283,6 +285,7 @@ const ComplaintEdit = () => {
   const [isSaving, setIsSaving] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgressText, setUploadProgressText] = useState("");
+  const [uploadProgress, setUploadProgress] = useState<UploadProgressState | null>(null);
   const [isLocating, setIsLocating] = useState(false);
   const [currentUserFullName, setCurrentUserFullName] = useState("");
   const [showLocationSuggestions, setShowLocationSuggestions] = useState(false);
@@ -1433,46 +1436,24 @@ const ComplaintEdit = () => {
   const uploadToSupabase = async (file: File, folder: string): Promise<string> => {
     setIsUploading(true);
     try {
-      let fileToUpload = file;
-      if (file.type.startsWith('image/') || /\.(jpe?g|png|webp|heic|bmp)$/i.test(file.name)) {
-        setUploadProgressText(`Compressing photo (${(file.size / 1024).toFixed(0)}KB -> ~250KB)...`);
-        try {
-          fileToUpload = await compressImageForUpload(file, { maxSizeMB: 0.25, maxWidthOrHeight: 1600, useWebWorker: true }, (pct) => {
-            setUploadProgressText(`Compressing photo: ${pct}%...`);
-          });
-          console.log(`[Upload] Image compressed: ${(file.size / 1024).toFixed(1)}KB -> ${(fileToUpload.size / 1024).toFixed(1)}KB`);
-        } catch (err) {
-          console.warn('Image compression fallback to original:', err);
+      const publicUrl = await uploadEvidenceWithProgress(file, {
+        bucket: 'complaint-media',
+        folder,
+        onProgress: (p) => {
+          setUploadProgress(p);
+          setUploadProgressText(p.message);
         }
-      } else if (file.type.startsWith('video/') || /\.(mp4|mov|avi|webm|mkv|3gp)$/i.test(file.name)) {
-        try {
-          fileToUpload = await compressVideoForUpload(file, (prog) => {
-            setUploadProgressText(prog.message);
-          });
-        } catch (err) {
-          console.warn('Video compression failed, using original:', err);
-        }
-      }
-
-      setUploadProgressText(`Uploading ${(fileToUpload.size / (1024 * 1024)).toFixed(1)}MB to cloud...`);
-      const fileExt = fileToUpload.name.split('.').pop();
-      const fileName = `${folder}/${Date.now()}-${Math.random().toString(36).substring(2)}.${fileExt}`;
-      const { data, error } = await supabase.storage.from('complaint-media').upload(fileName, fileToUpload, {
-        cacheControl: '3600',
-        upsert: false,
-        contentType: fileToUpload.type || (fileExt === 'mp4' ? 'video/mp4' : fileExt === 'webm' ? 'video/webm' : undefined)
       });
-      if (error) throw error;
-      const { data: { publicUrl } } = supabase.storage.from('complaint-media').getPublicUrl(fileName);
       return publicUrl;
     } catch (error: any) {
       console.error('Detailed Upload error in Edit page:', error);
-      const errorMsg = error.message || error.error_description || 'Unknown error occurred during upload.';
-      toast.error(`Upload failed: ${errorMsg}. (Ensure the 'complaint-media' storage bucket exists and policies allow uploads to folder '${folder}/')`);
       throw error;
     } finally {
-      setIsUploading(false);
-      setUploadProgressText("");
+      setTimeout(() => {
+        setIsUploading(false);
+        setUploadProgress(null);
+        setUploadProgressText("");
+      }, 1000);
     }
   };
 
@@ -3206,16 +3187,15 @@ const ComplaintEdit = () => {
               if (files.length === 0) return;
               setIsUploading(true);
               try {
-                const uploadPromises = files.map(async (file) => {
+                const successfulUrls: string[] = [];
+                for (const file of files) {
                   try {
-                    return await uploadToSupabase(file, 'evidence');
-                  } catch (err) {
-                    toast.error(`Failed to upload ${file.name}`);
-                    return null;
+                    const url = await uploadToSupabase(file, 'evidence');
+                    successfulUrls.push(url);
+                  } catch (err: any) {
+                    console.error("Upload failed for:", file.name, err);
                   }
-                });
-                const results = await Promise.all(uploadPromises);
-                const successfulUrls = results.filter((url): url is string => !!url);
+                }
                 if (successfulUrls.length > 0) {
                   setEvidenceUrls(prev => [...prev, ...successfulUrls]);
                   toast.success(`${successfulUrls.length} evidence file(s) optimized & uploaded!`);
@@ -3226,7 +3206,10 @@ const ComplaintEdit = () => {
                 e.target.value = '';
               }
             }} className="text-sm file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary/10 file:text-primary hover:file:bg-primary/20" disabled={isSaving || isUploading || (!isNew && !isAdminOrSupervisor)} />
-            {isUploading && (
+            {uploadProgress && (
+              <UploadProgressBar progress={uploadProgress} className="mt-2" />
+            )}
+            {!uploadProgress && isUploading && (
               <div className="flex items-center gap-2 text-xs font-semibold text-primary bg-primary/10 px-3 py-2 rounded-xl border border-primary/20 animate-pulse mt-1">
                 <Loader2 className="w-4 h-4 animate-spin shrink-0" />
                 <span>{uploadProgressText || "Compressing & uploading evidence... Please wait."}</span>

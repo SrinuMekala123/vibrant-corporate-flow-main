@@ -318,7 +318,7 @@ const Assignments = () => {
                             className="flex items-center justify-between p-2.5 rounded-lg bg-muted/40 hover:bg-muted/75 border border-slate-100 hover:border-slate-200 transition-colors text-sm"
                           >
                             <span className="truncate flex-1 font-medium">{t.id.slice(0, 8)}... — {t.title}</span>
-                            <StatusBadge status={t.status} />
+                            <StatusBadge status={t.status} ticket={t} />
                           </Link>
                         ))}
                         {tickets.length === 0 && (

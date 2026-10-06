@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { X, Download, ZoomIn, User, Wrench, Play, Image as ImageIcon, FileText } from "lucide-react";
+import { X, Download, ZoomIn, User, Wrench, Play, Image as ImageIcon, FileText, FileSpreadsheet, Volume2, ExternalLink } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { resolveSupabaseUrl } from "@/lib/supabase";
+import { getEvidenceCategory, getEvidenceFileName, getCategoryBadgeInfo, EvidenceCategory } from "@/utils/evidenceFileHelpers";
 
 interface ImageGalleryProps {
     images: string[];
@@ -9,38 +10,6 @@ interface ImageGalleryProps {
     uploader: "customer" | "technician";
     emptyMessage?: string;
 }
-
-const getFileType = (url: string): "image" | "video" | "document" => {
-  const lower = url.toLowerCase();
-  if (
-    lower.endsWith(".mp4") ||
-    lower.endsWith(".webm") ||
-    lower.endsWith(".ogg") ||
-    lower.endsWith(".mov") ||
-    lower.endsWith(".quicktime") ||
-    lower.includes("video")
-  ) {
-    return "video";
-  }
-  if (
-    lower.endsWith(".png") ||
-    lower.endsWith(".jpg") ||
-    lower.endsWith(".jpeg") ||
-    lower.endsWith(".gif") ||
-    lower.endsWith(".webp") ||
-    lower.endsWith(".svg") ||
-    lower.includes("/images/") ||
-    lower.includes("/evidence/")
-  ) {
-    return "image";
-  }
-  return "document";
-};
-
-const getFileName = (url: string): string => {
-  const decoded = decodeURIComponent(url.split("/").pop() || "Attachment");
-  return decoded.split("?")[0] || "Attachment_Document";
-};
 
 function GalleryImage({ url, index, onClick }: { url: string; index: number; onClick: () => void }) {
     const [hasError, setHasError] = useState(false);
@@ -80,46 +49,119 @@ function GalleryImage({ url, index, onClick }: { url: string; index: number; onC
             <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                 <ZoomIn className="w-6 h-6 text-white" />
             </div>
+            <span className="absolute bottom-1.5 left-1.5 text-[9px] font-bold bg-black/60 text-white px-1.5 py-0.5 rounded backdrop-blur-xs">
+                PHOTO
+            </span>
         </div>
     );
 }
 
-function DocumentCard({ url, index }: { url: string; index: number }) {
+function UniversalFileCard({ url, index, category }: { url: string; index: number; category: EvidenceCategory }) {
   const resolvedUrl = resolveSupabaseUrl(url);
-  const filename = getFileName(url);
+  const filename = getEvidenceFileName(url, `File_${index + 1}`);
 
+  if (category === "pdf") {
+    return (
+      <div
+        className="flex flex-col justify-between p-3 border border-red-200 dark:border-red-900/60 rounded-lg bg-red-50/40 dark:bg-red-950/20 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors shadow-xs aspect-video cursor-pointer group"
+        onClick={() => window.open(resolvedUrl, "_blank")}
+      >
+        <div className="flex items-start justify-between gap-1.5">
+          <div className="p-1.5 rounded-md bg-red-500/10 text-red-600 dark:text-red-400 shrink-0">
+            <FileText className="w-5 h-5" />
+          </div>
+          <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded bg-red-600 text-white uppercase tracking-wider">
+            PDF
+          </span>
+        </div>
+        <div className="min-w-0 my-1">
+          <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 line-clamp-2 leading-tight group-hover:text-red-600 transition-colors" title={filename}>
+            {filename}
+          </p>
+        </div>
+        <div className="flex items-center justify-between pt-1 border-t border-red-200/50 dark:border-red-900/40 text-[10px] text-red-600 dark:text-red-400 font-semibold">
+          <span>View PDF</span>
+          <ExternalLink className="w-3 h-3 group-hover:translate-x-0.5 transition-transform" />
+        </div>
+      </div>
+    );
+  }
+
+  if (category === "spreadsheet") {
+    return (
+      <div
+        className="flex flex-col justify-between p-3 border border-emerald-200 dark:border-emerald-900/60 rounded-lg bg-emerald-50/40 dark:bg-emerald-950/20 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 transition-colors shadow-xs aspect-video cursor-pointer group"
+        onClick={() => window.open(resolvedUrl, "_blank")}
+      >
+        <div className="flex items-start justify-between gap-1.5">
+          <div className="p-1.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 shrink-0">
+            <FileSpreadsheet className="w-5 h-5" />
+          </div>
+          <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded bg-emerald-600 text-white uppercase tracking-wider">
+            CSV / XLS
+          </span>
+        </div>
+        <div className="min-w-0 my-1">
+          <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 line-clamp-2 leading-tight group-hover:text-emerald-600 transition-colors" title={filename}>
+            {filename}
+          </p>
+        </div>
+        <div className="flex items-center justify-between pt-1 border-t border-emerald-200/50 dark:border-emerald-900/40 text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold">
+          <span>Open Sheet</span>
+          <ExternalLink className="w-3 h-3 group-hover:translate-x-0.5 transition-transform" />
+        </div>
+      </div>
+    );
+  }
+
+  if (category === "audio") {
+    return (
+      <div className="flex flex-col justify-between p-3 border border-amber-200 dark:border-amber-900/60 rounded-lg bg-amber-50/40 dark:bg-amber-950/20 shadow-xs aspect-video">
+        <div className="flex items-start justify-between gap-1.5">
+          <div className="p-1.5 rounded-md bg-amber-500/10 text-amber-600 dark:text-amber-400 shrink-0">
+            <Volume2 className="w-5 h-5" />
+          </div>
+          <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded bg-amber-600 text-white uppercase tracking-wider">
+            AUDIO
+          </span>
+        </div>
+        <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate my-1" title={filename}>
+          {filename}
+        </p>
+        <audio src={resolvedUrl} controls className="w-full h-7 rounded" />
+      </div>
+    );
+  }
+
+  // Default Document Card (Word, Text, etc.)
   return (
     <div
-      className="flex items-center gap-3 p-3 border border-slate-200 rounded-lg bg-slate-50 hover:bg-slate-100 transition-colors shadow-sm cursor-pointer"
+      className="flex flex-col justify-between p-3 border border-indigo-200 dark:border-indigo-900/60 rounded-lg bg-indigo-50/40 dark:bg-indigo-950/20 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-colors shadow-xs aspect-video cursor-pointer group"
       onClick={() => window.open(resolvedUrl, "_blank")}
     >
-      <div className="p-2 rounded bg-red-50 text-red-500 shrink-0">
-        <FileText className="w-6 h-6" />
+      <div className="flex items-start justify-between gap-1.5">
+        <div className="p-1.5 rounded-md bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 shrink-0">
+          <FileText className="w-5 h-5" />
+        </div>
+        <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded bg-indigo-600 text-white uppercase tracking-wider">
+          DOC
+        </span>
       </div>
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-slate-700 truncate">{filename}</p>
-        <p className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wide">Document</p>
+      <div className="min-w-0 my-1">
+        <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 line-clamp-2 leading-tight group-hover:text-indigo-600 transition-colors" title={filename}>
+          {filename}
+        </p>
       </div>
-      <span className="text-[10px] font-semibold text-primary uppercase tracking-wide border border-primary/20 rounded px-2 py-1 bg-primary/5 shrink-0">Open</span>
+      <div className="flex items-center justify-between pt-1 border-t border-indigo-200/50 dark:border-indigo-900/40 text-[10px] text-indigo-600 dark:text-indigo-400 font-semibold">
+        <span>Open Doc</span>
+        <ExternalLink className="w-3 h-3 group-hover:translate-x-0.5 transition-transform" />
+      </div>
     </div>
   );
 }
 
 export default function ImageGallery({ images, title, uploader, emptyMessage }: ImageGalleryProps) {
     const [selectedMedia, setSelectedMedia] = useState<string | null>(null);
-
-    const isVideoUrl = (url: string): boolean => {
-        if (!url) return false;
-        const cleanUrl = url.split("?")[0].toLowerCase();
-        return (
-            cleanUrl.endsWith(".mp4") ||
-            cleanUrl.endsWith(".webm") ||
-            cleanUrl.endsWith(".ogg") ||
-            cleanUrl.endsWith(".mov") ||
-            cleanUrl.endsWith(".quicktime") ||
-            url.includes("video")
-        );
-    };
 
     const styles = uploader === "customer"
         ? { icon: User, borderColor: "border-l-blue-500", bgColor: "bg-blue-50/50", iconColor: "text-blue-600", badge: "bg-blue-100 text-blue-700 border-blue-200" }
@@ -139,32 +181,37 @@ export default function ImageGallery({ images, title, uploader, emptyMessage }: 
         );
     }
 
-    const videoCount = images.filter(isVideoUrl).length;
-    const imageCount = images.filter(url => getFileType(url) === "image").length;
-    const docCount = images.filter(url => getFileType(url) === "document").length;
+    const videoCount = images.filter(url => getEvidenceCategory(url) === "video").length;
+    const imageCount = images.filter(url => getEvidenceCategory(url) === "image").length;
+    const pdfCount = images.filter(url => getEvidenceCategory(url) === "pdf").length;
+    const sheetCount = images.filter(url => getEvidenceCategory(url) === "spreadsheet").length;
+    const docCount = images.filter(url => getEvidenceCategory(url) === "document").length;
+    const otherDocsCount = pdfCount + sheetCount + docCount;
 
     return (
         <>
             <div className={`p-4 rounded-xl border-l-4 border ${styles.borderColor} ${styles.bgColor} border-border/40`}>
                 <div className="flex items-center justify-between mb-3.5">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                         <Icon className={`w-4 h-4 ${styles.iconColor}`} />
                         <h3 className="font-semibold text-sm text-foreground">{title}</h3>
                         <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${styles.badge}`}>
-                            {imageCount > 0 && `${imageCount} image${imageCount > 1 ? "s" : ""}`}
-                            {imageCount > 0 && (videoCount > 0 || docCount > 0) && " • "}
+                            {imageCount > 0 && `${imageCount} photo${imageCount > 1 ? "s" : ""}`}
+                            {imageCount > 0 && (videoCount > 0 || otherDocsCount > 0) && " • "}
                             {videoCount > 0 && `${videoCount} video${videoCount > 1 ? "s" : ""}`}
-                            {videoCount > 0 && docCount > 0 && " • "}
-                            {docCount > 0 && `${docCount} document${docCount > 1 ? "s" : ""}`}
+                            {videoCount > 0 && otherDocsCount > 0 && " • "}
+                            {pdfCount > 0 && `${pdfCount} PDF${pdfCount > 1 ? "s" : ""}`}
+                            {pdfCount > 0 && (sheetCount > 0 || docCount > 0) && " • "}
+                            {(sheetCount > 0 || docCount > 0) && `${sheetCount + docCount} doc${sheetCount + docCount > 1 ? "s" : ""}`}
                         </span>
                     </div>
                 </div>
 
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
                     {images.map((url, index) => {
-                        const isVideo = isVideoUrl(url);
-                        const fileType = getFileType(url);
-                        if (isVideo) {
+                        const category = getEvidenceCategory(url);
+
+                        if (category === "video") {
                             return (
                                 <div
                                     key={index}
@@ -173,29 +220,39 @@ export default function ImageGallery({ images, title, uploader, emptyMessage }: 
                                 >
                                     <div className="relative w-full h-full bg-slate-950 flex items-center justify-center overflow-hidden">
                                         <video src={resolveSupabaseUrl(url)} className="w-full h-full object-cover opacity-80" muted />
-                                        <div className="absolute inset-0 flex items-center justify-center bg-black/25">
-                                            <div className="w-9 h-9 rounded-full bg-black/60 hover:bg-black/80 flex items-center justify-center text-white transition-all shadow-md">
+                                        <div className="absolute inset-0 flex items-center justify-center bg-black/30">
+                                            <div className="w-9 h-9 rounded-full bg-black/60 group-hover:bg-black/80 flex items-center justify-center text-white transition-all shadow-md">
                                                 <Play className="w-4 h-4 fill-white ml-0.5" />
                                             </div>
                                         </div>
                                     </div>
+                                    <span className="absolute bottom-1.5 left-1.5 text-[9px] font-bold bg-black/70 text-white px-1.5 py-0.5 rounded">
+                                        VIDEO
+                                    </span>
                                     <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                                         <ZoomIn className="w-6 h-6 text-white" />
                                     </div>
                                 </div>
                             );
                         }
-                        if (fileType === "document") {
+
+                        if (category === "image") {
                             return (
-                                <DocumentCard key={index} url={url} index={index} />
+                                <GalleryImage
+                                    key={index}
+                                    url={url}
+                                    index={index}
+                                    onClick={() => setSelectedMedia(url)}
+                                />
                             );
                         }
+
                         return (
-                            <GalleryImage
+                            <UniversalFileCard
                                 key={index}
                                 url={url}
                                 index={index}
-                                onClick={() => setSelectedMedia(url)}
+                                category={category}
                             />
                         );
                     })}
@@ -220,31 +277,68 @@ export default function ImageGallery({ images, title, uploader, emptyMessage }: 
                         </button>
                         
                         <div className="max-w-4xl max-h-[85vh] flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
-                            {isVideoUrl(selectedMedia) ? (
+                            {getEvidenceCategory(selectedMedia) === "video" ? (
                                 <video
                                     src={resolveSupabaseUrl(selectedMedia)}
                                     controls
                                     autoPlay
                                     className="max-w-full max-h-[80vh] object-contain rounded-lg shadow-2xl border border-white/10"
                                 />
-                            ) : getFileType(selectedMedia) === "document" ? (
-                                <div className="bg-white rounded-lg shadow-2xl p-6 max-w-md w-full">
-                                    <div className="flex items-center gap-4">
-                                        <div className="p-3 rounded bg-red-50 text-red-500">
-                                            <FileText className="w-8 h-8" />
-                                        </div>
-                                        <div>
-                                            <p className="font-semibold text-slate-800">{getFileName(selectedMedia)}</p>
-                                            <p className="text-xs text-slate-500">Document</p>
-                                        </div>
+                            ) : getEvidenceCategory(selectedMedia) === "pdf" ? (
+                                <div className="bg-white dark:bg-slate-900 rounded-xl shadow-2xl p-6 max-w-md w-full border border-slate-200 dark:border-slate-800 text-center">
+                                    <div className="w-16 h-16 rounded-full bg-red-500/10 text-red-600 flex items-center justify-center mx-auto mb-3">
+                                        <FileText className="w-8 h-8" />
                                     </div>
+                                    <h3 className="font-bold text-base text-foreground break-words">{getEvidenceFileName(selectedMedia)}</h3>
+                                    <p className="text-xs text-muted-foreground mt-1 mb-4">Official PDF Document Attachment</p>
+                                    <div className="flex gap-2">
+                                        <a
+                                            href={resolveSupabaseUrl(selectedMedia)}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="flex-1 inline-flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 text-white px-4 py-2.5 rounded-lg font-semibold text-xs transition-colors"
+                                        >
+                                            <ExternalLink className="w-4 h-4" /> Open Full PDF
+                                        </a>
+                                        <a
+                                            href={resolveSupabaseUrl(selectedMedia)}
+                                            download
+                                            className="inline-flex items-center justify-center gap-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-foreground px-4 py-2.5 rounded-lg font-semibold text-xs transition-colors"
+                                        >
+                                            <Download className="w-4 h-4" /> Download
+                                        </a>
+                                    </div>
+                                </div>
+                            ) : getEvidenceCategory(selectedMedia) === "spreadsheet" ? (
+                                <div className="bg-white dark:bg-slate-900 rounded-xl shadow-2xl p-6 max-w-md w-full border border-slate-200 dark:border-slate-800 text-center">
+                                    <div className="w-16 h-16 rounded-full bg-emerald-500/10 text-emerald-600 flex items-center justify-center mx-auto mb-3">
+                                        <FileSpreadsheet className="w-8 h-8" />
+                                    </div>
+                                    <h3 className="font-bold text-base text-foreground break-words">{getEvidenceFileName(selectedMedia)}</h3>
+                                    <p className="text-xs text-muted-foreground mt-1 mb-4">Spreadsheet / CSV Attachment</p>
                                     <a
                                         href={resolveSupabaseUrl(selectedMedia)}
                                         target="_blank"
                                         rel="noopener noreferrer"
-                                        className="mt-4 w-full inline-flex items-center justify-center gap-2 bg-primary text-white px-4 py-2 rounded-lg font-semibold text-sm hover:bg-primary/90 transition-colors"
+                                        className="w-full inline-flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-lg font-semibold text-xs transition-colors"
                                     >
-                                        <Download className="w-4 h-4" /> Open / Download
+                                        <Download className="w-4 h-4" /> Open / Download File
+                                    </a>
+                                </div>
+                            ) : getEvidenceCategory(selectedMedia) === "document" ? (
+                                <div className="bg-white dark:bg-slate-900 rounded-xl shadow-2xl p-6 max-w-md w-full border border-slate-200 dark:border-slate-800 text-center">
+                                    <div className="w-16 h-16 rounded-full bg-indigo-500/10 text-indigo-600 flex items-center justify-center mx-auto mb-3">
+                                        <FileText className="w-8 h-8" />
+                                    </div>
+                                    <h3 className="font-bold text-base text-foreground break-words">{getEvidenceFileName(selectedMedia)}</h3>
+                                    <p className="text-xs text-muted-foreground mt-1 mb-4">Document Attachment</p>
+                                    <a
+                                        href={resolveSupabaseUrl(selectedMedia)}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="w-full inline-flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-lg font-semibold text-xs transition-colors"
+                                    >
+                                        <Download className="w-4 h-4" /> Open / Download File
                                     </a>
                                 </div>
                             ) : (
@@ -256,7 +350,7 @@ export default function ImageGallery({ images, title, uploader, emptyMessage }: 
                             )}
                         </div>
 
-                        {getFileType(selectedMedia) !== "document" && (
+                        {getEvidenceCategory(selectedMedia) === "image" && (
                             <a
                                 href={resolveSupabaseUrl(selectedMedia)}
                                 download

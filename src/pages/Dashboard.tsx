@@ -46,7 +46,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StatCard } from "@/components/StatCard";
-import { StatusBadge, SeverityBadge } from "@/components/Badges";
+import { StatusBadge, SeverityBadge, getEffectiveComplaintStatus } from "@/components/Badges";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { complaintService, formatComplaintTicketId, type Complaint } from "@/services/complaintService";
 import { installationService, formatInstallationTicketId, type Installation } from "@/services/installationService";
@@ -648,9 +648,11 @@ const Dashboard = () => {
 
         // Status filter
         if (statusFilter !== "all") {
+          const effStatus = getEffectiveComplaintStatus(ticket);
           if (statusFilter === "open" && ["completed", "closed"].includes(ticket.status)) return false;
           if (statusFilter === "completed" && !["completed", "closed"].includes(ticket.status)) return false;
-          if (statusFilter === "in_progress" && ticket.status !== "in_progress") return false;
+          if (statusFilter === "reassigned" && effStatus !== "reassigned") return false;
+          if (statusFilter === "in_progress" && (effStatus === "reassigned" || ticket.status !== "in_progress")) return false;
         }
 
         // Search query
@@ -953,7 +955,7 @@ const Dashboard = () => {
               {ticket.severity && (
                 <SeverityBadge severity={ticket.severity as any} />
               )}
-              {ticket.status && <StatusBadge status={ticket.status} />}
+              <StatusBadge status={getEffectiveComplaintStatus(ticket)} ticket={ticket} />
             </div>
 
             <div className="flex items-center gap-1">
@@ -1929,6 +1931,7 @@ const Dashboard = () => {
                   >
                     <option value="all">Status: All</option>
                     <option value="open">Status: Open / Pending</option>
+                    <option value="reassigned">Status: Reassigned / Rework</option>
                     <option value="in_progress">Status: In Progress</option>
                     <option value="completed">Status: Completed</option>
                   </select>
@@ -2398,7 +2401,7 @@ const Dashboard = () => {
                 {quickViewTicket.severity && (
                   <SeverityBadge severity={quickViewTicket.severity as any} />
                 )}
-                {quickViewTicket.status && <StatusBadge status={quickViewTicket.status} />}
+                <StatusBadge status={getEffectiveComplaintStatus(quickViewTicket)} ticket={quickViewTicket} />
               </div>
 
               <div>

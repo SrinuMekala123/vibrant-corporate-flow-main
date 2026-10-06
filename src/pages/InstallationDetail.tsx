@@ -2,6 +2,8 @@ import { useState, useRef, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 import { compressImageForUpload } from '@/lib/imageCompression';
+import { uploadEvidenceWithProgress, type UploadProgressState } from '@/lib/fileUploadHelper';
+import { UploadProgressBar } from '@/components/UploadProgressBar';
 import { WhatsAppDeliveryStatus } from '@/components/WhatsAppDeliveryStatus';
 import { toast } from 'sonner';
 import SignatureCanvas from 'react-signature-canvas';
@@ -125,6 +127,8 @@ export default function InstallationDetail() {
   const [uploadedSignatureUrl, setUploadedSignatureUrl] = useState<string | null>(null);
   const [uploadedSignaturePreview, setUploadedSignaturePreview] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<UploadProgressState | null>(null);
   
   // Material Shortage State
   const [materialShortageDetails, setMaterialShortageDetails] = useState('');
@@ -787,44 +791,35 @@ export default function InstallationDetail() {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
     
-    for (const file of files) {
-      // Auto-compress high-res mobile photos to ~250KB before uploading
-      const processedFile = await compressImageForUpload(file);
-      const fileUrl = URL.createObjectURL(processedFile);
-      setUploadedPhotos(prev => [...prev, { url: fileUrl, file: processedFile, uploading: true }]);
-      
-      const fileName = `${id}/${Date.now()}_${processedFile.name.replace(/\s+/g, '_')}`;
-      const { data, error } = await supabase.storage
-        .from('installation-evidence')
-        .upload(fileName, processedFile);
-      
-      if (error) {
-        console.warn("installation-evidence bucket failed, attempting complaint-evidence:", error);
-        const { data: fallbackData, error: fallbackError } = await supabase.storage
-          .from('complaint-evidence')
-          .upload(fileName, processedFile);
-
-        if (fallbackError) {
-          toast.error(`Failed to upload ${file.name}`);
-          setUploadedPhotos(prev => prev.filter(p => p.url !== fileUrl));
-        } else {
-          const { data: urlData } = supabase.storage
-            .from('complaint-evidence')
-            .getPublicUrl(fileName);
+    setIsUploading(true);
+    try {
+      for (const file of files) {
+        const fileUrl = URL.createObjectURL(file);
+        setUploadedPhotos(prev => [...prev, { url: fileUrl, file, uploading: true }]);
+        
+        try {
+          const publicUrl = await uploadEvidenceWithProgress(file, {
+            bucket: 'installation-evidence',
+            folder: id || 'installations',
+            onProgress: (p) => {
+              setUploadProgress(p);
+            }
+          });
           
           setUploadedPhotos(prev => prev.map(p => 
-            p.url === fileUrl ? { url: urlData.publicUrl, uploading: false } : p
+            p.url === fileUrl ? { url: publicUrl, uploading: false } : p
           ));
+        } catch (uploadErr: any) {
+          console.error("Installation photo/video upload error:", file.name, uploadErr);
+          setUploadedPhotos(prev => prev.filter(p => p.url !== fileUrl));
         }
-      } else {
-        const { data: urlData } = supabase.storage
-          .from('installation-evidence')
-          .getPublicUrl(fileName);
-        
-        setUploadedPhotos(prev => prev.map(p => 
-          p.url === fileUrl ? { url: urlData.publicUrl, uploading: false } : p
-        ));
       }
+    } finally {
+      setTimeout(() => {
+        setIsUploading(false);
+        setUploadProgress(null);
+      }, 1000);
+      e.target.value = '';
     }
   };
 
@@ -841,38 +836,24 @@ export default function InstallationDetail() {
   };
 
   const uploadToSupabase = async (file: File, folder: string): Promise<string> => {
+    setIsUploading(true);
     try {
-      let fileToUpload = file;
-      if (file.type.startsWith('image/') || /\.(jpe?g|png|webp|heic|bmp)$/i.test(file.name)) {
-        try {
-          fileToUpload = await compressImageForUpload(file, {
-            maxSizeMB: 0.25,
-            maxWidthOrHeight: 1600,
-            useWebWorker: true,
-          });
-        } catch (err) {
-          console.warn('Image compression fallback to original:', err);
+      const publicUrl = await uploadEvidenceWithProgress(file, {
+        bucket: 'installation-evidence',
+        folder,
+        onProgress: (p) => {
+          setUploadProgress(p);
         }
-      }
-
-      const fileExt = fileToUpload.name.split('.').pop();
-      const fileName = `${folder}/${Date.now()}-${Math.random().toString(36).substring(2)}.${fileExt}`;
-      const { data, error } = await supabase.storage
-        .from('installation-evidence')
-        .upload(fileName, fileToUpload, {
-          cacheControl: '3600',
-          upsert: false,
-          contentType: fileToUpload.type || (fileExt === 'mp4' ? 'video/mp4' : fileExt === 'webm' ? 'video/webm' : undefined)
-        });
-      if (error) throw error;
-      const { data: { publicUrl } } = supabase.storage
-        .from('installation-evidence')
-        .getPublicUrl(fileName);
+      });
       return publicUrl;
     } catch (error: any) {
-      console.error('Signature upload error:', error);
-      toast.error(`Upload failed: ${error.message || 'Unknown error'}`);
+      console.error('Upload error in InstallationDetail:', error);
       throw error;
+    } finally {
+      setTimeout(() => {
+        setIsUploading(false);
+        setUploadProgress(null);
+      }, 1000);
     }
   };
 
@@ -2481,8 +2462,12 @@ export default function InstallationDetail() {
                    multiple
                    accept="image/*,video/*"
                    onChange={handlePhotoUpload}
+                   disabled={isUploading}
                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs bg-slate-50"
                  />
+                 {uploadProgress && (
+                   <UploadProgressBar progress={uploadProgress} className="mt-2" />
+                 )}
                   {uploadedPhotos.length > 0 && (
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5 mt-3">
                       {uploadedPhotos.map((photo, index) => {
