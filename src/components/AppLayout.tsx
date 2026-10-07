@@ -416,7 +416,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       </header>
 
       {/* 🖥️ Desktop Notification Center - Positioned comfortably in top-right with safe margins */}
-      <div className="hidden md:flex items-center gap-2.5 fixed top-4 right-8 lg:right-10 z-40">
+      <div className="hidden md:flex items-center gap-2.5 fixed top-3.5 right-6 sm:right-8 lg:right-10 z-40">
         <NotificationCenter />
       </div>
 

@@ -323,48 +323,54 @@ const generateComplaintPrintHtml = (c: any, item: UnifiedScheduleTask, techList:
     assetsTableHtml = `
     <!-- Assets & Line Items Table (Multi-Asset) -->
     <div class="section-card">
-      <div class="section-header" style="display: flex; justify-content: space-between; align-items: center;">
-        <span>Assets & Line Items to Service (${complaintAssets.length})</span>
+      <div class="section-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 4px;">
+        <span style="font-weight: 800;">Assets & Line Items to Service (${complaintAssets.length})</span>
         <span style="font-size: 9px; font-weight: normal; color: #475569;">Multi-Asset Service Breakdown</span>
       </div>
       <div class="section-body" style="padding: 0;">
-        <table style="width: 100%; border-collapse: collapse; font-size: 9.5px;">
-          <thead>
-            <tr style="background: #f8fafc; border-bottom: 1.5px solid #cbd5e1; text-align: left;">
-              <th style="padding: 5px 8px; width: 28px; text-align: center;">#</th>
-              <th style="padding: 5px 8px;">Asset Name</th>
-              <th style="padding: 5px 8px; width: 85px;">Type</th>
-              <th style="padding: 5px 8px;">Reported Issue</th>
-              <th style="padding: 5px 8px; width: 140px; text-align: center;">Warranty Status</th>
-              <th style="padding: 5px 8px; width: 80px; text-align: right;">Charge (₹)</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${complaintAssets.map((a: any, idx: number) => {
-              const isExpired = a.warranty_status === "Expired" || Boolean(a.is_chargeable);
-              const charge = a.service_charge ? Number(a.service_charge) : 0;
-              const badgeText = isExpired
-                ? `[Expired - ₹${charge.toLocaleString("en-IN")}]`
-                : `[Active - Under Warranty]`;
-              return `
-                <tr style="border-bottom: 1px solid #e2e8f0;">
-                  <td style="padding: 5px 8px; text-align: center; color: #64748b; font-family: monospace;">${idx + 1}</td>
-                  <td style="padding: 5px 8px; font-weight: 600; color: #0f172a;">${escapeHtml(a.asset_name || "Asset #" + (idx + 1))}</td>
-                  <td style="padding: 5px 8px; color: #475569;">${escapeHtml(a.asset_type || "General")}</td>
-                  <td style="padding: 5px 8px; color: #334155;">${escapeHtml(a.reported_issue || "No specific issue noted")}</td>
-                  <td style="padding: 5px 8px; text-align: center; font-weight: 600; color: ${isExpired ? '#c2410c' : '#15803d'}; font-family: monospace;">${escapeHtml(badgeText)}</td>
-                  <td style="padding: 5px 8px; text-align: right; font-family: monospace; font-weight: 600;">${isExpired && charge > 0 ? "₹" + charge.toLocaleString("en-IN") : "—"}</td>
-                </tr>
-              `;
-            }).join("")}
-            <tr style="background: #f1f5f9; border-top: 1.5px solid #cbd5e1; font-weight: bold;">
-              <td colspan="5" style="padding: 6px 8px; text-align: right;">Total Chargeable Amount:</td>
-              <td style="padding: 6px 8px; text-align: right; font-family: monospace; color: #0f172a;">
-                ₹${totalAssetCharge.toLocaleString("en-IN")}
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="assets-table-scroll" style="overflow-x: auto; -webkit-overflow-scrolling: touch; width: 100%;">
+          <table class="assets-table" style="width: 100%; min-width: 580px; border-collapse: collapse; font-size: 9.5px;">
+            <thead>
+              <tr style="background: #f8fafc; border-bottom: 1.5px solid #cbd5e1; text-align: left;">
+                <th style="padding: 6px 8px; width: 30px; text-align: center;">#</th>
+                <th style="padding: 6px 8px; min-width: 140px;">Asset Name</th>
+                <th style="padding: 6px 8px; width: 95px;">Type</th>
+                <th style="padding: 6px 8px; min-width: 130px;">Reported Issue</th>
+                <th style="padding: 6px 8px; width: 150px; text-align: center;">Warranty Status</th>
+                <th style="padding: 6px 8px; width: 85px; text-align: right;">Charge (₹)</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${complaintAssets.map((a: any, idx: number) => {
+                const isExpired = a.warranty_status === "Expired" || Boolean(a.is_chargeable);
+                const charge = a.service_charge ? Number(a.service_charge) : 0;
+                const badgeText = isExpired
+                  ? `Expired · ₹${charge.toLocaleString("en-IN")}`
+                  : `Active · Under Warranty`;
+                return `
+                  <tr style="border-bottom: 1px solid #e2e8f0;">
+                    <td style="padding: 6px 8px; text-align: center; color: #64748b; font-family: monospace;">${idx + 1}</td>
+                    <td style="padding: 6px 8px; font-weight: 600; color: #0f172a; line-height: 1.35;">${escapeHtml(a.asset_name || "Asset #" + (idx + 1))}</td>
+                    <td style="padding: 6px 8px; color: #475569; white-space: nowrap;">${escapeHtml(a.asset_type || "General")}</td>
+                    <td style="padding: 6px 8px; color: #334155; line-height: 1.35;">${escapeHtml(a.reported_issue || "No specific issue noted")}</td>
+                    <td style="padding: 6px 8px; text-align: center; white-space: nowrap;">
+                      <span style="display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 9px; font-weight: 700; ${isExpired ? 'background: #fff7ed; color: #c2410c; border: 1px solid #fed7aa;' : 'background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0;'}">
+                        ${isExpired ? '⚠️ ' : '✓ '}${escapeHtml(badgeText)}
+                      </span>
+                    </td>
+                    <td style="padding: 6px 8px; text-align: right; font-family: monospace; font-weight: 700; color: #0f172a; white-space: nowrap;">${isExpired && charge > 0 ? "₹" + charge.toLocaleString("en-IN") : "—"}</td>
+                  </tr>
+                `;
+              }).join("")}
+              <tr style="background: #f8fafc; border-top: 1.5px solid #cbd5e1; font-weight: bold;">
+                <td colspan="5" style="padding: 7px 8px; text-align: right; font-size: 10px; color: #334155;">Total Chargeable Amount:</td>
+                <td style="padding: 7px 8px; text-align: right; font-family: monospace; font-weight: 800; font-size: 11px; color: #0f172a; white-space: nowrap;">
+                  ₹${totalAssetCharge.toLocaleString("en-IN")}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>`;
   }
@@ -394,58 +400,11 @@ const generateComplaintPrintHtml = (c: any, item: UnifiedScheduleTask, techList:
       font-size: 10.5px;
     }
     .screen-toolbar {
-      position: sticky;
-      top: 0;
-      z-index: 9999;
-      background: #0f172a;
-      color: #ffffff;
-      padding: 10px 24px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.3);
-    }
-    .toolbar-title {
-      font-size: 13px;
-      font-weight: 700;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      color: #f8fafc;
-    }
-    .toolbar-actions {
-      display: flex;
-      gap: 10px;
-    }
-    .btn-action {
-      padding: 6px 15px;
-      font-size: 12px;
-      font-weight: 700;
-      border-radius: 5px;
-      border: none;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      transition: background 0.15s ease;
-    }
-    .btn-print {
-      background: #2563eb;
-      color: #ffffff;
-    }
-    .btn-print:hover {
-      background: #1d4ed8;
-    }
-    .btn-close {
-      background: #475569;
-      color: #f8fafc;
-    }
-    .btn-close:hover {
-      background: #334155;
+      display: none !important;
     }
     .page-sheet {
       max-width: 210mm;
-      margin: 20px auto 40px auto;
+      margin: 16px auto 32px auto;
       background: #ffffff;
       padding: 14mm 16mm;
       box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
@@ -727,11 +686,62 @@ const generateComplaintPrintHtml = (c: any, item: UnifiedScheduleTask, techList:
       border-bottom: 1px dotted #475569;
       width: 130px;
     }
+    @media screen and (max-width: 768px) {
+      body {
+        background: #e2e8f0;
+        padding: 4px;
+        font-size: 10px;
+      }
+      .page-sheet {
+        max-width: 100% !important;
+        width: 100% !important;
+        margin: 4px auto 16px auto !important;
+        padding: 12px 10px !important;
+        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08) !important;
+        border-radius: 4px !important;
+        min-height: auto !important;
+        box-sizing: border-box !important;
+      }
+      .header {
+        flex-direction: column !important;
+        align-items: flex-start !important;
+        gap: 8px !important;
+      }
+      .header-right {
+        text-align: left !important;
+        width: 100% !important;
+      }
+      .header-right > div:first-child {
+        justify-content: flex-start !important;
+      }
+      .grid-3 {
+        grid-template-columns: 1fr !important;
+        gap: 6px !important;
+      }
+      .grid-2 {
+        grid-template-columns: 1fr !important;
+        gap: 6px !important;
+      }
+      .signoff-strip {
+        grid-template-columns: 1fr !important;
+        gap: 14px !important;
+      }
+      [style*="grid-column: span 2"], [style*="grid-column: span 3"] {
+        grid-column: span 1 !important;
+      }
+    }
     @media print {
       body {
         background: #ffffff !important;
         padding: 0 !important;
         margin: 0 !important;
+      }
+      .assets-table-scroll {
+        overflow-x: visible !important;
+      }
+      .assets-table {
+        min-width: 100% !important;
+        width: 100% !important;
       }
       .no-print, .screen-toolbar, .audio-player-sm {
         display: none !important;
@@ -752,18 +762,6 @@ const generateComplaintPrintHtml = (c: any, item: UnifiedScheduleTask, techList:
   </style>
 </head>
 <body>
-  <!-- Sticky Screen Preview Toolbar (Hidden in Print) -->
-  <div class="screen-toolbar no-print">
-    <div class="toolbar-title">
-      <span>📄 Service Call Report Preview — <strong>${escapeHtml(ticketId)}</strong></span>
-      ${isOtpVerified ? `<span style="background: #059669; color: #ffffff; font-size: 10px; font-weight: 800; padding: 2px 8px; border-radius: 4px; letter-spacing: 0.5px;">✓ VERIFIED BY OTP</span>` : ""}
-    </div>
-    <div class="toolbar-actions">
-      <button onclick="window.print()" class="btn-action btn-print">🖨️ Print Report</button>
-      <button onclick="if(window.parent&&window.parent!==window){window.parent.postMessage('close-in-app-print','*');}else{window.close();}" class="btn-action btn-close">✕ Close Preview</button>
-    </div>
-  </div>
-
   <!-- A4 Page Sheet Container -->
   <div class="page-sheet">
     <!-- Header -->
@@ -1088,58 +1086,11 @@ const generateInstallationPrintHtml = (inst: any, item: UnifiedScheduleTask, tec
       font-size: 10.5px;
     }
     .screen-toolbar {
-      position: sticky;
-      top: 0;
-      z-index: 9999;
-      background: #0f172a;
-      color: #ffffff;
-      padding: 10px 24px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.3);
-    }
-    .toolbar-title {
-      font-size: 13px;
-      font-weight: 700;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      color: #f8fafc;
-    }
-    .toolbar-actions {
-      display: flex;
-      gap: 10px;
-    }
-    .btn-action {
-      padding: 6px 15px;
-      font-size: 12px;
-      font-weight: 700;
-      border-radius: 5px;
-      border: none;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      transition: background 0.15s ease;
-    }
-    .btn-print {
-      background: #2563eb;
-      color: #ffffff;
-    }
-    .btn-print:hover {
-      background: #1d4ed8;
-    }
-    .btn-close {
-      background: #475569;
-      color: #f8fafc;
-    }
-    .btn-close:hover {
-      background: #334155;
+      display: none !important;
     }
     .page-sheet {
       max-width: 210mm;
-      margin: 20px auto 40px auto;
+      margin: 16px auto 32px auto;
       background: #ffffff;
       padding: 14mm 16mm;
       box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
@@ -1413,6 +1364,50 @@ const generateInstallationPrintHtml = (inst: any, item: UnifiedScheduleTask, tec
       border-bottom: 1px dotted #475569;
       width: 130px;
     }
+    @media screen and (max-width: 768px) {
+      body {
+        background: #e2e8f0;
+        padding: 4px;
+        font-size: 10px;
+      }
+      .page-sheet {
+        max-width: 100% !important;
+        width: 100% !important;
+        margin: 4px auto 16px auto !important;
+        padding: 12px 10px !important;
+        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08) !important;
+        border-radius: 4px !important;
+        min-height: auto !important;
+        box-sizing: border-box !important;
+      }
+      .header {
+        flex-direction: column !important;
+        align-items: flex-start !important;
+        gap: 8px !important;
+      }
+      .header-right {
+        text-align: left !important;
+        width: 100% !important;
+      }
+      .header-right > div:first-child {
+        justify-content: flex-start !important;
+      }
+      .grid-3 {
+        grid-template-columns: 1fr !important;
+        gap: 6px !important;
+      }
+      .grid-2 {
+        grid-template-columns: 1fr !important;
+        gap: 6px !important;
+      }
+      .signoff-strip {
+        grid-template-columns: 1fr !important;
+        gap: 14px !important;
+      }
+      [style*="grid-column: span 2"], [style*="grid-column: span 3"] {
+        grid-column: span 1 !important;
+      }
+    }
     @media print {
       body {
         background: #ffffff !important;
@@ -1438,18 +1433,6 @@ const generateInstallationPrintHtml = (inst: any, item: UnifiedScheduleTask, tec
   </style>
 </head>
 <body>
-  <!-- Sticky Screen Preview Toolbar (Hidden in Print) -->
-  <div class="screen-toolbar no-print">
-    <div class="toolbar-title">
-      <span>📄 Installation Work Order Preview — <strong>${escapeHtml(ticketId)}</strong></span>
-      ${isOtpVerified ? `<span style="background: #059669; color: #ffffff; font-size: 10px; font-weight: 800; padding: 2px 8px; border-radius: 4px; letter-spacing: 0.5px;">✓ VERIFIED BY OTP</span>` : ""}
-    </div>
-    <div class="toolbar-actions">
-      <button onclick="window.print()" class="btn-action btn-print">🖨️ Print Work Order</button>
-      <button onclick="if(window.parent&&window.parent!==window){window.parent.postMessage('close-in-app-print','*');}else{window.close();}" class="btn-action btn-close">✕ Close Preview</button>
-    </div>
-  </div>
-
   <!-- A4 Page Sheet Container -->
   <div class="page-sheet">
     <!-- Header -->
@@ -2237,58 +2220,11 @@ const DailySchedule = () => {
       print-color-adjust: exact;
     }
     .screen-toolbar {
-      position: sticky;
-      top: 0;
-      z-index: 9999;
-      background: #0f172a;
-      color: #ffffff;
-      padding: 10px 24px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.3);
-    }
-    .toolbar-title {
-      font-size: 13px;
-      font-weight: 700;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      color: #f8fafc;
-    }
-    .toolbar-actions {
-      display: flex;
-      gap: 10px;
-    }
-    .btn-action {
-      padding: 6px 15px;
-      font-size: 12px;
-      font-weight: 700;
-      border-radius: 5px;
-      border: none;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      transition: background 0.15s ease;
-    }
-    .btn-print {
-      background: #2563eb;
-      color: #ffffff;
-    }
-    .btn-print:hover {
-      background: #1d4ed8;
-    }
-    .btn-close {
-      background: #475569;
-      color: #f8fafc;
-    }
-    .btn-close:hover {
-      background: #334155;
+      display: none !important;
     }
     .page-sheet-landscape {
       max-width: 297mm;
-      margin: 20px auto 40px auto;
+      margin: 16px auto 32px auto;
       background: #ffffff;
       padding: 12mm 15mm;
       box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
@@ -2405,11 +2341,51 @@ const DailySchedule = () => {
       border-bottom: 1px dotted #475569;
       width: 140px;
     }
+    @media screen and (max-width: 768px) {
+      body {
+        background: #e2e8f0;
+        padding: 4px;
+        font-size: 10px;
+      }
+      .page-sheet-landscape {
+        max-width: 100% !important;
+        width: 100% !important;
+        margin: 4px auto 16px auto !important;
+        padding: 12px 10px !important;
+        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08) !important;
+        border-radius: 4px !important;
+        min-height: auto !important;
+        box-sizing: border-box !important;
+      }
+      .header-container {
+        flex-direction: column !important;
+        align-items: flex-start !important;
+        gap: 8px !important;
+      }
+      .header-meta {
+        text-align: left !important;
+      }
+      .meta-strip {
+        flex-direction: column !important;
+        gap: 4px !important;
+      }
+      .signoff-section {
+        grid-template-columns: 1fr !important;
+        gap: 14px !important;
+      }
+    }
     @media print {
       body {
         background: #ffffff !important;
         padding: 0 !important;
         margin: 0 !important;
+      }
+      .timetable-wrap {
+        overflow-x: visible !important;
+      }
+      .timetable-wrap table {
+        min-width: 100% !important;
+        width: 100% !important;
       }
       .no-print, .screen-toolbar {
         display: none !important;
@@ -2426,17 +2402,6 @@ const DailySchedule = () => {
   </style>
 </head>
 <body>
-  <!-- Sticky Screen Preview Toolbar (Hidden in Print) -->
-  <div class="screen-toolbar no-print">
-    <div class="toolbar-title">
-      <span>📄 Daily Field Schedule Preview — <strong>${escapeHtml(dateLabel)}</strong> (${filteredScheduleData.length} Tasks)</span>
-    </div>
-    <div class="toolbar-actions">
-      <button onclick="window.print()" class="btn-action btn-print">🖨️ Print Timetable</button>
-      <button onclick="if(window.parent&&window.parent!==window){window.parent.postMessage('close-in-app-print','*');}else{window.close();}" class="btn-action btn-close">✕ Close Preview</button>
-    </div>
-  </div>
-
   <!-- Landscape Page Sheet Container -->
   <div class="page-sheet-landscape">
     <div class="header-container">
@@ -2456,26 +2421,28 @@ const DailySchedule = () => {
       <div><strong>Technician Filter:</strong> ${escapeHtml(techLabel)}</div>
     </div>
 
-    <table>
-      <thead>
-        <tr>
-          <th style="text-align: center; width: 3%;">#</th>
-          <th style="width: 14%;">Technician Name</th>
-          <th style="width: 7%;">Tech ID</th>
-          <th style="text-align: center; width: 6%;">Time</th>
-          <th style="text-align: center; width: 8%;">Task Type</th>
-          <th style="width: 13%;">Ticket ID</th>
-          <th style="width: 13%;">Client Name</th>
-          <th style="width: 9%;">Contact</th>
-          <th style="width: 14%;">Address / Site</th>
-          <th style="width: 13%;">Notes / Description</th>
-          <th style="text-align: center; width: 8%;">Status</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${tableRowsHtml}
-      </tbody>
-    </table>
+    <div class="timetable-wrap" style="overflow-x: auto; -webkit-overflow-scrolling: touch; width: 100%;">
+      <table style="width: 100%; min-width: 860px;">
+        <thead>
+          <tr>
+            <th style="text-align: center; width: 3%;">#</th>
+            <th style="width: 14%;">Technician Name</th>
+            <th style="width: 7%;">Tech ID</th>
+            <th style="text-align: center; width: 6%;">Time</th>
+            <th style="text-align: center; width: 8%;">Task Type</th>
+            <th style="width: 13%;">Ticket ID</th>
+            <th style="width: 13%;">Client Name</th>
+            <th style="width: 9%;">Contact</th>
+            <th style="width: 14%;">Address / Site</th>
+            <th style="width: 13%;">Notes / Description</th>
+            <th style="text-align: center; width: 8%;">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${tableRowsHtml}
+        </tbody>
+      </table>
+    </div>
 
     <div class="signoff-section">
       <div>
@@ -3639,17 +3606,19 @@ const DailySchedule = () => {
           }
         }}
       >
-        <DialogContent className="max-w-[96vw] w-[1300px] h-[92vh] max-h-[95vh] p-0 flex flex-col overflow-hidden bg-slate-900 border border-slate-700 shadow-2xl rounded-xl">
+        <DialogContent className="max-w-[96vw] w-[1300px] h-[92vh] max-h-[95vh] p-0 flex flex-col overflow-hidden bg-slate-900 border border-slate-700 shadow-2xl rounded-xl [&>button]:hidden">
           {/* Header */}
-          <div className="flex items-center justify-between px-5 py-3 bg-slate-950 text-white border-b border-slate-800 shrink-0">
-            <div className="flex items-center gap-2.5">
-              <Printer className="w-5 h-5 text-blue-400" />
-              <span className="font-bold text-sm text-slate-100">{inAppPrintModal.title}</span>
-              <span className="text-[11px] bg-blue-900/60 text-blue-300 border border-blue-700/50 px-2 py-0.5 rounded-full font-medium">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 px-3.5 py-2.5 sm:px-6 sm:py-3 bg-slate-950 text-white border-b border-slate-800 shrink-0">
+            <div className="flex items-center gap-2 min-w-0">
+              <Printer className="w-4 h-4 sm:w-5 sm:h-5 text-blue-400 shrink-0" />
+              <span className="font-bold text-xs sm:text-sm text-slate-100 truncate max-w-[220px] sm:max-w-md">
+                {inAppPrintModal.title}
+              </span>
+              <span className="hidden sm:inline-flex text-[11px] bg-blue-900/60 text-blue-300 border border-blue-700/50 px-2 py-0.5 rounded-full font-medium shrink-0">
                 In-App Document
               </span>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center justify-end gap-2 shrink-0">
               <Button
                 size="sm"
                 onClick={() => {
@@ -3659,15 +3628,15 @@ const DailySchedule = () => {
                     frame.contentWindow.print();
                   }
                 }}
-                className="bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs h-8 px-4 gap-1.5 shadow-xs"
+                className="bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs h-7.5 sm:h-8 px-3.5 sm:px-4 gap-1.5 shadow-xs"
               >
-                <Printer className="w-3.5 h-3.5" /> Print Now
+                <Printer className="w-3.5 h-3.5" /> Print Report
               </Button>
               <Button
                 size="sm"
                 variant="outline"
                 onClick={() => setInAppPrintModal((prev) => ({ ...prev, isOpen: false }))}
-                className="border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800 text-xs h-8 px-3"
+                className="border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800 text-xs h-7.5 sm:h-8 px-3"
               >
                 <X className="w-4 h-4 mr-1" /> Close
               </Button>

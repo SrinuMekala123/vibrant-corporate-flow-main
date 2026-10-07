@@ -2185,91 +2185,7 @@ const ComplaintEdit = () => {
                   </div>
                 </div>
 
-                {/* Row 1, Col 2: Phone */}
-                {customerType === "Existing BTL Customer" ? (
-                  <div className="space-y-1.5">
-                    <label className="text-sm font-medium">Contact Phone</label>
-                    <Input 
-                      value={form.customerPhone} 
-                      onChange={(e) => setForm(prev => ({ ...prev, customerPhone: e.target.value }))} 
-                      placeholder="+91 ..." 
-                      disabled={isSaving || (!isNew && !isAdminOrSupervisor)} 
-                      className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
-                    />
-                  </div>
-                ) : (
-                  <div className="space-y-1.5">
-                    <label className="text-sm font-medium flex items-center justify-between">
-                      <span>Contact Phone / WhatsApp <span className="text-destructive">*</span></span>
-                      {isCheckingPhone && (
-                        <span className="text-[10px] text-primary flex items-center gap-1 font-semibold">
-                          <Loader2 className="w-3 h-3 animate-spin" /> Checking...
-                        </span>
-                      )}
-                    </label>
-                    <Input 
-                      value={form.customerPhone} 
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setForm(prev => ({ ...prev, customerPhone: val }));
-                        if (val.replace(/\D/g, '').length >= 10) {
-                          checkExistingCustomerPhone(val);
-                        }
-                      }} 
-                      onBlur={(e) => checkExistingCustomerPhone(e.target.value)}
-                      placeholder="+91 9876543210" 
-                      required 
-                      disabled={isSaving || (!isNew && !isAdminOrSupervisor)} 
-                      className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
-                    />
-                  </div>
-                )}
-
-                {/* Smart Walk-in Alert Banner */}
-                {showMatchAlert && matchedCustomer && (
-                  <motion.div
-                    initial={{ opacity: 0, y: -8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="md:col-span-2 p-4 rounded-xl bg-amber-500/10 border-2 border-amber-500/40 text-amber-950 dark:text-amber-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-md"
-                  >
-                    <div className="flex items-start gap-2.5">
-                      <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-                      <div>
-                        <p className="font-bold text-sm">
-                          ⚠️ Existing Customer Profile Detected!
-                        </p>
-                        <p className="text-xs text-amber-900/80 dark:text-amber-300/80 mt-0.5">
-                          This phone number matches registered customer: <strong>{matchedCustomer.full_name}</strong> ({matchedCustomer.phone}). Do you want to link this ticket to their registered account instead?
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto">
-                      <Button
-                        type="button"
-                        size="sm"
-                        onClick={() => handleConvertToRegistered(matchedCustomer)}
-                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs h-8 px-3 shadow-sm rounded-lg flex-1 sm:flex-none"
-                      >
-                        <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> Yes, Switch to Registered
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => {
-                          setOverrideDuplicateCustomer(true);
-                          setShowMatchAlert(false);
-                          toast.info("Proceeding with direct entry without linking registered account.");
-                        }}
-                        className="text-xs h-8 px-2.5 text-slate-600 hover:text-slate-900 rounded-lg"
-                      >
-                        No, Keep as Walk-in
-                      </Button>
-                    </div>
-                  </motion.div>
-                )}
-
-                {/* Row 2, Col 1: Customer Search / Input */}
+                {/* Row 1, Col 2: Customer Search / Input */}
                 {customerType === "Existing BTL Customer" ? (
                   isCustomersLoading && !isNew ? (
                     <div className="space-y-1.5">
@@ -2366,6 +2282,90 @@ const ComplaintEdit = () => {
                       className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
                     />
                   </div>
+                )}
+
+                {/* Row 2, Col 1: Phone */}
+                {customerType === "Existing BTL Customer" ? (
+                  <div className="space-y-1.5">
+                    <label className="text-sm font-medium">Contact Phone</label>
+                    <Input 
+                      value={form.customerPhone} 
+                      onChange={(e) => setForm(prev => ({ ...prev, customerPhone: e.target.value }))} 
+                      placeholder="+91 ..." 
+                      disabled={isSaving || (!isNew && !isAdminOrSupervisor)} 
+                      className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
+                    />
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    <label className="text-sm font-medium flex items-center justify-between">
+                      <span>Contact Phone / WhatsApp <span className="text-destructive">*</span></span>
+                      {isCheckingPhone && (
+                        <span className="text-[10px] text-primary flex items-center gap-1 font-semibold">
+                          <Loader2 className="w-3 h-3 animate-spin" /> Checking...
+                        </span>
+                      )}
+                    </label>
+                    <Input 
+                      value={form.customerPhone} 
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setForm(prev => ({ ...prev, customerPhone: val }));
+                        if (val.replace(/\D/g, '').length >= 10) {
+                          checkExistingCustomerPhone(val);
+                        }
+                      }} 
+                      onBlur={(e) => checkExistingCustomerPhone(e.target.value)}
+                      placeholder="+91 9876543210" 
+                      required 
+                      disabled={isSaving || (!isNew && !isAdminOrSupervisor)} 
+                      className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
+                    />
+                  </div>
+                )}
+
+                {/* Smart Walk-in Alert Banner */}
+                {showMatchAlert && matchedCustomer && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="md:col-span-2 p-4 rounded-xl bg-amber-500/10 border-2 border-amber-500/40 text-amber-950 dark:text-amber-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-md"
+                  >
+                    <div className="flex items-start gap-2.5">
+                      <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="font-bold text-sm">
+                          ⚠️ Existing Customer Profile Detected!
+                        </p>
+                        <p className="text-xs text-amber-900/80 dark:text-amber-300/80 mt-0.5">
+                          This phone number matches registered customer: <strong>{matchedCustomer.full_name}</strong> ({matchedCustomer.phone}). Do you want to link this ticket to their registered account instead?
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto">
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => handleConvertToRegistered(matchedCustomer)}
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs h-8 px-3 shadow-sm rounded-lg flex-1 sm:flex-none"
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> Yes, Switch to Registered
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          setOverrideDuplicateCustomer(true);
+                          setShowMatchAlert(false);
+                          toast.info("Proceeding with direct entry without linking registered account.");
+                        }}
+                        className="text-xs h-8 px-2.5 text-slate-600 hover:text-slate-900 rounded-lg"
+                      >
+                        No, Keep as Walk-in
+                      </Button>
+                    </div>
+                  </motion.div>
                 )}
 
                 {/* Row 2, Col 2: Service Location Dropdown (for BTL) OR Email (for Walk-in) */}
@@ -2571,7 +2571,7 @@ const ComplaintEdit = () => {
                     className="border border-slate-200 dark:border-slate-800 rounded-lg p-4 mb-3 bg-white dark:bg-card shadow-sm transition-all hover:border-slate-300 dark:hover:border-slate-700"
                   >
                     {/* Top Bar inside Card: Item Label, Badges & Quick-fill */}
-                    <div className="flex items-center justify-between gap-2 pb-2.5 mb-3 border-b border-slate-100 dark:border-slate-800/80">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pb-2.5 mb-3 border-b border-slate-100 dark:border-slate-800/80">
                       <div className="flex items-center flex-wrap gap-2">
                         <span className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                           Item #{index + 1}
@@ -2606,27 +2606,37 @@ const ComplaintEdit = () => {
 
                       {/* Optional Quick-fill from registered customer assets if available */}
                       {customerAssets.length > 0 && (
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-[10px] text-slate-400 hidden sm:inline">Registered Asset:</span>
-                          <Select
-                            onValueChange={(val) => handleSelectRegisteredAssetForRow(index, val)}
-                            disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
-                          >
-                            <SelectTrigger className="h-7 text-[11px] px-2 w-[150px] bg-slate-50 dark:bg-slate-900 border-dashed text-slate-600 dark:text-slate-300">
-                              <SelectValue placeholder="Quick-fill..." />
-                            </SelectTrigger>
-                            <SelectContent className="max-h-56">
-                              {customerAssets.map((ca: any) => {
-                                const brandPart = ca.brand ? `[${ca.brand}] ` : '';
-                                const namePart = ca.product_name || ca.category || 'Asset';
-                                return (
-                                  <SelectItem key={ca.id} value={ca.id} className="text-xs">
-                                    {brandPart}{namePart} ({ca.category || 'Item'})
-                                  </SelectItem>
-                                );
-                              })}
-                            </SelectContent>
-                          </Select>
+                        <div className="flex items-center gap-1.5 w-full sm:w-auto min-w-0">
+                          <span className="text-[10px] text-slate-500 dark:text-slate-400 font-medium whitespace-nowrap shrink-0">
+                            Registered:
+                          </span>
+                          <div className="flex-1 min-w-0 sm:w-[200px]">
+                            <Select
+                              onValueChange={(val) => handleSelectRegisteredAssetForRow(index, val)}
+                              disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
+                            >
+                              <SelectTrigger className="h-7 text-[11px] px-2 w-full min-w-0 bg-slate-50 dark:bg-slate-900 border-dashed text-slate-600 dark:text-slate-300">
+                                <SelectValue placeholder="Quick-fill..." />
+                              </SelectTrigger>
+                              <SelectContent 
+                                className="max-h-56 w-[calc(100vw-3.5rem)] sm:w-[280px] max-w-sm"
+                                align="end"
+                                side="bottom"
+                              >
+                                {customerAssets.map((ca: any) => {
+                                  const brandPart = ca.brand ? `[${ca.brand}] ` : '';
+                                  const namePart = ca.product_name || ca.category || 'Asset';
+                                  return (
+                                    <SelectItem key={ca.id} value={ca.id} className="text-xs cursor-pointer">
+                                      <span className="truncate block max-w-[260px]" title={`${brandPart}${namePart} (${ca.category || 'Item'})`}>
+                                        {brandPart}{namePart} ({ca.category || 'Item'})
+                                      </span>
+                                    </SelectItem>
+                                  );
+                                })}
+                              </SelectContent>
+                            </Select>
+                          </div>
                         </div>
                       )}
                     </div>

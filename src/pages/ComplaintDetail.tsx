@@ -3322,9 +3322,9 @@ const ComplaintDetail = () => {
       case 1:
         return (
           <div className="space-y-3">
-            <div className="flex items-center justify-between border-b pb-2">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 border-b pb-2">
               <span className="font-semibold text-slate-800">Phase 1: Registration & Admin Assignment</span>
-              <span className="text-xs text-muted-foreground">{formatIndianDateTime(ticket.created_at)}</span>
+              <span className="text-xs text-muted-foreground shrink-0">{formatIndianDateTime(ticket.created_at)}</span>
             </div>
             <p className="text-slate-600 leading-relaxed">
               The complaint was registered by the customer. The Admin reviews the details and routes it to the designated supervisor.
@@ -3365,9 +3365,9 @@ const ComplaintDetail = () => {
       case 2:
         return (
           <div className="space-y-3">
-            <div className="flex items-center justify-between border-b pb-2">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 border-b pb-2">
               <span className="font-semibold text-slate-800">Phase 2: Telephonic Triage</span>
-              <span className="text-xs text-muted-foreground">
+              <span className="text-xs text-muted-foreground shrink-0">
                 {ticket.assignment_timestamp ? formatIndianDateTime(ticket.assignment_timestamp) : 'Pending Triage'}
               </span>
             </div>
@@ -3398,9 +3398,9 @@ const ComplaintDetail = () => {
       case 3:
         return (
           <div className="space-y-3">
-            <div className="flex items-center justify-between border-b pb-2">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 border-b pb-2">
               <span className="font-semibold text-slate-800">Phase 3: Technician Dispatch</span>
-              <span className="text-xs text-muted-foreground">
+              <span className="text-xs text-muted-foreground shrink-0">
                 {ticket.assignment_timestamp ? formatIndianDateTime(ticket.assignment_timestamp) : 'Pending Dispatch'}
               </span>
             </div>
@@ -3527,9 +3527,9 @@ const ComplaintDetail = () => {
       case 4:
         return (
           <div className="space-y-3">
-            <div className="flex items-center justify-between border-b pb-2">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 border-b pb-2">
               <span className="font-semibold text-slate-800">Phase 4: Site Visit & PIR</span>
-              <span className="text-xs text-muted-foreground">
+              <span className="text-xs text-muted-foreground shrink-0">
                 {ticket.arrival_timestamp ? formatIndianDateTime(ticket.arrival_timestamp) : 'Pending Arrival'}
               </span>
             </div>
@@ -3793,9 +3793,9 @@ const ComplaintDetail = () => {
       case 5:
         return (
           <div className="space-y-3">
-            <div className="flex items-center justify-between border-b pb-2">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 border-b pb-2">
               <span className="font-semibold text-slate-800">Phase 5: Remote/Field Resolution & Sign-Off</span>
-              <span className="text-xs text-muted-foreground">
+              <span className="text-xs text-muted-foreground shrink-0">
                 {ticket.signoff_timestamp ? formatIndianDateTime(ticket.signoff_timestamp) : 'Pending Sign-Off'}
               </span>
             </div>
@@ -3850,13 +3850,13 @@ const ComplaintDetail = () => {
       case 6:
         return (
           <div className="space-y-3">
-            <div className={cn("flex items-center justify-between border-b pb-2", isPhase6ClosedOrVerified ? "border-success/30" : "")}>
-              <span className={cn("font-semibold flex items-center gap-1.5", isPhase6ClosedOrVerified ? "text-success" : "text-slate-800")}>
-                {isPhase6ClosedOrVerified && <CheckCircle2 className="w-4 h-4 text-success" />}
-                Phase 6: QA Verification & Feedback
-                {isPhase6ClosedOrVerified && <span className="text-xs bg-success/20 text-success border border-success/30 px-2 py-0.5 rounded-full font-bold ml-1">Completed & Verified ✓</span>}
+            <div className={cn("flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 border-b pb-2", isPhase6ClosedOrVerified ? "border-success/30" : "")}>
+              <span className={cn("font-semibold flex items-center flex-wrap gap-1.5 text-sm", isPhase6ClosedOrVerified ? "text-success" : "text-slate-800")}>
+                {isPhase6ClosedOrVerified && <CheckCircle2 className="w-4 h-4 text-success shrink-0" />}
+                <span>Phase 6: QA Verification & Feedback</span>
+                {isPhase6ClosedOrVerified && <span className="text-[11px] bg-success/20 text-success border border-success/30 px-2 py-0.5 rounded-full font-bold ml-1">Completed & Verified ✓</span>}
               </span>
-              <span className={cn("text-xs font-medium", isPhase6ClosedOrVerified ? "text-success" : "text-muted-foreground")}>
+              <span className={cn("text-xs font-medium shrink-0", isPhase6ClosedOrVerified ? "text-success" : "text-muted-foreground")}>
                 {ticket.feedback_timestamp || ticket.closure_timestamp || ticket.closed_at ? formatIndianDateTime(ticket.feedback_timestamp || ticket.closure_timestamp || ticket.closed_at) : 'Pending Verification'}
               </span>
             </div>

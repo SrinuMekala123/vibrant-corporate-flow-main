@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
@@ -29,13 +30,17 @@ export function NotificationCenter() {
 
   // Close panel when clicking outside
   useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
+    function handleClickOutside(event: MouseEvent | TouchEvent) {
       if (panelRef.current && !panelRef.current.contains(event.target as Node)) {
         setIsOpen(false);
       }
     }
     document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
+    document.addEventListener("touchstart", handleClickOutside, { passive: true });
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("touchstart", handleClickOutside);
+    };
   }, []);
 
   // Fetch initial notifications and count with auto-refresh every 30s
@@ -223,10 +228,14 @@ export function NotificationCenter() {
   };
 
   return (
-    <div className="relative" ref={panelRef}>
+    <div className="relative">
       {/* Bell Button */}
       <button
-        onClick={() => setIsOpen(!isOpen)}
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setIsOpen(!isOpen);
+        }}
         className="relative p-2.5 rounded-full bg-white dark:bg-slate-800 border border-slate-200/90 dark:border-slate-700 shadow-xs text-slate-700 dark:text-slate-200 hover:text-[#0083a2] hover:bg-slate-50 dark:hover:bg-slate-700/60 transition-all flex items-center justify-center min-w-[42px] min-h-[42px] focus:outline-none"
         aria-label={`Notifications (${unreadCount} unread)`}
       >
@@ -240,10 +249,10 @@ export function NotificationCenter() {
           <Bell className="w-5 h-5" />
         </motion.div>
 
-        {/* Notification Count Badge - Perfectly matching user reference image with coral-red circle & 9+ */}
+        {/* Notification Count Badge - Crisp, centered & responsive */}
         {unreadCount > 0 && (
           <span
-            className="absolute -top-1.5 -right-1.5 flex h-[22px] min-w-[22px] px-1 items-center justify-center rounded-full bg-[#f87171] text-white text-[11px] font-black leading-none shadow-md ring-2 ring-white dark:ring-slate-900 pointer-events-none select-none"
+            className="absolute -top-1 -right-1 flex h-5 min-w-[20px] px-1 items-center justify-center rounded-full bg-rose-500 text-white text-[10px] font-black leading-none shadow-sm ring-2 ring-white dark:ring-slate-900 pointer-events-none select-none z-10"
             title={`${unreadCount} unread notification${unreadCount === 1 ? '' : 's'}`}
           >
             {unreadCount > 9 ? "9+" : unreadCount}
@@ -251,16 +260,26 @@ export function NotificationCenter() {
         )}
       </button>
 
-      {/* Floating Panel */}
-      <AnimatePresence>
-        {isOpen && (
-          <motion.div
-            initial={{ opacity: 0, y: 10, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 10, scale: 0.95 }}
-            transition={{ duration: 0.15 }}
-            className={`fixed top-16 right-4 sm:right-6 md:right-8 lg:right-10 w-[calc(100vw-2rem)] sm:w-84 md:w-96 max-w-[92vw] max-h-[75vh] overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xl z-50 flex flex-col border-t-4 ${getRoleAccent()}`}
-          >
+      {/* Floating Panel rendered via Portal so it never clips under headers or backdrop-filter */}
+      {typeof document !== "undefined" && createPortal(
+        <AnimatePresence>
+          {isOpen && (
+            <>
+              {/* Tap-outside Backdrop */}
+              <div
+                className="fixed inset-0 z-[9998] bg-black/20 backdrop-blur-[1px] md:bg-transparent"
+                onClick={() => setIsOpen(false)}
+                aria-hidden="true"
+              />
+
+              <motion.div
+                ref={panelRef}
+                initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                transition={{ duration: 0.15 }}
+                className={`fixed top-16 right-3 sm:right-6 md:right-8 lg:right-10 w-[calc(100vw-1.5rem)] sm:w-84 md:w-96 max-w-[95vw] max-h-[75vh] overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-2xl z-[9999] flex flex-col border-t-4 ${getRoleAccent()}`}
+              >
             {/* Header */}
             <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50/70 dark:bg-slate-800/50">
               <div className="flex items-center gap-2">
@@ -364,10 +383,13 @@ export function NotificationCenter() {
               )}
             </div>
           </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  );
+        </>
+      )}
+    </AnimatePresence>,
+    document.body
+  )}
+</div>
+);
 
   function renderNotificationItem(n: Notification) {
     return (
