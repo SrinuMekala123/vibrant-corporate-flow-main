@@ -228,7 +228,7 @@ export function NotificationCenter() {
   };
 
   return (
-    <div className="relative">
+    <div className="relative inline-flex items-center justify-center">
       {/* Bell Button */}
       <button
         type="button"
@@ -236,7 +236,7 @@ export function NotificationCenter() {
           e.stopPropagation();
           setIsOpen(!isOpen);
         }}
-        className="relative p-2.5 rounded-full bg-white dark:bg-slate-800 border border-slate-200/90 dark:border-slate-700 shadow-xs text-slate-700 dark:text-slate-200 hover:text-[#0083a2] hover:bg-slate-50 dark:hover:bg-slate-700/60 transition-all flex items-center justify-center min-w-[42px] min-h-[42px] focus:outline-none"
+        className="p-2.5 rounded-full bg-white dark:bg-slate-800 border border-slate-200/90 dark:border-slate-700 shadow-xs text-slate-700 dark:text-slate-200 hover:text-[#0083a2] hover:bg-slate-50 dark:hover:bg-slate-700/60 transition-all flex items-center justify-center min-w-[42px] min-h-[42px] focus:outline-none"
         aria-label={`Notifications (${unreadCount} unread)`}
       >
         <motion.div
@@ -248,17 +248,21 @@ export function NotificationCenter() {
         >
           <Bell className="w-5 h-5" />
         </motion.div>
-
-        {/* Notification Count Badge - Crisp, centered & responsive */}
-        {unreadCount > 0 && (
-          <span
-            className="absolute -top-1 -right-1 flex h-5 min-w-[20px] px-1 items-center justify-center rounded-full bg-rose-500 text-white text-[10px] font-black leading-none shadow-sm ring-2 ring-white dark:ring-slate-900 pointer-events-none select-none z-10"
-            title={`${unreadCount} unread notification${unreadCount === 1 ? '' : 's'}`}
-          >
-            {unreadCount > 9 ? "9+" : unreadCount}
-          </span>
-        )}
       </button>
+
+      {/* Notification Count Badge - Placed OUTSIDE button so it is NEVER clipped by button border-radius */}
+      {unreadCount > 0 && (
+        <span
+          onClick={(e) => {
+            e.stopPropagation();
+            setIsOpen(!isOpen);
+          }}
+          className="absolute -top-1 -right-1 flex h-[22px] min-w-[22px] px-1.5 items-center justify-center rounded-full bg-rose-600 text-white text-[11px] font-extrabold leading-none shadow-md ring-2 ring-white dark:ring-slate-900 cursor-pointer select-none z-20 tabular-nums"
+          title={`${unreadCount} unread notification${unreadCount === 1 ? '' : 's'}`}
+        >
+          {unreadCount > 99 ? "99+" : unreadCount}
+        </span>
+      )}
 
       {/* Floating Panel rendered via Portal so it never clips under headers or backdrop-filter */}
       {typeof document !== "undefined" && createPortal(
