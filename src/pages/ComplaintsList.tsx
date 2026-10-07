@@ -31,6 +31,7 @@ import {
 const statusFilters = [
   "all",
   "unassigned",
+  "open",
   "assigned",
   "reassigned",
   "dispatched",
@@ -755,7 +756,7 @@ const ComplaintsList = () => {
                     : "bg-muted text-muted-foreground border-border/40 hover:bg-muted/80"
                 }`}
               >
-              {s === "all" ? "All Tickets" : s === "pending_verification" ? "Pending Verification" : s.replace("-", " ")}
+              {s === "all" ? "All Tickets" : s === "open" ? "Open / Under Review" : s === "pending_verification" ? "Pending Verification" : s.replace("-", " ")}
             </button>
           ))}
         </div>

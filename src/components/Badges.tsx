@@ -32,7 +32,6 @@ export function getEffectiveComplaintStatus(ticket: any): string {
     rawStatus === "pending_verification" || 
     rawStatus === "resolution_submitted" || 
     rawStatus === "awaiting_verification" ||
-    rawStatus === "dispatched" ||
     rawStatus === "in-progress" ||
     rawStatus === "in_progress" ||
     rawStatus === "pir_approved_work_in_progress" ||
@@ -44,7 +43,21 @@ export function getEffectiveComplaintStatus(ticket: any): string {
     return rawStatus;
   }
   
-  // 2. If ticket has rework / reassignment signals and has not advanced to dispatched/progress yet, it is "reassigned"
+  const hasTech = typeof ticket === "object" ? Boolean(
+    ticket.assigned_technician ||
+    ticket.assigned_to ||
+    (Array.isArray(ticket.complaint_technicians) && ticket.complaint_technicians.length > 0)
+  ) : false;
+
+  // 2. If technician has started journey (en route), it is DISPATCHED (even on rework rounds)!
+  if (
+    (typeof ticket === "object" && Boolean(ticket.start_journey_timestamp) && hasTech) ||
+    (rawStatus === "dispatched" && hasTech)
+  ) {
+    return "dispatched";
+  }
+
+  // 3. If ticket has rework / reassignment signals and has not advanced to dispatched/progress yet, it is "reassigned"
   if (
     rawStatus === "reassigned" ||
     rawStatus === "rework_required" ||
@@ -62,6 +75,23 @@ export function getEffectiveComplaintStatus(ticket: any): string {
     ))
   ) {
     return "reassigned";
+  }
+
+  // 4. Check technician assignment strictly when ticket object is provided
+  if (typeof ticket === "object") {
+    // If technician is assigned (and journey hasn't started yet)
+    if (hasTech) {
+      return "assigned";
+    }
+
+    // IF NO TECHNICIAN IS ASSIGNED:
+    // It can never be "assigned" or "dispatched"!
+    // If supervisor is assigned or current_phase >= 2, status is "open" (Open / Under Review)
+    if (ticket.assigned_supervisor || ticket.supervisor_assigned || Number(ticket.current_phase) >= 2) {
+      return "open";
+    }
+
+    return "unassigned";
   }
 
   return rawStatus;
@@ -94,7 +124,9 @@ export function StatusBadge({ status, ticket }: StatusBadgeProps) {
 
   const statusConfig: Record<string, { bg: string; text: string; label: string }> = {
     unassigned: { bg: "bg-slate-100", text: "text-slate-700", label: "Unassigned" },
-    open: { bg: "bg-blue-100", text: "text-blue-700", label: "Open" },
+    open: { bg: "bg-blue-100", text: "text-blue-700", label: "Open / Under Review" },
+    "open / under review": { bg: "bg-blue-100", text: "text-blue-700", label: "Open / Under Review" },
+    "Open": { bg: "bg-blue-100", text: "text-blue-700", label: "Open / Under Review" },
     assigned: { bg: "bg-indigo-100", text: "text-indigo-700", label: "Assigned" },
     dispatched: { bg: "bg-orange-100", text: "text-orange-700", label: "Dispatched" },
     "in-progress": { bg: "bg-yellow-100", text: "text-yellow-700", label: "In Progress" },

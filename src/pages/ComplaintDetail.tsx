@@ -75,26 +75,6 @@ const getEffectivePhase = (t: any): number => {
   const raw = Number(t.current_phase) || 1;
   const status = (t.status || "").toLowerCase();
 
-  if (raw === 3 || status === "assigned" || status === "dispatched") {
-    return 3;
-  }
-
-  if (raw === 4 || status === "arrived") {
-    return 4;
-  }
-
-  if (raw === 2 || status === "triage" || status === "triaged") {
-    return 2;
-  }
-
-  if (raw === 1 || status === "unassigned" || status === "pending" || status === "open") {
-    return 1;
-  }
-
-  if (status === "rework_required" || status === "rework") {
-    return 3;
-  }
-
   if (
     status === "closed" ||
     status === "verified" ||
@@ -110,6 +90,26 @@ const getEffectivePhase = (t: any): number => {
     status === "resolution_submitted"
   ) {
     return 5;
+  }
+
+  if (raw === 4 || status === "arrived" || status === "in-progress" || status === "in_progress") {
+    return 4;
+  }
+
+  if (status === "rework_required" || status === "rework") {
+    return 3;
+  }
+
+  if (raw === 3 || status === "dispatched" || (status === "assigned" && (Boolean(t.assigned_technician) || Boolean(t.assigned_to) || (Array.isArray(t.complaint_technicians) && t.complaint_technicians.length > 0)))) {
+    return 3;
+  }
+
+  if (raw === 2 || status === "triage" || status === "triaged" || (Boolean(t.assigned_supervisor) && !t.assigned_technician && !t.assigned_to)) {
+    return 2;
+  }
+
+  if (raw === 1 || status === "unassigned" || status === "pending" || status === "open") {
+    return 1;
   }
 
   return raw;
@@ -1452,8 +1452,8 @@ const ComplaintDetail = () => {
         adminIds,
         ticket.id,
         "info",
-        "🚐 Field Visit Dispatched",
-        `Complaint #${slicedId} dispatched to ${fieldVisitSelectedTechs.length} technician(s). Lead: ${leadName}.`,
+        "👨‍🔧 Field Team Assigned",
+        `Complaint #${slicedId} assigned to ${fieldVisitSelectedTechs.length} technician(s). Lead: ${leadName}.`,
         3,
         undefined,
         user?.id
@@ -1464,8 +1464,8 @@ const ComplaintDetail = () => {
           ticket.customer_id,
           ticket.id,
           "info",
-          "🚐 Technician Dispatched",
-          `Technician team dispatched for Complaint #${slicedId}. Lead technician: ${leadName}.`,
+          "👨‍🔧 Technician Assigned",
+          `Technician team assigned for Complaint #${slicedId}. Lead technician: ${leadName}. Scheduled: ${fieldVisitScheduledDate} at ${fieldVisitScheduledTime}.`,
           3,
           undefined,
           user?.id
@@ -4591,22 +4591,28 @@ const ComplaintDetail = () => {
                     setShowFieldVisitModal(true);
                   }}
                 >
-                  <Wrench className="w-4 h-4 mr-2" /> Assign Technicians & Dispatch
+                  <Wrench className="w-4 h-4 mr-2" /> Assign Technicians & Schedule Visit
                 </Button>
               </div>
             ) : (
               <div className="bg-muted/50 p-4 rounded-lg">
                 <p className="text-sm text-muted-foreground flex items-center gap-2">
-                  <Clock className="w-4 h-4 text-warning animate-pulse" /> Waiting for supervisor ({ticket.assigned_supervisor || "assigned supervisor"}) to assign technician and dispatch.
+                  <Clock className="w-4 h-4 text-warning animate-pulse" /> Waiting for supervisor ({ticket.assigned_supervisor || "assigned supervisor"}) to assign technician and schedule visit.
                 </p>
               </div>
             )
           ) : (
             <div className="bg-emerald-50/70 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800 p-4 rounded-xl space-y-3">
               <div className="flex items-center justify-between flex-wrap gap-2">
-                <span className="text-xs font-bold uppercase tracking-wider text-emerald-800 dark:text-emerald-300 flex items-center gap-1.5">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600" /> Field Team Dispatched
-                </span>
+                {Boolean(ticket.start_journey_timestamp || ticket.status === 'dispatched') ? (
+                  <span className="text-xs font-bold uppercase tracking-wider text-orange-800 dark:text-orange-300 flex items-center gap-1.5">
+                    <Zap className="w-4 h-4 text-orange-600 animate-pulse" /> Field Team Dispatched / En Route
+                  </span>
+                ) : (
+                  <span className="text-xs font-bold uppercase tracking-wider text-indigo-800 dark:text-indigo-300 flex items-center gap-1.5">
+                    <CheckCircle2 className="w-4 h-4 text-indigo-600" /> {reworkHistory.length > 0 ? "Field Team Reassigned" : "Field Team Assigned"}
+                  </span>
+                )}
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-100 dark:bg-emerald-900/50 px-2.5 py-1 rounded-md border border-emerald-200 dark:border-emerald-800 flex items-center gap-1.5">
                     <Calendar className="w-3.5 h-3.5" />
@@ -4720,7 +4726,11 @@ const ComplaintDetail = () => {
                 <div className="bg-indigo-50/60 dark:bg-indigo-950/30 border border-indigo-200/80 dark:border-indigo-800 p-3 rounded-lg flex items-center justify-between shadow-2xs mt-2">
                   <div className="flex items-center gap-2 text-xs font-medium text-indigo-900 dark:text-indigo-200">
                     <Clock className="w-4 h-4 text-indigo-600 animate-pulse shrink-0" />
-                    <span>Technician team dispatched. Awaiting on-site arrival and PIR diagnostic from <strong>{leadTechnicianName}</strong>.</span>
+                    {Boolean(ticket.start_journey_timestamp || ticket.status === 'dispatched') ? (
+                      <span>Technician team dispatched (en route). Awaiting on-site arrival and PIR diagnostic from <strong>{leadTechnicianName}</strong>.</span>
+                    ) : (
+                      <span>Technician team assigned. Awaiting journey start from <strong>{leadTechnicianName}</strong>.</span>
+                    )}
                   </div>
                 </div>
               )}

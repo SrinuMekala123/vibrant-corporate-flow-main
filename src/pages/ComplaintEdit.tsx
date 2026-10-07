@@ -810,19 +810,34 @@ const ComplaintEdit = () => {
   };
 
   const calculateAutoStatus = () => {
+    const hasTech = Boolean(
+      form.assignedTechnician ||
+      selectedTechnicianId ||
+      (selectedTechnicianIds && selectedTechnicianIds.length > 0)
+    );
+    const hasSupervisor = Boolean(form.assignedSupervisor || selectedSupervisorId);
+
     if (isNew) {
-      if (form.assignedSupervisor || selectedSupervisorId) return "assigned";
+      if (hasTech) return "assigned";
+      if (hasSupervisor) return "open";
       return "unassigned";
     }
 
+    const currentStatus = (existingComplaint?.status || "").toLowerCase().trim();
     const phase = existingComplaint?.current_phase || 1;
-    if (form.assignedTechnician || selectedTechnicianId || (selectedTechnicianIds && selectedTechnicianIds.length > 0)) return "dispatched";
-    if (form.assignedSupervisor || selectedSupervisorId) return "assigned";
-    if (phase >= 6) return "closed";
-    if (phase >= 5) return "completed";
-    if (phase >= 4) return "in-progress";
-    if (phase >= 3) return "dispatched";
-    if (phase >= 2) return "assigned";
+
+    // Preserve milestones if ticket has already progressed beyond assignment
+    if (phase >= 6 || currentStatus === "closed") return "closed";
+    if (phase >= 5 || currentStatus === "completed" || currentStatus === "pending_verification") return "pending_verification";
+    if (phase >= 4 || currentStatus === "in-progress" || currentStatus === "in_progress") return "in-progress";
+    if (existingComplaint?.start_journey_timestamp || currentStatus === "dispatched") return "dispatched";
+
+    // Show "assigned" only when technician is assigned
+    if (hasTech) return "assigned";
+
+    // When supervisor is assigned without technicians, ticket status is "open" (under triage)
+    if (hasSupervisor || phase >= 2) return "open";
+
     return "unassigned";
   };
 
@@ -1576,16 +1591,20 @@ const ComplaintEdit = () => {
           : (matchedSup?.full_name || form.assignedSupervisor || (selectedSupervisorId ? selectedSupervisorId : null));
 
         const autoStatus = calculateAutoStatus();
-        let status = resolvedSupervisorName ? "assigned" : (autoStatus || "unassigned");
+        let status = autoStatus || (resolvedSupervisorName ? "open" : "unassigned");
         let phase = resolvedSupervisorName ? 2 : 1;
         if (status === "unassigned") {
           phase = 1;
-        } else if (status === "assigned") {
+        } else if (status === "open") {
           phase = 2;
+        } else if (status === "assigned") {
+          phase = 3;
         } else if (status === "dispatched") {
           phase = 3;
         } else if (["in-progress", "in_progress"].includes(status)) {
           phase = 4;
+        } else if (status === "pending_verification") {
+          phase = 5;
         } else if (status === "completed" || status === "closed") {
           phase = 6;
         }
@@ -1859,8 +1878,8 @@ const ComplaintEdit = () => {
                     form.customerId,
                     newComplaint.id,
                     'info',
-                    '🚐 Technician Dispatched',
-                    `A technician has been dispatched to your location for Ticket #${displayTicketId}.`,
+                    '👨‍🔧 Technician Assigned',
+                    `A technician has been assigned to your complaint for Ticket #${displayTicketId}.`,
                     3,
                     undefined,
                     user?.id
@@ -1896,19 +1915,23 @@ const ComplaintEdit = () => {
 
         if (autoStatus === "unassigned") {
           nextPhase = 1;
-        } else if (autoStatus === "assigned") {
+        } else if (autoStatus === "open") {
           nextPhase = 2;
+        } else if (autoStatus === "assigned") {
+          nextPhase = 3;
         } else if (autoStatus === "dispatched") {
           nextPhase = 3;
         } else if (autoStatus === "in-progress") {
           nextPhase = 4;
-        } else if (autoStatus === "completed" || autoStatus === "closed") {
+        } else if (autoStatus === "pending_verification") {
+          nextPhase = 5;
+        } else if (autoStatus === "closed") {
           nextPhase = 6;
         }
 
-        if (resolvedSupervisorName && nextPhase === 1) {
+        if (resolvedSupervisorName && nextPhase === 1 && (!selectedTechnicianIds || selectedTechnicianIds.length === 0)) {
           nextPhase = 2;
-          nextStatus = "assigned";
+          nextStatus = "open";
         }
 
         const supervisorChanged = resolvedSupervisorName && resolvedSupervisorName !== existingComplaint?.assigned_supervisor;
@@ -2933,7 +2956,7 @@ const ComplaintEdit = () => {
                 onValueChange={(v) => {
                   const actualVal = v === "clear_unassigned" ? "" : v;
                   if (!actualVal) {
-                    if (form.assignedSupervisor && form.status === "assigned") {
+                    if (form.assignedSupervisor && form.status === "open") {
                       const confirmed = window.confirm("Unassigning supervisor will revert status to Unassigned. Continue?");
                       if (!confirmed) return;
                     }
@@ -2944,9 +2967,11 @@ const ComplaintEdit = () => {
                     const match = supervisors?.find((s: any) => s.id === actualVal);
                     if (match) {
                       setSelectedSupervisorId(match.id);
-                      setForm(prev => ({ ...prev, assignedSupervisor: match.full_name, status: "assigned" }));
+                      const hasTech = Boolean(form.assignedTechnician || selectedTechnicianId || (selectedTechnicianIds && selectedTechnicianIds.length > 0));
+                      const nextStatus = hasTech ? "assigned" : "open";
+                      setForm(prev => ({ ...prev, assignedSupervisor: match.full_name, status: nextStatus }));
                       setSupervisorError("");
-                      toast.success("Status automatically updated to 'Assigned'");
+                      toast.success(hasTech ? "Supervisor assigned (Status: Assigned)" : "Supervisor assigned (Status: Open / Under Review)");
                     }
                   }
                 }} 
@@ -3001,13 +3026,18 @@ const ComplaintEdit = () => {
               <div className="px-3 h-10 bg-muted/50 rounded-md border border-border flex items-center">
                 <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
                   autoStatus === 'assigned' ? 'bg-indigo-100 text-indigo-700' :
+                  autoStatus === 'open' ? 'bg-blue-100 text-blue-700' :
                   autoStatus === 'dispatched' ? 'bg-orange-100 text-orange-700' :
                   autoStatus === 'in-progress' ? 'bg-yellow-100 text-yellow-700' :
-                  autoStatus === 'completed' ? 'bg-emerald-100 text-emerald-700' :
+                  autoStatus === 'pending_verification' ? 'bg-cyan-100 text-cyan-700' :
                   autoStatus === 'closed' ? 'bg-slate-200 text-slate-700' :
                   'bg-slate-100 text-slate-600'
                 }`}>
-                  {autoStatus.charAt(0).toUpperCase() + autoStatus.slice(1).replace('-', ' ')}
+                  {autoStatus === 'open' 
+                    ? 'Open / Under Review' 
+                    : autoStatus === 'pending_verification'
+                    ? 'Pending Verification'
+                    : autoStatus.charAt(0).toUpperCase() + autoStatus.slice(1).replace('-', ' ')}
                 </span>
               </div>
             </div>
@@ -3158,7 +3188,7 @@ const ComplaintEdit = () => {
                             setForm((prev) => ({
                               ...prev,
                               assignedTechnician: names,
-                              status: nextIds.length > 0 ? "dispatched" : prev.assignedSupervisor ? "assigned" : "unassigned",
+                              status: nextIds.length > 0 ? "assigned" : prev.assignedSupervisor ? "open" : "unassigned",
                             }));
                           }}
                           className="w-4 h-4 rounded text-primary focus:ring-primary cursor-pointer"

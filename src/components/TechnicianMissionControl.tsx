@@ -459,7 +459,7 @@ export const TechnicianMissionControl: React.FC<TechnicianMissionControlProps> =
           </span>
         ) : (
           <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-slate-700 text-slate-300 border border-slate-600">
-            Awaiting Dispatch
+            Assigned • Ready to Start
           </span>
         )}
       </div>
@@ -549,7 +549,7 @@ export const TechnicianMissionControl: React.FC<TechnicianMissionControlProps> =
           >
             {isStartingJourney ? (
               <>
-                <Loader2 className="w-4 h-4 animate-spin" /> Dispatching...
+                <Loader2 className="w-4 h-4 animate-spin" /> Starting Journey...
               </>
             ) : (
               <>
