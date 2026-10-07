@@ -384,7 +384,19 @@ const ComplaintDetail = () => {
 
   const assetsToService = (complaintAssets && complaintAssets.length > 0)
     ? complaintAssets
-    : (ticket?.complaint_assets || []);
+    : (ticket?.complaint_assets && ticket.complaint_assets.length > 0)
+      ? ticket.complaint_assets
+      : (ticket?.brand || ticket?.field_of_work)
+        ? [{
+            id: 'legacy-asset',
+            asset_name: ticket.brand || ticket.title || 'Reported Equipment',
+            asset_type: ticket.field_of_work || 'General',
+            reported_issue: ticket.description || 'Standard service request',
+            warranty_status: ticket.coverage === 'Out of Warranty' ? 'Expired' : 'Active',
+            is_chargeable: ticket.chargeable_service === 'Yes' || Boolean((ticket as any).is_chargeable),
+            service_charge: Number(ticket.service_charge) || 0,
+          }]
+        : [];
 
   // Automated background GPS tracking for technicians on active journeys
   useEffect(() => {
@@ -2017,7 +2029,7 @@ const ComplaintDetail = () => {
 
     try {
       const nowIso = new Date().toISOString();
-      const targetStatus = isReworkActive ? "reassigned" : "in-progress";
+      const targetStatus = "in-progress";
 
       const arrivalPayload: any = {
         arrival_timestamp: nowIso,
@@ -2140,18 +2152,9 @@ const ComplaintDetail = () => {
       user?.id
     );
 
-    const isReworkActive = Boolean(
-      ticket.status === 'reassigned' ||
-      ticket.status === 'rework_required' ||
-      ticket.reassignment_reason ||
-      ticket.reassigned_at ||
-      (Array.isArray(reworkHistory) && reworkHistory.length > 0)
-    );
-    const targetStatus = isReworkActive ? "reassigned" : "in-progress";
-
     updateMutation.mutate({
-      status: targetStatus,
-      current_phase: 4,
+      status: "dispatched",
+      current_phase: 3,
       start_journey_timestamp: new Date().toISOString(),
       pir_decision_tree: startLocJson
     } as any);
@@ -2186,15 +2189,6 @@ const ComplaintDetail = () => {
 
       const nowIso = new Date().toISOString();
 
-      const isReworkActive = Boolean(
-        ticket.status === 'reassigned' ||
-        ticket.status === 'rework_required' ||
-        ticket.reassignment_reason ||
-        ticket.reassigned_at ||
-        (Array.isArray(reworkHistory) && reworkHistory.length > 0)
-      );
-      const targetStatus = isReworkActive ? "reassigned" : "in-progress";
-
       // 2. Perform database update immediately to advance straight to Phase 5 without supervisor approval
       await updateMutation.mutateAsync({
         pir_findings: pirFindings,
@@ -2205,7 +2199,7 @@ const ComplaintDetail = () => {
         arrival_lat: gps?.lat || ticket.arrival_lat || null,
         arrival_lng: gps?.lng || ticket.arrival_lng || null,
         current_phase: 5,
-        status: targetStatus,
+        status: "in-progress",
         pir_status: "approved",
         pir_approved_at: nowIso,
         pir_resubmitted_at: nowIso
@@ -4055,6 +4049,15 @@ const ComplaintDetail = () => {
           arrivalLng={ticket.arrival_lng}
           arrivalTimestamp={ticket.arrival_timestamp}
           isLeadOrAdmin={isLeadTechnician}
+          complaint={ticket}
+          currentPhase={ticket.current_phase}
+          status={ticket.status}
+          dispatchedAt={ticket.start_journey_timestamp}
+          onDispatched={() => {
+            queryClient.invalidateQueries({ queryKey: ["complaint", id] });
+            queryClient.invalidateQueries({ queryKey: ["complaints"] });
+            queryClient.invalidateQueries({ queryKey: ["dashboard-complaints"] });
+          }}
           onArrivalLogged={(lat, lng, time) => {
             if (lat && lng) {
               setArrivalCoords({ lat, lng });
@@ -4394,6 +4397,99 @@ const ComplaintDetail = () => {
         {/* Left/Main Column: Actions, forms, timeline */}
         <div className="lg:col-span-2 space-y-4 sm:space-y-6 min-w-0 w-full">
 
+          {/* 📦 Equipment & Assets Under Service (Visible in ALL Phases 1–6 for Admin, Supervisor, Tech, Customer) */}
+          {assetsToService && assetsToService.length > 0 && (
+            <motion.div
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm p-4 sm:p-5 space-y-3.5"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-primary/10 text-primary flex items-center justify-center font-bold">
+                    <Package className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-foreground text-sm sm:text-base flex items-center gap-2">
+                      Equipment & Assets Under Service
+                      <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-primary/10 text-primary">
+                        {assetsToService.length} item{assetsToService.length > 1 ? "s" : ""}
+                      </span>
+                    </h3>
+                    <p className="text-[11px] text-muted-foreground">
+                      Equipment reported and assigned for inspection, diagnostic & resolution across all phases
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
+                    {assetsToService.filter((a: any) => a.warranty_status === "Active" || (!a.is_chargeable && a.warranty_status !== "Expired")).length} Active
+                  </span>
+                  <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800">
+                    {assetsToService.filter((a: any) => a.warranty_status === "Expired" || a.is_chargeable).length} Chargeable
+                  </span>
+                  {canEdit && (
+                    <Link to={`/complaints/${ticket.id}/edit`}>
+                      <Button variant="ghost" size="sm" className="h-7 text-xs text-primary hover:bg-primary/5 px-2">
+                        <Edit className="w-3 h-3 mr-1" /> Edit Assets
+                      </Button>
+                    </Link>
+                  )}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                {assetsToService.map((asset: any, idx: number) => {
+                  const isExpired = asset.warranty_status === "Expired" || Boolean(asset.is_chargeable);
+                  const chargeAmt = asset.service_charge ? Number(asset.service_charge) : 0;
+
+                  return (
+                    <div
+                      key={asset.id || idx}
+                      className="p-3 rounded-xl bg-slate-50/80 dark:bg-slate-850 border border-slate-200/80 dark:border-slate-800 flex flex-col justify-between gap-2.5 hover:border-primary/30 transition-colors"
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-bold text-foreground truncate" title={asset.asset_name}>
+                            {idx + 1}. {asset.asset_name || `Asset #${idx + 1}`}
+                          </span>
+                          {asset.asset_type && (
+                            <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-slate-200/70 dark:bg-slate-800 text-slate-700 dark:text-slate-300 shrink-0">
+                              {asset.asset_type}
+                            </span>
+                          )}
+                        </div>
+                        {asset.reported_issue ? (
+                          <p className="text-[11px] text-muted-foreground line-clamp-2" title={asset.reported_issue}>
+                            <strong className="text-foreground">Issue:</strong> {asset.reported_issue}
+                          </p>
+                        ) : (
+                          <p className="text-[11px] text-muted-foreground italic">Standard service requested</p>
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-between pt-2 border-t border-slate-200/60 dark:border-slate-800 text-[11px]">
+                        <span className="text-slate-500 font-medium">Warranty Status:</span>
+                        {isExpired ? (
+                          <span className="inline-flex items-center gap-1 font-bold text-amber-700 dark:text-amber-300">
+                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                            Chargeable {chargeAmt > 0 ? `(₹${chargeAmt.toLocaleString("en-IN")})` : ""}
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 font-bold text-emerald-700 dark:text-emerald-300">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                            Under Warranty
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </motion.div>
+          )}
+
       {/* Phase 1: Supervisor Assignment (Admin action needed) */}
       {ticket.current_phase === 1 && !ticket.assigned_supervisor && (
         <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-xl p-5 border-l-4 border-l-primary">
@@ -4591,15 +4687,13 @@ const ComplaintDetail = () => {
                             size="sm"
                             onClick={async () => {
                               const nowIso = new Date().toISOString();
-                              const targetStatus = isReworkActive ? "reassigned" : "in-progress";
-
                               await updateMutation.mutateAsync({
                                 current_phase: 4,
-                                status: targetStatus,
+                                status: "in-progress",
                                 arrival_timestamp: nowIso,
                                 ...(!ticket.start_journey_timestamp ? { start_journey_timestamp: nowIso } : {}),
                               } as any);
-                              queryClient.setQueryData(['complaint', ticket.id], (old: any) => old ? { ...old, arrival_timestamp: nowIso, current_phase: 4, status: targetStatus } : old);
+                              queryClient.setQueryData(['complaint', ticket.id], (old: any) => old ? { ...old, arrival_timestamp: nowIso, current_phase: 4, status: "in-progress" } : old);
                               setActivePhase(4);
                               toast.success("Proceeding to Phase 4: Site Visit & PIR Diagnosis");
                             }}
@@ -6354,6 +6448,29 @@ const ComplaintDetail = () => {
               <div><span className="text-muted-foreground">Customer:</span> <span className="font-medium ml-2 truncate max-w-[200px] sm:max-w-none inline-block align-bottom">{ticket.customer_name || ticket.profiles?.full_name || ticket.created_by_name || "Customer"}</span></div>
               <div className="flex items-center gap-2"><Clock className="w-3 h-3 text-muted-foreground" /> Created {formatIndianDateTime(ticket.created_at)}</div>
               <div className="flex items-center gap-2"><Clock className="w-3 h-3 text-muted-foreground" /> Updated {formatIndianDateTime(ticket.updated_at)}</div>
+              {assetsToService && assetsToService.length > 0 && (
+                <div className="pt-3 border-t mt-3 space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-muted-foreground font-semibold flex items-center gap-1.5">
+                      <Package className="w-3.5 h-3.5 text-primary" /> Assets ({assetsToService.length})
+                    </span>
+                    <span className="text-[10px] text-primary font-medium">
+                      {assetsToService.filter((a: any) => a.warranty_status === "Active" || !a.is_chargeable).length} Active • {assetsToService.filter((a: any) => a.warranty_status === "Expired" || a.is_chargeable).length} Chargeable
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {assetsToService.map((asset: any, idx: number) => (
+                      <span
+                        key={asset.id || idx}
+                        className="text-[11px] font-medium px-2 py-0.5 rounded-md bg-muted/60 border text-slate-700 dark:text-slate-300 truncate max-w-full"
+                        title={`${asset.asset_name || 'Asset'} (${asset.asset_type || ''})`}
+                      >
+                        {idx + 1}. {asset.asset_name || asset.asset_type || `Asset #${idx + 1}`}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
               {ticket.description && (
                 <div className="pt-3 border-t mt-3">
                   <span className="text-muted-foreground block mb-1">Description:</span>

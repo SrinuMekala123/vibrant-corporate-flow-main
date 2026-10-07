@@ -30,7 +30,8 @@ import {
   Receipt,
   FileSpreadsheet,
   MapPin,
-  Wrench
+  Wrench,
+  ExternalLink
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -74,14 +75,184 @@ import { complaintService } from "@/services/complaintService";
 import { installationService } from "@/services/installationService";
 import { generateCSV, downloadCSV } from "@/utils/csvHelpers";
 import { supabase, resolveSupabaseUrl } from "@/lib/supabase";
-import { getEvidenceCategory, getEvidenceFileName, EvidenceCategory } from "@/utils/evidenceFileHelpers";
+import { getEvidenceCategory, getEvidenceFileName, getFileExtension, EvidenceCategory } from "@/utils/evidenceFileHelpers";
 
-const getFileType = (url: string): "image" | "video" | "audio" | "document" => {
-  const category = getEvidenceCategory(url);
-  if (category === "image") return "image";
-  if (category === "video") return "video";
-  if (category === "audio") return "audio";
-  return "document";
+const renderReportEvidenceGrid = (urls: string[], label?: string, emptyLabel: string = "No evidence files or photos uploaded") => {
+  if (!urls || urls.length === 0) {
+    return <p className="text-slate-400 italic text-[11px] py-1">{emptyLabel}</p>;
+  }
+
+  const validUrls = urls.filter(Boolean);
+  if (validUrls.length === 0) {
+    return <p className="text-slate-400 italic text-[11px] py-1">{emptyLabel}</p>;
+  }
+
+  const images = validUrls.filter(u => getEvidenceCategory(u) === "image");
+  const videos = validUrls.filter(u => getEvidenceCategory(u) === "video");
+  const audios = validUrls.filter(u => getEvidenceCategory(u) === "audio");
+  const docs = validUrls.filter(u => ["pdf", "spreadsheet", "document"].includes(getEvidenceCategory(u)));
+
+  return (
+    <div className="space-y-2.5">
+      {label && <p className="text-[10px] uppercase font-bold text-slate-700 tracking-wider mb-1">{label}</p>}
+
+      {/* 1. Images Grid */}
+      {images.length > 0 && (
+        <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+          {images.map((imgUrl, i) => {
+            const resolved = resolveSupabaseUrl(imgUrl);
+            const ext = getFileExtension(imgUrl || resolved).toUpperCase() || "IMG";
+            const filename = getEvidenceFileName(imgUrl, `Photo ${i + 1}`);
+            return (
+              <a
+                key={i}
+                href={resolved}
+                target="_blank"
+                rel="noreferrer"
+                title={`Click to view full image (${filename})`}
+                className="group relative border border-slate-200 rounded-lg overflow-hidden bg-slate-50 hover:border-blue-400 transition-all flex flex-col justify-between"
+              >
+                <div className="relative w-full h-20 bg-white flex items-center justify-center overflow-hidden p-1">
+                  <img
+                    src={resolved}
+                    alt={filename}
+                    className="max-h-full max-w-full object-contain group-hover:scale-105 transition-transform duration-200"
+                  />
+                  <span className="absolute top-1 right-1 bg-slate-900/80 text-white text-[7.5px] font-extrabold px-1.5 py-0.5 rounded shadow-xs uppercase">
+                    .{ext}
+                  </span>
+                </div>
+                <div className="p-1 bg-slate-100 border-t border-slate-200 flex items-center justify-between gap-1">
+                  <span className="text-[8.5px] font-semibold text-slate-700 truncate max-w-[85%]">{filename}</span>
+                  <ExternalLink className="w-2.5 h-2.5 text-slate-400 group-hover:text-blue-600 shrink-0 print:hidden" />
+                </div>
+              </a>
+            );
+          })}
+        </div>
+      )}
+
+      {/* 2. Videos */}
+      {videos.length > 0 && (
+        <div className="space-y-1.5">
+          {videos.map((vUrl, i) => {
+            const resolved = resolveSupabaseUrl(vUrl);
+            const ext = getFileExtension(vUrl || resolved).toUpperCase() || "MP4";
+            const filename = getEvidenceFileName(vUrl, `Video ${i + 1}`);
+            return (
+              <div key={i} className="border border-purple-200 rounded-lg overflow-hidden bg-purple-50/20">
+                <div className="p-1.5 flex items-center justify-between bg-purple-50/60 border-b border-purple-200">
+                  <div className="flex items-center gap-1.5">
+                    <span className="bg-purple-100 text-purple-700 font-bold text-[8.5px] px-1.5 py-0.5 rounded border border-purple-200">
+                      🎬 .{ext}
+                    </span>
+                    <span className="text-xs font-semibold text-slate-800 truncate max-w-[220px]">{filename}</span>
+                  </div>
+                  <a
+                    href={resolved}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-[9.5px] font-bold text-purple-700 hover:text-purple-800 flex items-center gap-1 print:hidden"
+                  >
+                    <span>Open</span>
+                    <ExternalLink className="w-2.5 h-2.5" />
+                  </a>
+                </div>
+                <video src={resolved} controls className="w-full h-20 object-cover block print:hidden" />
+                <div className="hidden print:flex items-center gap-2 p-1.5 bg-slate-100 border-t border-slate-200">
+                  <span className="text-[9.5px] font-medium text-slate-800">🎬 Attached Video ({filename})</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* 3. Audios */}
+      {audios.length > 0 && (
+        <div className="space-y-1.5">
+          {audios.map((aUrl, i) => {
+            const resolved = resolveSupabaseUrl(aUrl);
+            const ext = getFileExtension(aUrl || resolved).toUpperCase() || "AUDIO";
+            const filename = getEvidenceFileName(aUrl, `Audio ${i + 1}`);
+            return (
+              <div key={i} className="border border-amber-200 rounded-lg p-2 bg-amber-50/30 space-y-1">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <span className="bg-amber-100 text-amber-800 font-bold text-[8.5px] px-1.5 py-0.5 rounded border border-amber-200">
+                      🎵 .{ext}
+                    </span>
+                    <span className="text-xs font-semibold text-slate-800 truncate max-w-[220px]">{filename}</span>
+                  </div>
+                  <a
+                    href={resolved}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-[9.5px] font-bold text-amber-700 hover:text-amber-800 flex items-center gap-1 print:hidden"
+                  >
+                    <span>Play/Download</span>
+                    <ExternalLink className="w-2.5 h-2.5" />
+                  </a>
+                </div>
+                <audio src={resolved} controls className="w-full h-7 block print:hidden" />
+                <div className="hidden print:flex items-center gap-2 pt-0.5 text-[9.5px] text-slate-600">
+                  <span>🎵 Attached Audio Recording ({filename})</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* 4. Documents / PDF / Spreadsheets */}
+      {docs.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {docs.map((docUrl, i) => {
+            const resolved = resolveSupabaseUrl(docUrl);
+            const cat = getEvidenceCategory(docUrl);
+            const ext = getFileExtension(docUrl || resolved).toUpperCase() || (cat === "pdf" ? "PDF" : cat === "spreadsheet" ? "CSV" : "DOC");
+            const filename = getEvidenceFileName(docUrl, `Document ${i + 1}`);
+            
+            const isPdf = cat === "pdf";
+            const isSheet = cat === "spreadsheet";
+
+            const badgeBg = isPdf 
+              ? "bg-red-50 text-red-700 border-red-200" 
+              : isSheet 
+              ? "bg-emerald-50 text-emerald-700 border-emerald-200" 
+              : "bg-slate-100 text-slate-700 border-slate-200";
+
+            return (
+              <div key={i} className={`border rounded-lg p-2 flex items-center justify-between gap-2.5 ${isPdf ? 'border-red-200 bg-red-50/20' : isSheet ? 'border-emerald-200 bg-emerald-50/20' : 'border-slate-200 bg-slate-50/40'}`}>
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className={`p-1 rounded border ${badgeBg}`}>
+                    {isSheet ? <FileSpreadsheet className="w-3.5 h-3.5" /> : <FileText className="w-3.5 h-3.5" />}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className={`text-[8px] font-extrabold px-1 py-0.2 rounded uppercase border ${badgeBg}`}>
+                        .{ext}
+                      </span>
+                      <span className="text-xs font-semibold text-slate-800 truncate block">{filename}</span>
+                    </div>
+                  </div>
+                </div>
+                <a
+                  href={resolved}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs font-bold text-blue-600 hover:text-blue-800 hover:underline shrink-0 flex items-center gap-1 print:hidden"
+                >
+                  <span>Open</span>
+                  <ExternalLink className="w-2.5 h-2.5" />
+                </a>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 };
 
 type TabType = "dashboard" | "search" | "generate" | "payment" | "performance" | "history";
@@ -2492,24 +2663,14 @@ export default function ServiceReports() {
                     </div>
                   )}
 
-                  {/* Evidence Photos */}
-                  {photos.length > 0 && (
-                    <div className="border border-slate-300 rounded-lg p-2.5">
-                      <p className="text-[10px] uppercase font-bold text-slate-700 mb-2">
-                        Installation Handover Evidence Photos
-                      </p>
-                      <div className="grid grid-cols-4 gap-2">
-                        {photos.map((imgUrl: string, i: number) => (
-                          <img
-                            key={i}
-                            src={resolveSupabaseUrl(imgUrl)}
-                            alt={`Evidence ${i + 1}`}
-                            className="w-full h-20 object-cover rounded border border-slate-200"
-                          />
-                        ))}
-                      </div>
-                    </div>
-                  )}
+                  {/* Installation Handover Evidence Files & Photos */}
+                  <div className="border border-slate-300 rounded-lg p-2.5 bg-white">
+                    {renderReportEvidenceGrid(
+                      photos,
+                      "Installation Handover Evidence Files & Photos",
+                      "No installation evidence files or photos uploaded"
+                    )}
+                  </div>
 
                   {/* Customer Verification & Signature */}
                   <div className="border border-slate-300 rounded-lg p-3 bg-slate-50 flex items-center justify-between">
@@ -2634,97 +2795,24 @@ export default function ServiceReports() {
                     )}
                   </div>
 
-                  {/* Diagnostic & Resolution Evidence Images (PIR Before vs Resolution After) */}
-                  {(() => {
-                    const renderMixedGrid = (urls: string[], label: string, emptyLabel: string) => {
-                      if (urls.length === 0) return <p className="text-slate-400 italic text-[11px]">{emptyLabel}</p>;
-                      const images = urls.filter(u => getEvidenceCategory(u) === "image");
-                      const videos = urls.filter(u => getEvidenceCategory(u) === "video");
-                      const audios = urls.filter(u => getEvidenceCategory(u) === "audio");
-                      const docs = urls.filter(u => ["pdf", "spreadsheet", "document"].includes(getEvidenceCategory(u)));
+                  {/* Diagnostic & Resolution Evidence Files & Photos (PIR Before vs Resolution After) */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="border border-slate-300 rounded-lg p-2.5 bg-white">
+                      {renderReportEvidenceGrid(
+                        pirImages,
+                        "Technician's Diagnostic Evidence (Before) / PIR",
+                        "No diagnostic files or photos provided"
+                      )}
+                    </div>
 
-                      return (
-                        <div className="space-y-2">
-                          <p className="text-[10px] uppercase font-bold text-slate-700 mb-1">{label}</p>
-                          {images.length > 0 && (
-                            <div className="grid grid-cols-3 gap-2">
-                              {images.map((imgUrl, i) => (
-                                <img
-                                  key={i}
-                                  src={resolveSupabaseUrl(imgUrl)}
-                                  alt={`${label} ${i + 1}`}
-                                  className="w-full h-20 object-cover rounded border border-slate-200"
-                                />
-                              ))}
-                            </div>
-                          )}
-                          {videos.length > 0 && (
-                            <div className="space-y-1.5">
-                              {videos.map((vUrl, i) => {
-                                const filename = getEvidenceFileName(vUrl, `Video ${i + 1}`);
-                                return (
-                                  <div key={i} className="border border-slate-200 rounded-lg overflow-hidden">
-                                    <video src={resolveSupabaseUrl(vUrl)} controls className="w-full h-20 object-cover block print:hidden" />
-                                    <div className="hidden print:flex items-center gap-2 p-2 bg-slate-100 border border-slate-300 rounded">
-                                      <span className="text-[10px] font-medium text-slate-800">🎬 {filename}</span>
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                          {audios.length > 0 && (
-                            <div className="space-y-1.5">
-                              {audios.map((aUrl, i) => {
-                                const filename = getEvidenceFileName(aUrl, `Audio ${i + 1}`);
-                                return (
-                                  <div key={i} className="border border-slate-200 rounded-lg overflow-hidden">
-                                    <audio src={resolveSupabaseUrl(aUrl)} controls className="w-full h-8 block print:hidden" />
-                                    <div className="hidden print:flex items-center gap-2 p-2 bg-slate-100 border border-slate-300 rounded">
-                                      <span className="text-[10px] font-medium text-slate-800">🎵 {filename}</span>
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                          {docs.length > 0 && (
-                            <div className="space-y-1.5">
-                              {docs.map((docUrl, i) => {
-                                const cat = getEvidenceCategory(docUrl);
-                                const filename = getEvidenceFileName(docUrl, `Document ${i + 1}`);
-                                const prefix = cat === "pdf" ? "📄 [PDF]" : cat === "spreadsheet" ? "📊 [CSV/XLS]" : "📄 [DOC]";
-                                return (
-                                  <div key={i} className="border border-slate-200 rounded-lg overflow-hidden">
-                                    <a href={resolveSupabaseUrl(docUrl)} target="_blank" rel="noreferrer" className="flex items-center gap-2 p-2 bg-slate-50 hover:bg-slate-100 transition-colors">
-                                      <FileText className="w-4 h-4 text-slate-700" />
-                                      <span className="text-xs font-medium text-slate-800">{prefix} {filename}</span>
-                                    </a>
-                                    <div className="hidden print:flex items-center gap-2 p-2 bg-slate-100 border border-slate-300 rounded">
-                                      <FileText className="w-4 h-4 text-slate-700" />
-                                      <span className="text-xs font-medium text-slate-800">{prefix} {filename}</span>
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    };
-
-                    return (
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="border border-slate-300 rounded-lg p-2.5">
-                          {renderMixedGrid(pirImages, "Technician's Diagnostic Evidence (Before) / PIR", "No diagnostic files provided")}
-                        </div>
-
-                        <div className="border border-slate-300 rounded-lg p-2.5">
-                          {renderMixedGrid(resImages, "Technician's Resolution Evidence (After)", "No resolution files provided")}
-                        </div>
-                      </div>
-                    );
-                  })()}
+                    <div className="border border-slate-300 rounded-lg p-2.5 bg-white">
+                      {renderReportEvidenceGrid(
+                        resImages,
+                        "Technician's Resolution Evidence (After)",
+                        "No resolution files or photos provided"
+                      )}
+                    </div>
+                  </div>
 
                   {/* Customer Verification & Signature */}
                   <div className="border border-slate-300 rounded-lg p-3 bg-slate-50 flex items-center justify-between">

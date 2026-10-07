@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Search, Plus, MapPin, Clock, Loader2, X, Calendar, Upload, Download, FileText, Trash2, CheckSquare, Square, Eye, Wrench, UserPlus, Navigation, Edit2, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
+import { Search, Plus, MapPin, Clock, Loader2, X, Calendar, Upload, Download, FileText, Trash2, CheckSquare, Square, Eye, Wrench, UserPlus, Navigation, Edit2, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Package } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { StatusBadge, SeverityBadge, getEffectiveComplaintStatus } from "@/components/Badges";
@@ -412,7 +412,11 @@ const ComplaintsList = () => {
     } else if (statusFilter === "closed") {
       matchStatus = effectiveStatus === "closed";
     } else if (statusFilter === "reassigned") {
-      matchStatus = effectiveStatus === "reassigned";
+      matchStatus = effectiveStatus === "reassigned" || Boolean(
+        (t.reassignment_reason || t.reassigned_at || (Array.isArray(t.rework_history) && t.rework_history.length > 0)) &&
+        effectiveStatus !== "closed" &&
+        effectiveStatus !== "completed"
+      );
     } else if (statusFilter === "in-progress" || statusFilter === "in_progress") {
       matchStatus = (effectiveStatus === "in-progress" || effectiveStatus === "in_progress");
     } else {
@@ -1027,6 +1031,21 @@ const ComplaintsList = () => {
                                 {siteAddress}
                               </p>
                             )}
+                            {ticket.complaint_assets && ticket.complaint_assets.length > 0 ? (
+                              <div
+                                className="inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-[10px] max-w-[220px]"
+                                title={ticket.complaint_assets.map((a: any) => `${a.asset_name || a.asset_type || 'Asset'} (${a.warranty_status || 'Active'})`).join(', ')}
+                              >
+                                <Package className="w-3 h-3 text-primary shrink-0" />
+                                <span className="font-semibold shrink-0">{ticket.complaint_assets.length} {ticket.complaint_assets.length === 1 ? 'Asset' : 'Assets'}:</span>
+                                <span className="truncate">{ticket.complaint_assets.map((a: any) => a.asset_name || a.asset_type || 'Asset').join(', ')}</span>
+                              </div>
+                            ) : ticket.brand ? (
+                              <div className="inline-flex items-center gap-1 mt-1 text-[10px] text-slate-500 truncate max-w-[220px]">
+                                <Package className="w-2.5 h-2.5 text-slate-400 shrink-0" />
+                                <span className="truncate">{ticket.brand}</span>
+                              </div>
+                            ) : null}
                           </td>
 
                           {/* Technician(s) */}
@@ -1238,6 +1257,26 @@ const ComplaintsList = () => {
                         <span>•</span>
                         <span>Raised on {formatIndianDateTime(ticket.created_at)}</span>
                       </div>
+
+                      {ticket.complaint_assets && ticket.complaint_assets.length > 0 ? (
+                        <div className="flex flex-wrap items-center gap-1.5 mt-2 bg-slate-50 dark:bg-slate-900/60 px-2.5 py-1.5 rounded-lg border border-slate-200/60 dark:border-slate-800 text-xs">
+                          <Package className="w-3.5 h-3.5 text-primary shrink-0" />
+                          <span className="font-semibold text-slate-800 dark:text-slate-200">
+                            {ticket.complaint_assets.length} {ticket.complaint_assets.length === 1 ? 'Asset' : 'Assets'}:
+                          </span>
+                          <span className="text-muted-foreground truncate max-w-md">
+                            {ticket.complaint_assets.map((a: any) => a.asset_name || a.asset_type || 'Asset').join(', ')}
+                          </span>
+                          <span className="text-[10px] font-medium ml-auto px-2 py-0.5 rounded-full bg-slate-200/70 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
+                            {ticket.complaint_assets.filter((a: any) => a.warranty_status === 'Active' || !a.is_chargeable).length} Active • {ticket.complaint_assets.filter((a: any) => a.warranty_status === 'Expired' || a.is_chargeable).length} Chargeable
+                          </span>
+                        </div>
+                      ) : ticket.brand ? (
+                        <div className="flex items-center gap-1.5 text-xs text-muted-foreground mt-2">
+                          <Package className="w-3 h-3 text-slate-400" />
+                          <span>Equipment: <strong className="text-foreground">{ticket.brand}</strong></span>
+                        </div>
+                      ) : null}
 
                       {(ticket.assigned_supervisor || assignedTechs.length > 0 || ticket.assigned_technician) && (
                         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground mt-2 border-t border-border/20 pt-1.5">

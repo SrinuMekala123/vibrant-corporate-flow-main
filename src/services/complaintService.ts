@@ -266,11 +266,22 @@ export interface ComplaintAsset {
   created_at?: string;
 }
 
+// Permanent immutable baseline mapping for existing active complaints
+export const INITIAL_COMPLAINT_TICKET_MAP: Record<string, string> = {
+  '9e4d1ce2-f837-4f27-a4b6-ca4056a7b186': 'BTL-CMS-2026-0000001',
+  '0f67f486-a07b-45dd-913c-8b0ce6686e93': 'BTL-CMS-2026-0000002',
+  'e2a0c197-57c5-40aa-951a-37690245b4f7': 'BTL-CMS-2026-0000003',
+  'f077892f-4c65-443a-9108-a84f95302383': 'BTL-CMS-2026-0000004',
+  'bd003028-c018-46d9-b932-eb4de38351aa': 'BTL-CMS-2026-0000005',
+  '3c94a625-453f-4f40-b09f-13ea7f129328': 'BTL-CMS-2026-0000006',
+};
+
 export const getTicketIdMap = (): Record<string, string> => {
   try {
-    return JSON.parse(localStorage.getItem("btl_ticket_id_map") || "{}");
+    const cached = JSON.parse(localStorage.getItem("btl_ticket_id_map") || "{}");
+    return { ...INITIAL_COMPLAINT_TICKET_MAP, ...cached };
   } catch {
-    return {};
+    return { ...INITIAL_COMPLAINT_TICKET_MAP };
   }
 };
 
@@ -289,49 +300,63 @@ export const enrichComplaintsWithTicketIds = (complaints: Complaint[]): Complain
   const idMap = getTicketIdMap();
   let updatedMap = false;
 
-  // Group complaints by year
-  const complaintsByYear: Record<number, Complaint[]> = {};
+  // Track the highest observed number across all tickets (minimum 6 for established baseline)
+  let highestObserved = 6;
+
+  // Step 1: Retain established ticket IDs for existing complaints
   complaints.forEach((c) => {
-    const yr = c.created_at ? new Date(c.created_at).getFullYear() : currentYear;
-    if (!complaintsByYear[yr]) complaintsByYear[yr] = [];
-    complaintsByYear[yr].push(c);
+    let finalId = c.ticket_id;
+    if (finalId && typeof finalId === "string" && finalId.startsWith("BTL-CMS-")) {
+      const match = finalId.match(/BTL-CMS-\d+-(\d+)/i);
+      if (match && match[1]) {
+        const num = parseInt(match[1], 10);
+        if (!isNaN(num)) {
+          finalId = `BTL-CMS-${currentYear}-${String(num).padStart(7, "0")}`;
+          if (num > highestObserved) highestObserved = num;
+        }
+      }
+    } else if (c.id && idMap[c.id]) {
+      finalId = idMap[c.id];
+      const match = finalId.match(/BTL-CMS-\d+-(\d+)/i);
+      if (match && match[1]) {
+        const num = parseInt(match[1], 10);
+        if (!isNaN(num) && num > highestObserved) {
+          highestObserved = num;
+        }
+      }
+    }
+
+    if (finalId) {
+      c.ticket_id = finalId;
+    }
   });
 
-  for (const [yrStr, list] of Object.entries(complaintsByYear)) {
-    const yr = parseInt(yrStr, 10);
-    const prefix = `BTL-CMS-${yr}-`;
-    const storageKey = `btl_cms_last_seq_${yr}`;
-
-    // Sort chronologically ascending to assign sequential numbers from oldest to newest
-    const sortedAsc = [...list].sort((a, b) => {
+  // Step 2: For any complaints still lacking a ticket ID, allocate monotonically above highestObserved
+  const unassigned = complaints.filter((c) => !c.ticket_id);
+  if (unassigned.length > 0) {
+    unassigned.sort((a, b) => {
       const tA = a.created_at ? new Date(a.created_at).getTime() : 0;
       const tB = b.created_at ? new Date(b.created_at).getTime() : 0;
       return tA - tB;
     });
 
-    let assignedIndex = 1;
-    sortedAsc.forEach((c) => {
-      let finalId = c.ticket_id;
-      if (finalId && typeof finalId === "string" && finalId.startsWith(prefix)) {
-        const numPart = parseInt(finalId.replace(prefix, ""), 10);
-        if (!isNaN(numPart)) {
-          finalId = `${prefix}${String(numPart).padStart(7, "0")}`;
-        }
-      } else if (idMap[c.id]) {
-        finalId = idMap[c.id];
-      } else {
-        finalId = `${prefix}${String(assignedIndex).padStart(7, "0")}`;
-        idMap[c.id] = finalId;
+    unassigned.forEach((c) => {
+      highestObserved++;
+      const yr = c.created_at ? new Date(c.created_at).getFullYear() : currentYear;
+      const genId = `BTL-CMS-${yr}-${String(highestObserved).padStart(7, "0")}`;
+      c.ticket_id = genId;
+      if (c.id) {
+        idMap[c.id] = genId;
         updatedMap = true;
       }
-
-      c.ticket_id = finalId;
-      idMap[c.id] = finalId;
-      assignedIndex++;
     });
+  }
 
-    const maxForYear = Math.max(sortedAsc.length, assignedIndex - 1);
-    localStorage.setItem(storageKey, String(maxForYear));
+  // Step 3: Strictly monotonic sequence update — NEVER downgrade sequence when records are deleted
+  const storageKey = `btl_cms_last_seq_${currentYear}`;
+  const currentStored = parseInt(localStorage.getItem(storageKey) || "0", 10);
+  if (highestObserved > currentStored) {
+    localStorage.setItem(storageKey, String(highestObserved));
   }
 
   if (updatedMap) {
@@ -346,62 +371,34 @@ export const generateNextTicketId = async (): Promise<string> => {
   const prefix = `BTL-CMS-${currentYear}-`;
   const storageKey = `btl_cms_last_seq_${currentYear}`;
   
-  let maxNumber = 0;
+  // Baseline floor is 6 (since tickets 1 through 6 exist)
+  let maxNumber = 6;
   
-  // 1. Ultra-fast query: get highest ticket_id for this year prefix directly with limit 1
-  try {
-    const { data: latestRow } = await supabase
-      .from('complaints')
-      .select('ticket_id')
-      .ilike('ticket_id', `${prefix}%`)
-      .order('ticket_id', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    
-    if (latestRow?.ticket_id) {
-      const match = latestRow.ticket_id.match(/BTL-CMS-\d+-(\d+)/i);
+  // 1. Check all mapped ticket IDs (including baseline and dynamically cached)
+  const idMap = getTicketIdMap();
+  Object.values(idMap).forEach((val) => {
+    if (typeof val === "string") {
+      const match = val.match(/BTL-CMS-\d+-(\d+)/i);
       if (match && match[1]) {
-        const parsed = parseInt(match[1], 10);
-        if (!isNaN(parsed) && parsed > maxNumber) {
-          maxNumber = parsed;
+        const num = parseInt(match[1], 10);
+        if (!isNaN(num) && num > maxNumber) {
+          maxNumber = num;
         }
       }
     }
-
-    // Fast count query without downloading table payload
-    const { count } = await supabase
-      .from('complaints')
-      .select('*', { count: 'exact', head: true });
-
-    if (typeof count === 'number' && count > maxNumber) {
-      maxNumber = count;
-    }
-  } catch (error) {
-    console.warn('Fast ticket ID query failed, using sequence cache:', error);
-  }
-
-  // 2. Check idMap cache
-  const idMap = getTicketIdMap();
-  Object.values(idMap).forEach((val) => {
-    if (typeof val === "string" && val.startsWith(prefix)) {
-      const num = parseInt(val.replace(prefix, ""), 10);
-      if (!isNaN(num) && num > maxNumber) {
-        maxNumber = num;
-      }
-    }
   });
-  
-  // 3. Prevent duplicate IDs within same session / race conditions
+
+  // 2. Prevent rollback from persistent sequence store (strictly monotonic)
   const storedSeq = parseInt(localStorage.getItem(storageKey) || "0", 10);
   if (!isNaN(storedSeq) && storedSeq > maxNumber) {
     maxNumber = storedSeq;
   }
-  
-  // Increment by 1
+
+  // 3. Increment monotonically by 1
   const nextNumber = maxNumber + 1;
   localStorage.setItem(storageKey, String(nextNumber));
-  
-  // Zero-pad to 7 digits
+
+  // 4. Zero-pad to 7 digits
   const paddedNumber = String(nextNumber).padStart(7, '0');
   
   return `${prefix}${paddedNumber}`;
@@ -473,6 +470,29 @@ export const complaintService = {
       }
     } catch (ctErr) {
       console.warn("Fallback complaint_technicians load skipped:", ctErr);
+    }
+
+    try {
+      const complaintIds = rows.map((r: any) => r.id);
+      const { data: caRows, error: caError } = await supabase
+        .from("complaint_assets")
+        .select("id, complaint_id, asset_type, asset_name, reported_issue, warranty_status, is_chargeable, service_charge")
+        .in("complaint_id", complaintIds)
+        .order("created_at", { ascending: true });
+
+      if (!caError && caRows && caRows.length > 0) {
+        const caMap = new Map<string, any[]>();
+        caRows.forEach((ca: any) => {
+          const list = caMap.get(ca.complaint_id) || [];
+          list.push(ca);
+          caMap.set(ca.complaint_id, list);
+        });
+        rows.forEach((r: any) => {
+          r.complaint_assets = caMap.get(r.id) || [];
+        });
+      }
+    } catch (caErr) {
+      console.warn("Fallback complaint_assets batch load skipped:", caErr);
     }
 
     rows.forEach((r: any) => {

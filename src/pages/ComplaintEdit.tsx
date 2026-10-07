@@ -1794,6 +1794,11 @@ const ComplaintEdit = () => {
         // Invalidate queries so lists/dashboards/customers update immediately
         queryClient.invalidateQueries({ queryKey: ['complaints'] });
         queryClient.invalidateQueries({ queryKey: ['complaint_assets'] });
+        queryClient.invalidateQueries({ queryKey: ['complaint-assets'] });
+        if (newComplaint?.id) {
+          queryClient.invalidateQueries({ queryKey: ['complaint_assets', newComplaint.id] });
+          queryClient.invalidateQueries({ queryKey: ['complaint-assets', newComplaint.id] });
+        }
         queryClient.invalidateQueries({ queryKey: ['dashboard-complaints'] });
         queryClient.invalidateQueries({ queryKey: ['customer-complaints'] });
         queryClient.invalidateQueries({ queryKey: ['customers'] });
@@ -2016,6 +2021,8 @@ const ComplaintEdit = () => {
         queryClient.invalidateQueries({ queryKey: ['complaints'] });
         queryClient.invalidateQueries({ queryKey: ['complaint_assets'] });
         queryClient.invalidateQueries({ queryKey: ['complaint_assets', id] });
+        queryClient.invalidateQueries({ queryKey: ['complaint-assets'] });
+        queryClient.invalidateQueries({ queryKey: ['complaint-assets', id] });
         queryClient.invalidateQueries({ queryKey: ['dashboard-complaints'] });
         queryClient.invalidateQueries({ queryKey: ['customer-complaints'] });
         queryClient.invalidateQueries({ queryKey: ['complaint', id] });

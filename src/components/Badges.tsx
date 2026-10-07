@@ -24,12 +24,26 @@ export function getEffectiveComplaintStatus(ticket: any): string {
   if (!ticket) return "unassigned";
   const rawStatus = (typeof ticket === "string" ? ticket : ticket.status || "").toLowerCase().trim();
   
-  // If ticket is completed or closed or awaiting QA verification, preserve that final/verification state
-  if (rawStatus === "closed" || rawStatus === "completed" || rawStatus === "pending_verification" || rawStatus === "resolution_submitted" || rawStatus === "awaiting_verification") {
+  // 1. If ticket is in an active milestone stage, preserve that explicit operational state!
+  if (
+    rawStatus === "closed" || 
+    rawStatus === "completed" || 
+    rawStatus === "pending_verification" || 
+    rawStatus === "resolution_submitted" || 
+    rawStatus === "awaiting_verification" ||
+    rawStatus === "dispatched" ||
+    rawStatus === "in-progress" ||
+    rawStatus === "in_progress" ||
+    rawStatus === "pir_approved_work_in_progress" ||
+    rawStatus === "pir_submitted_awaiting_approval" ||
+    rawStatus === "pir_submitted" ||
+    rawStatus === "pir_approved" ||
+    rawStatus === "pir_rejected"
+  ) {
     return rawStatus;
   }
   
-  // If ticket has rework / reassignment signals, it is strictly "reassigned"
+  // 2. If ticket has rework / reassignment signals and has not advanced to dispatched/progress yet, it is "reassigned"
   if (
     rawStatus === "reassigned" ||
     rawStatus === "rework_required" ||
@@ -63,6 +77,11 @@ export interface SeverityBadgeProps {
 
 export function StatusBadge({ status, ticket }: StatusBadgeProps) {
   const effectiveKey = ticket ? getEffectiveComplaintStatus(ticket) : getEffectiveComplaintStatus(status);
+  const isRework = typeof ticket === "object" && Boolean(
+    ticket?.reassignment_reason ||
+    ticket?.reassigned_at ||
+    (Array.isArray(ticket?.rework_history) && ticket.rework_history.length > 0)
+  ) && effectiveKey !== "closed";
 
   const statusConfig: Record<string, { bg: string; text: string; label: string }> = {
     unassigned: { bg: "bg-slate-100", text: "text-slate-700", label: "Unassigned" },
@@ -103,8 +122,15 @@ export function StatusBadge({ status, ticket }: StatusBadgeProps) {
   const config = statusConfig[effectiveKey] || statusConfig[status] || { bg: "bg-slate-100", text: "text-slate-700", label: status };
 
   return (
-    <span className={`px-2 py-1 rounded-full text-xs font-medium ${config.bg} ${config.text}`}>
-      {config.label}
+    <span className="inline-flex items-center gap-1">
+      <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${config.bg} ${config.text}`}>
+        {config.label}
+      </span>
+      {isRework && effectiveKey !== "reassigned" && (
+        <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-300/50">
+          Rework
+        </span>
+      )}
     </span>
   );
 }

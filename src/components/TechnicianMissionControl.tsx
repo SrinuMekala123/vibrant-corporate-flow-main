@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Phone, MessageCircle, MapPin, Navigation, CheckCircle2, Loader2, Copy, ExternalLink, ShieldCheck, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/lib/supabase";
@@ -130,37 +130,223 @@ export const TechnicianMissionControl: React.FC<TechnicianMissionControlProps> =
   const cleanPhone = (rawPhone || "").replace(/\D/g, "");
   const cleanAddress = (rawAddress || "").trim();
 
+  // Live distance to site state for auto-arrival geofencing
+  const [distanceToSiteMeters, setDistanceToSiteMeters] = useState<number | null>(null);
+  const hasAutoArrivedRef = useRef(false);
+
+  // Haversine formula for calculating distance in meters
+  const calculateDistanceMeters = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
+    const R = 6371e3; // Earth radius in metres
+    const dLat = ((lat2 - lat1) * Math.PI) / 180;
+    const dLon = ((lon2 - lon1) * Math.PI) / 180;
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos((lat1 * Math.PI) / 180) *
+        Math.cos((lat2 * Math.PI) / 180) *
+        Math.sin(dLon / 2) *
+        Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  };
+
   // WhatsApp Pre-filled message generator
   const getWhatsAppUrl = () => {
     if (!cleanPhone) return "#";
     const phoneWithCountry = cleanPhone.length === 10 ? `91${cleanPhone}` : cleanPhone;
-    const greetingMsg = `Hello ${customerName}, I am your service technician from Brihaspathi Technologies for ${
-      ticketType === "installation" ? "Installation Job" : "Service Complaint"
-    } #${ticketDisplayId}. I am on my way to your site location.`;
+    const isEnRoute = Boolean(isDispatched && !loggedArrival && !effectiveArrivalTimestamp);
+    const greetingMsg = isEnRoute
+      ? `Hello ${customerName}, I am your service technician from Brihaspathi Technologies for ${
+          ticketType === "installation" ? "Installation Job" : "Service Complaint"
+        } #${ticketDisplayId}. I am currently on my way to your site location (approx. 5-10 mins away). Please ensure someone is available at the site.`
+      : `Hello ${customerName}, I am your service technician from Brihaspathi Technologies for ${
+          ticketType === "installation" ? "Installation Job" : "Service Complaint"
+        } #${ticketDisplayId}. I will be attending to your service request.`;
     return `https://wa.me/${phoneWithCountry}?text=${encodeURIComponent(greetingMsg)}`;
   };
 
-  // Google Maps Navigation URL
-  const getNavigationUrl = () => {
+  // Google Maps Navigation URL (supports origin coordinates when available)
+  const getNavigationUrl = (originCoords?: { lat: number; lng: number } | null) => {
     const hasValidCoords =
       typeof effLat === 'number' && typeof effLng === 'number' &&
       effLat >= 6 && effLat <= 38 && effLng >= 68 && effLng <= 98;
+
+    let dest = "";
     if (cleanAddress && cleanAddress !== "Site address not specified" && cleanAddress.toLowerCase() !== "on-site") {
-      return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(cleanAddress)}&travelmode=driving`;
+      dest = encodeURIComponent(cleanAddress);
+    } else if (hasValidCoords) {
+      dest = `${effLat},${effLng}`;
     }
-    if (hasValidCoords) {
-      return `https://www.google.com/maps/dir/?api=1&destination=${effLat},${effLng}&travelmode=driving`;
+
+    if (!dest) return "#";
+
+    if (originCoords && originCoords.lat && originCoords.lng) {
+      return `https://www.google.com/maps/dir/?api=1&origin=${originCoords.lat},${originCoords.lng}&destination=${dest}&travelmode=driving`;
     }
-    return "#";
+    return `https://www.google.com/maps/dir/?api=1&destination=${dest}&travelmode=driving`;
   };
 
-  // Handle Start Journey (Transitions to Phase 3: Dispatched)
-  const handleStartJourney = async () => {
-    setIsStartingJourney(true);
-    toast.loading("Starting journey to site...", { id: "start-journey" });
-    const nowIso = new Date().toISOString();
+  // Core function to save arrival in database (Used by both Auto-Geofence and Manual Click)
+  const saveArrivalRecord = async (lat?: number | null, lng?: number | null, isAuto = false) => {
+    try {
+      const nowIso = new Date().toISOString();
+      if (ticketType === "complaint") {
+        const targetStatus = "in-progress";
+
+        const payload: any = {
+          status: targetStatus,
+          current_phase: 4,
+          arrival_timestamp: nowIso,
+          start_journey_timestamp: complaint?.start_journey_timestamp || nowIso,
+        };
+        if (lat != null && lng != null) {
+          payload.arrival_lat = lat;
+          payload.arrival_lng = lng;
+        }
+        const { error } = await supabase
+          .from("complaints")
+          .update(payload)
+          .eq("id", ticketId);
+
+        if (error) throw error;
+      } else {
+        const payload: any = {
+          status: "In Progress",
+          current_phase: 4,
+          arrival_time: nowIso,
+          dispatched_at: dispatchedAt || nowIso,
+          updated_at: nowIso,
+        };
+        if (lat != null && lng != null) {
+          payload.arrival_gps_lat = lat;
+          payload.arrival_gps_lng = lng;
+        }
+        const { error } = await supabase
+          .from("installations")
+          .update(payload)
+          .eq("id", ticketId);
+
+        if (error) throw error;
+      }
+
+      setLoggedArrival(lat && lng ? { lat, lng, time: nowIso } : null);
+      setArrivedWithoutGps(!(lat && lng));
+      if (onArrivalLogged) {
+        onArrivalLogged(lat || 0, lng || 0, nowIso);
+      }
+
+      if (isAuto) {
+        toast.success("🎯 Destination reached! Arrival recorded automatically.", { id: "gps-arrival" });
+      } else if (lat && lng) {
+        toast.success("🎯 Arrival logged successfully with GPS coordinates!", { id: "gps-arrival" });
+      } else {
+        toast.success("🎯 Arrival logged successfully! (GPS coordinates unavailable)", { id: "gps-arrival" });
+      }
+    } catch (err: any) {
+      console.error("Failed to log arrival:", err);
+      toast.error(err?.message || "Failed to update arrival status in database.", { id: "gps-arrival" });
+    } finally {
+      setIsLoggingArrival(false);
+    }
+  };
+
+  // Automated Geofencing Arrival Detection Effect
+  useEffect(() => {
+    const isAlreadyArrived = Boolean(loggedArrival || arrivedWithoutGps || effectiveArrivalTimestamp);
+    if (!isDispatched || isAlreadyArrived || effLat == null || effLng == null) {
+      return;
+    }
+
+    if (!navigator.geolocation) return;
+
+    let watchId: number | null = null;
+
+    const checkPosition = (position: GeolocationPosition) => {
+      if (hasAutoArrivedRef.current) return;
+      const { latitude, longitude } = position.coords;
+      const dist = calculateDistanceMeters(latitude, longitude, Number(effLat), Number(effLng));
+      setDistanceToSiteMeters(Math.round(dist));
+
+      // Geofence: 100m threshold (with GPS accuracy tolerance up to 150m)
+      const threshold = Math.max(100, Math.min(150, position.coords.accuracy || 100));
+      if (dist <= threshold && !hasAutoArrivedRef.current) {
+        hasAutoArrivedRef.current = true;
+        if (typeof navigator.vibrate === "function") {
+          try { navigator.vibrate([200, 100, 200]); } catch {}
+        }
+        saveArrivalRecord(latitude, longitude, true);
+      }
+    };
 
     try {
+      watchId = navigator.geolocation.watchPosition(
+        checkPosition,
+        (err) => console.warn("Auto-arrival geolocation watch error:", err.message),
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 }
+      );
+    } catch (e) {
+      console.warn("watchPosition failed:", e);
+    }
+
+    // Re-check whenever the technician switches back from Google Maps app to the browser tab
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === "visible" && !hasAutoArrivedRef.current) {
+        navigator.geolocation.getCurrentPosition(
+          checkPosition,
+          (err) => console.warn("Visibility location check skipped:", err.message),
+          { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
+        );
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityOrFocus);
+    window.addEventListener("focus", handleVisibilityOrFocus);
+
+    return () => {
+      if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+      document.removeEventListener("visibilitychange", handleVisibilityOrFocus);
+      window.removeEventListener("focus", handleVisibilityOrFocus);
+    };
+  }, [isDispatched, loggedArrival, arrivedWithoutGps, effectiveArrivalTimestamp, effLat, effLng]);
+
+  // Handle Start Journey (Captures GPS, Opens Navigation Route in Maps, Transitions to Phase 3: Dispatched)
+  const handleStartJourney = async () => {
+    setIsStartingJourney(true);
+    toast.loading("Acquiring GPS & starting journey...", { id: "start-journey" });
+    const nowIso = new Date().toISOString();
+
+    let startCoords: { lat: number; lng: number } | null = null;
+    if (navigator.geolocation) {
+      try {
+        const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: true,
+            timeout: 8000,
+            maximumAge: 0,
+          });
+        });
+        startCoords = { lat: position.coords.latitude, lng: position.coords.longitude };
+      } catch (gpsErr) {
+        console.warn("Could not acquire precise start GPS, proceeding:", gpsErr);
+      }
+    }
+
+    try {
+      // 1. Record starting location into tracking table
+      if (startCoords) {
+        try {
+          await supabase.from("location_tracking").insert({
+            ...(ticketType === "complaint" ? { complaint_id: ticketId } : { installation_id: ticketId }),
+            latitude: startCoords.lat,
+            longitude: startCoords.lng,
+            accuracy: 10,
+            timestamp: nowIso,
+          });
+        } catch (dbErr) {
+          console.warn("Location tracking insert skipped:", dbErr);
+        }
+      }
+
+      // 2. Update status in database
       if (ticketType === "installation") {
         const { error } = await supabase
           .from("installations")
@@ -172,7 +358,6 @@ export const TechnicianMissionControl: React.FC<TechnicianMissionControlProps> =
           })
           .eq("id", ticketId);
         if (error) throw error;
-        toast.success("🚀 Journey started! Status updated to Phase 3: Dispatched.", { id: "start-journey" });
       } else {
         const { error } = await supabase
           .from("complaints")
@@ -183,8 +368,17 @@ export const TechnicianMissionControl: React.FC<TechnicianMissionControlProps> =
           })
           .eq("id", ticketId);
         if (error) throw error;
+      }
+
+      // 3. Open Turn-by-Turn Route Navigation in Google Maps
+      const navUrl = getNavigationUrl(startCoords);
+      if (navUrl && navUrl !== "#") {
+        window.open(navUrl, "_blank");
+        toast.success("🚀 Journey started! Opening navigation route to customer site...", { id: "start-journey" });
+      } else {
         toast.success("🚀 Journey started! Technician dispatched to site.", { id: "start-journey" });
       }
+
       setIsDispatched(true);
       if (onDispatched) onDispatched();
     } catch (err: any) {
@@ -195,100 +389,32 @@ export const TechnicianMissionControl: React.FC<TechnicianMissionControlProps> =
     }
   };
 
-  // Handle GPS Arrival Capture (Resilient to permission denied or timeout)
+  // Handle Manual GPS Arrival Capture (Fallback at any time)
   const handleIArrived = async () => {
+    hasAutoArrivedRef.current = true;
     setIsLoggingArrival(true);
     toast.loading("Capturing GPS coordinates...", { id: "gps-arrival" });
 
-    const nowIso = new Date().toISOString();
-
-    const saveArrivalRecord = async (lat?: number | null, lng?: number | null) => {
-      try {
-        if (ticketType === "complaint") {
-          const isReworkActive = Boolean(
-            complaint?.status === 'reassigned' ||
-            complaint?.status === 'rework_required' ||
-            complaint?.reassignment_reason ||
-            complaint?.reassigned_at ||
-            (Array.isArray(complaint?.rework_history) && complaint.rework_history.length > 0)
-          );
-          const targetStatus = isReworkActive ? "reassigned" : "in-progress";
-
-          const payload: any = {
-            status: targetStatus,
-            current_phase: 4,
-            arrival_timestamp: nowIso,
-            start_journey_timestamp: complaint?.start_journey_timestamp || nowIso,
-          };
-          if (lat != null && lng != null) {
-            payload.arrival_lat = lat;
-            payload.arrival_lng = lng;
-          }
-          const { error } = await supabase
-            .from("complaints")
-            .update(payload)
-            .eq("id", ticketId);
-
-          if (error) throw error;
-        } else {
-          const payload: any = {
-            status: "In Progress",
-            current_phase: 4,
-            arrival_time: nowIso,
-            dispatched_at: dispatchedAt || nowIso,
-            updated_at: nowIso,
-          };
-          if (lat != null && lng != null) {
-            payload.arrival_gps_lat = lat;
-            payload.arrival_gps_lng = lng;
-          }
-          const { error } = await supabase
-            .from("installations")
-            .update(payload)
-            .eq("id", ticketId);
-
-          if (error) throw error;
-        }
-
-        setLoggedArrival(lat && lng ? { lat, lng, time: nowIso } : null);
-        setArrivedWithoutGps(!(lat && lng));
-        if (onArrivalLogged) {
-          onArrivalLogged(lat || 0, lng || 0, nowIso);
-        }
-
-        if (lat && lng) {
-          toast.success("🎯 Arrival logged successfully with GPS coordinates!", { id: "gps-arrival" });
-        } else {
-          toast.success("🎯 Arrival logged successfully! (GPS coordinates unavailable)", { id: "gps-arrival" });
-        }
-      } catch (err: any) {
-        console.error("Failed to log arrival:", err);
-        toast.error(err?.message || "Failed to update arrival status in database.", { id: "gps-arrival" });
-      } finally {
-        setIsLoggingArrival(false);
-      }
-    };
-
     if (!navigator.geolocation) {
       toast.info("Geolocation is not supported. Recording arrival without GPS.", { id: "gps-arrival" });
-      await saveArrivalRecord(null, null);
+      await saveArrivalRecord(null, null, false);
       return;
     }
 
     navigator.geolocation.getCurrentPosition(
       async (position) => {
         const { latitude, longitude } = position.coords;
-        await saveArrivalRecord(latitude, longitude);
+        await saveArrivalRecord(latitude, longitude, false);
       },
       async (error) => {
         let warningNote = "GPS unavailable. Recording arrival without coordinates.";
         if (error.code === 1) warningNote = "GPS permission denied in browser. Recording arrival without coordinates.";
         else if (error.code === 2) warningNote = "GPS position unavailable. Recording arrival without coordinates.";
         else if (error.code === 3) warningNote = "GPS request timed out. Recording arrival without coordinates.";
-        
+
         console.warn("GPS position error:", error.message);
         toast.info(warningNote, { id: "gps-arrival" });
-        await saveArrivalRecord(null, null);
+        await saveArrivalRecord(null, null, false);
       },
       {
         enableHighAccuracy: true,
@@ -321,9 +447,19 @@ export const TechnicianMissionControl: React.FC<TechnicianMissionControlProps> =
             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
             Arrived on Site ({new Date(loggedArrival.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })})
           </span>
-        ) : (
+        ) : isDispatched ? (
           <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
-            En Route to Site
+            <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+            {distanceToSiteMeters != null
+              ? distanceToSiteMeters <= 250
+                ? `Approaching Site (~${distanceToSiteMeters}m) • Auto-arriving shortly`
+                : `En Route • ~${distanceToSiteMeters > 1000 ? (distanceToSiteMeters / 1000).toFixed(1) + " km" : distanceToSiteMeters + " m"} away`
+              : "En Route to Site"}
+            {effLat && effLng && (distanceToSiteMeters == null || distanceToSiteMeters > 250) ? " (Auto-Arrival Active)" : ""}
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-slate-700 text-slate-300 border border-slate-600">
+            Awaiting Dispatch
           </span>
         )}
       </div>

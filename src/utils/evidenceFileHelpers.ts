@@ -70,6 +70,19 @@ export function getEvidenceFileName(url: string, fallback = "Attachment"): strin
 }
 
 /**
+ * Extracts the clean file extension (without dot), or empty string if not present.
+ */
+export function getFileExtension(url: string): string {
+  if (!url || typeof url !== "string") return "";
+  const cleanUrl = url.split("?")[0].split("#")[0].toLowerCase();
+  if (cleanUrl.includes(".")) {
+    const rawExt = cleanUrl.split(".").pop() || "";
+    if (rawExt.length >= 1 && rawExt.length <= 8) return rawExt;
+  }
+  return "";
+}
+
+/**
  * Returns user-facing badge information for each evidence category.
  */
 export function getCategoryBadgeInfo(category: EvidenceCategory) {

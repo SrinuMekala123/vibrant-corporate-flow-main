@@ -32,6 +32,7 @@ import { formatComplaintTicketId } from "@/services/complaintService";
 import { formatInstallationTicketId } from "@/services/installationService";
 import { complaintService } from "@/services/complaintService";
 import { installationService } from "@/services/installationService";
+import { getEvidenceCategory, getEvidenceFileName, getFileExtension } from "@/utils/evidenceFileHelpers";
 
 export interface UnifiedScheduleTask {
   id: string;
@@ -110,22 +111,132 @@ const escapeHtml = (unsafe?: string | null): string => {
 
 const renderEvidenceGridHtml = (images: any[], title: string): string => {
   if (!images || !Array.isArray(images) || images.length === 0) {
-    return `<div style="font-style: italic; color: #94a3b8; font-size: 10px; padding: 4px 0;">No evidence photos submitted.</div>`;
+    return `<div style="font-style: italic; color: #94a3b8; font-size: 10px; padding: 4px 0;">No evidence files or photos submitted.</div>`;
   }
   const itemsHtml = images.map((item, idx) => {
+    const rawUrl = typeof item === "string" ? item : (item?.url || item?.src || item?.path || "");
     const resolved = resolveSupabaseUrl(item);
     if (!resolved) return "";
+
+    const category = getEvidenceCategory(resolved || rawUrl);
+    const rawExt = getFileExtension(resolved || rawUrl);
+    const rawFileName = getEvidenceFileName(resolved || rawUrl, `${title} #${idx + 1}`);
+    const cleanFileName = rawFileName.replace(/^\d{10,13}[-_]/, "") || rawFileName;
+
+    if (category === "image") {
+      const extTag = (rawExt || "IMG").toUpperCase();
+      return `
+        <div class="photo-item photo-type-image">
+          <a href="${escapeHtml(resolved)}" target="_blank" rel="noopener noreferrer" title="Click to view full image (${escapeHtml(cleanFileName)})" style="text-decoration: none; display: block;">
+            <div class="media-thumb-wrap">
+              <img src="${escapeHtml(resolved)}" alt="${escapeHtml(cleanFileName)}" class="photo-img" />
+              <span class="file-tag-badge badge-img">.${escapeHtml(extTag)}</span>
+            </div>
+          </a>
+          <div class="photo-caption" title="${escapeHtml(cleanFileName)}">
+            <span class="badge-mini badge-img-mini">🖼️ .${escapeHtml(extTag)}</span>
+            <span class="file-name-text">${escapeHtml(cleanFileName)}</span>
+          </div>
+        </div>
+      `;
+    }
+
+    if (category === "pdf") {
+      return `
+        <div class="photo-item photo-type-pdf">
+          <a href="${escapeHtml(resolved)}" target="_blank" rel="noopener noreferrer" title="Click to open PDF (${escapeHtml(cleanFileName)})" style="text-decoration: none; display: block;">
+            <div class="doc-thumb-box pdf-box">
+              <div class="doc-icon">📄</div>
+              <div class="doc-ext-label">.PDF</div>
+              <div class="doc-action-hint">Click to Open</div>
+            </div>
+          </a>
+          <div class="photo-caption" title="${escapeHtml(cleanFileName)}">
+            <span class="badge-mini badge-pdf-mini">📄 .PDF</span>
+            <span class="file-name-text">${escapeHtml(cleanFileName)}</span>
+          </div>
+        </div>
+      `;
+    }
+
+    if (category === "spreadsheet") {
+      const extTag = (rawExt || "CSV").toUpperCase();
+      return `
+        <div class="photo-item photo-type-csv">
+          <a href="${escapeHtml(resolved)}" target="_blank" rel="noopener noreferrer" title="Click to view Spreadsheet (${escapeHtml(cleanFileName)})" style="text-decoration: none; display: block;">
+            <div class="doc-thumb-box csv-box">
+              <div class="doc-icon">📊</div>
+              <div class="doc-ext-label">.${escapeHtml(extTag)}</div>
+              <div class="doc-action-hint">Click to View</div>
+            </div>
+          </a>
+          <div class="photo-caption" title="${escapeHtml(cleanFileName)}">
+            <span class="badge-mini badge-csv-mini">📊 .${escapeHtml(extTag)}</span>
+            <span class="file-name-text">${escapeHtml(cleanFileName)}</span>
+          </div>
+        </div>
+      `;
+    }
+
+    if (category === "video") {
+      const extTag = (rawExt || "MP4").toUpperCase();
+      return `
+        <div class="photo-item photo-type-video">
+          <a href="${escapeHtml(resolved)}" target="_blank" rel="noopener noreferrer" title="Click to view Video (${escapeHtml(cleanFileName)})" style="text-decoration: none; display: block;">
+            <div class="doc-thumb-box video-box">
+              <div class="doc-icon">🎬</div>
+              <div class="doc-ext-label">.${escapeHtml(extTag)}</div>
+              <div class="doc-action-hint">▶ View Video</div>
+            </div>
+          </a>
+          <div class="photo-caption" title="${escapeHtml(cleanFileName)}">
+            <span class="badge-mini badge-video-mini">🎬 .${escapeHtml(extTag)}</span>
+            <span class="file-name-text">${escapeHtml(cleanFileName)}</span>
+          </div>
+        </div>
+      `;
+    }
+
+    if (category === "audio") {
+      const extTag = (rawExt || "AUDIO").toUpperCase();
+      return `
+        <div class="photo-item photo-type-audio">
+          <a href="${escapeHtml(resolved)}" target="_blank" rel="noopener noreferrer" title="Click to listen to Audio (${escapeHtml(cleanFileName)})" style="text-decoration: none; display: block;">
+            <div class="doc-thumb-box audio-box">
+              <div class="doc-icon">🎵</div>
+              <div class="doc-ext-label">.${escapeHtml(extTag)}</div>
+              <div class="doc-action-hint">▶ Listen</div>
+            </div>
+          </a>
+          <div class="photo-caption" title="${escapeHtml(cleanFileName)}">
+            <span class="badge-mini badge-audio-mini">🎵 .${escapeHtml(extTag)}</span>
+            <span class="file-name-text">${escapeHtml(cleanFileName)}</span>
+          </div>
+          <audio src="${escapeHtml(resolved)}" controls class="audio-player-sm no-print" style="width: 100%; height: 22px; margin-top: 3px;"></audio>
+        </div>
+      `;
+    }
+
+    // Default / Other Documents
+    const extTag = (rawExt || "DOC").toUpperCase();
     return `
-      <div class="photo-item">
-        <a href="${escapeHtml(resolved)}" target="_blank" rel="noopener noreferrer" title="Click to view full image" style="text-decoration: none; display: block;">
-          <img src="${escapeHtml(resolved)}" alt="${escapeHtml(title)} ${idx + 1}" class="photo-img" />
+      <div class="photo-item photo-type-doc">
+        <a href="${escapeHtml(resolved)}" target="_blank" rel="noopener noreferrer" title="Click to open File (${escapeHtml(cleanFileName)})" style="text-decoration: none; display: block;">
+          <div class="doc-thumb-box generic-box">
+            <div class="doc-icon">📁</div>
+            <div class="doc-ext-label">.${escapeHtml(extTag)}</div>
+            <div class="doc-action-hint">Click to Open</div>
+          </div>
         </a>
-        <div class="photo-caption">${escapeHtml(title)} #${idx + 1}</div>
+        <div class="photo-caption" title="${escapeHtml(cleanFileName)}">
+          <span class="badge-mini badge-doc-mini">📁 .${escapeHtml(extTag)}</span>
+          <span class="file-name-text">${escapeHtml(cleanFileName)}</span>
+        </div>
       </div>
     `;
   }).filter(Boolean).join("");
 
-  return itemsHtml ? `<div class="photo-grid">${itemsHtml}</div>` : `<div style="font-style: italic; color: #94a3b8; font-size: 10px; padding: 4px 0;">No evidence photos submitted.</div>`;
+  return itemsHtml ? `<div class="photo-grid">${itemsHtml}</div>` : `<div style="font-style: italic; color: #94a3b8; font-size: 10px; padding: 4px 0;">No evidence files or photos submitted.</div>`;
 };
 
 const generateComplaintPrintHtml = (c: any, item: UnifiedScheduleTask, techList: any[] = []): string => {
@@ -176,15 +287,20 @@ const generateComplaintPrintHtml = (c: any, item: UnifiedScheduleTask, techList:
     techHtml = `<div>${escapeHtml(item.technician_name || "Unassigned")} ${item.technician_id_display ? `<span style="font-family:monospace; color:#64748b;">[${escapeHtml(item.technician_id_display)}]</span>` : ""}</div>`;
   }
 
-  // PIR images: evidence_urls or complaint_images
-  const pirImages: string[] = Array.isArray(c.evidence_urls) && c.evidence_urls.length > 0
-    ? c.evidence_urls
-    : (Array.isArray(c.complaint_images) ? c.complaint_images : []);
+  // PIR files & photos: evidence_urls, complaint_images, pir_audio_url
+  const rawPirList = [
+    ...(Array.isArray(c.evidence_urls) ? c.evidence_urls : []),
+    ...(Array.isArray(c.complaint_images) ? c.complaint_images : []),
+    ...(c.pir_audio_url ? [c.pir_audio_url] : []),
+  ].filter(Boolean);
+  const pirImages: string[] = Array.from(new Set(rawPirList));
 
-  // Resolution images: technician_evidence
-  const resImages: string[] = Array.isArray(c.technician_evidence) && c.technician_evidence.length > 0
-    ? c.technician_evidence
-    : [];
+  // Resolution files & photos: technician_evidence, resolution_audio_url
+  const rawResList = [
+    ...(Array.isArray(c.technician_evidence) ? c.technician_evidence : []),
+    ...(c.resolution_audio_url ? [c.resolution_audio_url] : []),
+  ].filter(Boolean);
+  const resImages: string[] = Array.from(new Set(rawResList));
 
   const signatureUrl = c.signature_url ? resolveSupabaseUrl(c.signature_url) : null;
 
@@ -440,30 +556,140 @@ const generateComplaintPrintHtml = (c: any, item: UnifiedScheduleTask, techList:
     .photo-item {
       width: 145px;
       max-width: 145px;
-      border: 1px solid #cbd5e1;
-      border-radius: 4px;
+      border: 1.5px solid #cbd5e1;
+      border-radius: 6px;
       overflow: hidden;
       background: #ffffff;
-      padding: 4px;
+      padding: 5px;
       text-align: center;
       box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      page-break-inside: avoid;
+      box-sizing: border-box;
+    }
+    .media-thumb-wrap {
+      position: relative;
+      width: 100%;
+      height: 110px;
+      border-radius: 4px;
+      overflow: hidden;
+      background: #f8fafc;
     }
     .photo-img {
       width: 100%;
       height: 110px;
       object-fit: contain;
       background: #f8fafc;
-      border-radius: 3px;
+      border-radius: 4px;
       display: block;
+    }
+    .file-tag-badge {
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      font-size: 7.5px;
+      font-weight: 800;
+      padding: 1px 5px;
+      border-radius: 3px;
+      letter-spacing: 0.5px;
+      background: rgba(15, 23, 42, 0.85);
+      color: #ffffff;
+    }
+    .doc-thumb-box {
+      width: 100%;
+      height: 110px;
+      border-radius: 4px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 6px;
+      border: 1.5px dashed #cbd5e1;
+      box-sizing: border-box;
+      background: #f8fafc;
+    }
+    .doc-icon {
+      font-size: 30px;
+      line-height: 1;
+      margin-bottom: 4px;
+    }
+    .doc-ext-label {
+      font-family: monospace;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.8px;
+    }
+    .doc-action-hint {
+      font-size: 8px;
+      font-weight: 600;
+      margin-top: 4px;
+      color: #64748b;
+    }
+    .pdf-box {
+      background: #fef2f2;
+      border-color: #fca5a5;
+      color: #b91c1c;
+    }
+    .csv-box {
+      background: #f0fdf4;
+      border-color: #86efac;
+      color: #15803d;
+    }
+    .video-box {
+      background: #faf5ff;
+      border-color: #d8b4fe;
+      color: #7e22ce;
+    }
+    .audio-box {
+      background: #fffbeb;
+      border-color: #fde68a;
+      color: #b45309;
+    }
+    .generic-box {
+      background: #f1f5f9;
+      border-color: #cbd5e1;
+      color: #334155;
     }
     .photo-caption {
       font-size: 8.5px;
       font-weight: 700;
+      color: #334155;
+      margin-top: 4px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      align-items: center;
+      width: 100%;
+      overflow: hidden;
+    }
+    .badge-mini {
+      display: inline-block;
+      font-size: 8px;
+      font-weight: 800;
+      padding: 1.5px 6px;
+      border-radius: 3px;
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
+      max-width: 100%;
+    }
+    .badge-img-mini { background: #dbeafe; color: #1d4ed8; border: 1px solid #bfdbfe; }
+    .badge-pdf-mini { background: #fee2e2; color: #b91c1c; border: 1px solid #fecaca; }
+    .badge-csv-mini { background: #dcfce7; color: #15803d; border: 1px solid #bbf7d0; }
+    .badge-video-mini { background: #f3e8ff; color: #7e22ce; border: 1px solid #e9d5ff; }
+    .badge-audio-mini { background: #fef3c7; color: #b45309; border: 1px solid #fde68a; }
+    .badge-doc-mini { background: #e2e8f0; color: #334155; border: 1px solid #cbd5e1; }
+    .file-name-text {
+      font-size: 8px;
+      font-weight: 600;
       color: #475569;
-      margin-top: 3px;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      max-width: 135px;
+      display: block;
+      margin-top: 1px;
     }
     .sig-container {
       display: flex;
@@ -507,7 +733,7 @@ const generateComplaintPrintHtml = (c: any, item: UnifiedScheduleTask, techList:
         padding: 0 !important;
         margin: 0 !important;
       }
-      .no-print, .screen-toolbar {
+      .no-print, .screen-toolbar, .audio-player-sm {
         display: none !important;
       }
       .page-sheet {
@@ -517,6 +743,10 @@ const generateComplaintPrintHtml = (c: any, item: UnifiedScheduleTask, techList:
         box-shadow: none !important;
         border-radius: 0 !important;
         min-height: auto !important;
+      }
+      .doc-thumb-box, .photo-item, .badge-mini {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
       }
     }
   </style>
@@ -663,8 +893,8 @@ const generateComplaintPrintHtml = (c: any, item: UnifiedScheduleTask, techList:
           <div class="field-val" style="white-space: pre-wrap;">${escapeHtml(c.pir_findings || "No specific diagnostic findings recorded.")}</div>
         </div>
         <div style="margin-top: 6px;">
-          <div class="field-lbl">PIR Evidence Photos (Pre-Service)</div>
-          ${renderEvidenceGridHtml(pirImages, "PIR Photo")}
+          <div class="field-lbl">PIR Evidence Files & Photos (Pre-Service)</div>
+          ${renderEvidenceGridHtml(pirImages, "PIR Evidence")}
         </div>
       </div>
     </div>
@@ -689,8 +919,8 @@ const generateComplaintPrintHtml = (c: any, item: UnifiedScheduleTask, techList:
         </div>
 
         <div style="margin-top: 6px;">
-          <div class="field-lbl">Resolution Evidence Photos (Post-Service)</div>
-          ${renderEvidenceGridHtml(resImages, "Resolution Photo")}
+          <div class="field-lbl">Resolution Evidence Files & Photos (Post-Service)</div>
+          ${renderEvidenceGridHtml(resImages, "Resolution Evidence")}
         </div>
 
         <div style="margin-top: 8px;">
@@ -1012,30 +1242,140 @@ const generateInstallationPrintHtml = (inst: any, item: UnifiedScheduleTask, tec
     .photo-item {
       width: 145px;
       max-width: 145px;
-      border: 1px solid #cbd5e1;
-      border-radius: 4px;
+      border: 1.5px solid #cbd5e1;
+      border-radius: 6px;
       overflow: hidden;
       background: #ffffff;
-      padding: 4px;
+      padding: 5px;
       text-align: center;
       box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      page-break-inside: avoid;
+      box-sizing: border-box;
+    }
+    .media-thumb-wrap {
+      position: relative;
+      width: 100%;
+      height: 110px;
+      border-radius: 4px;
+      overflow: hidden;
+      background: #f8fafc;
     }
     .photo-img {
       width: 100%;
       height: 110px;
       object-fit: contain;
       background: #f8fafc;
-      border-radius: 3px;
+      border-radius: 4px;
       display: block;
+    }
+    .file-tag-badge {
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      font-size: 7.5px;
+      font-weight: 800;
+      padding: 1px 5px;
+      border-radius: 3px;
+      letter-spacing: 0.5px;
+      background: rgba(15, 23, 42, 0.85);
+      color: #ffffff;
+    }
+    .doc-thumb-box {
+      width: 100%;
+      height: 110px;
+      border-radius: 4px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 6px;
+      border: 1.5px dashed #cbd5e1;
+      box-sizing: border-box;
+      background: #f8fafc;
+    }
+    .doc-icon {
+      font-size: 30px;
+      line-height: 1;
+      margin-bottom: 4px;
+    }
+    .doc-ext-label {
+      font-family: monospace;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.8px;
+    }
+    .doc-action-hint {
+      font-size: 8px;
+      font-weight: 600;
+      margin-top: 4px;
+      color: #64748b;
+    }
+    .pdf-box {
+      background: #fef2f2;
+      border-color: #fca5a5;
+      color: #b91c1c;
+    }
+    .csv-box {
+      background: #f0fdf4;
+      border-color: #86efac;
+      color: #15803d;
+    }
+    .video-box {
+      background: #faf5ff;
+      border-color: #d8b4fe;
+      color: #7e22ce;
+    }
+    .audio-box {
+      background: #fffbeb;
+      border-color: #fde68a;
+      color: #b45309;
+    }
+    .generic-box {
+      background: #f1f5f9;
+      border-color: #cbd5e1;
+      color: #334155;
     }
     .photo-caption {
       font-size: 8.5px;
       font-weight: 700;
+      color: #334155;
+      margin-top: 4px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      align-items: center;
+      width: 100%;
+      overflow: hidden;
+    }
+    .badge-mini {
+      display: inline-block;
+      font-size: 8px;
+      font-weight: 800;
+      padding: 1.5px 6px;
+      border-radius: 3px;
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
+      max-width: 100%;
+    }
+    .badge-img-mini { background: #dbeafe; color: #1d4ed8; border: 1px solid #bfdbfe; }
+    .badge-pdf-mini { background: #fee2e2; color: #b91c1c; border: 1px solid #fecaca; }
+    .badge-csv-mini { background: #dcfce7; color: #15803d; border: 1px solid #bbf7d0; }
+    .badge-video-mini { background: #f3e8ff; color: #7e22ce; border: 1px solid #e9d5ff; }
+    .badge-audio-mini { background: #fef3c7; color: #b45309; border: 1px solid #fde68a; }
+    .badge-doc-mini { background: #e2e8f0; color: #334155; border: 1px solid #cbd5e1; }
+    .file-name-text {
+      font-size: 8px;
+      font-weight: 600;
       color: #475569;
-      margin-top: 3px;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      max-width: 135px;
+      display: block;
+      margin-top: 1px;
     }
     .sig-container {
       display: flex;
@@ -1079,7 +1419,7 @@ const generateInstallationPrintHtml = (inst: any, item: UnifiedScheduleTask, tec
         padding: 0 !important;
         margin: 0 !important;
       }
-      .no-print, .screen-toolbar {
+      .no-print, .screen-toolbar, .audio-player-sm {
         display: none !important;
       }
       .page-sheet {
@@ -1089,6 +1429,10 @@ const generateInstallationPrintHtml = (inst: any, item: UnifiedScheduleTask, tec
         box-shadow: none !important;
         border-radius: 0 !important;
         min-height: auto !important;
+      }
+      .doc-thumb-box, .photo-item, .badge-mini {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
       }
     }
   </style>
@@ -1186,8 +1530,8 @@ const generateInstallationPrintHtml = (inst: any, item: UnifiedScheduleTask, tec
           <div class="field-val" style="white-space: pre-wrap;">${escapeHtml(inst.testing_results || "All testing benchmarks completed successfully. System is stable and operational.")}</div>
         </div>
         <div style="margin-top: 6px;">
-          <div class="field-lbl">Site Evidence Photos (Mounting & Handover)</div>
-          ${renderEvidenceGridHtml(evidencePhotos, "Installation Photo")}
+          <div class="field-lbl">Site Evidence Files & Photos (Mounting & Handover)</div>
+          ${renderEvidenceGridHtml(evidencePhotos, "Installation Evidence")}
         </div>
       </div>
     </div>
