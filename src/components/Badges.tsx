@@ -19,6 +19,7 @@
 
 
 import { TicketStatus } from "@/data/mockData";
+import { useAuth } from "@/contexts/AuthContext";
 
 export function getEffectiveComplaintStatus(ticket: any): string {
   if (!ticket) return "unassigned";
@@ -76,6 +77,14 @@ export interface SeverityBadgeProps {
 }
 
 export function StatusBadge({ status, ticket }: StatusBadgeProps) {
+  let isCustomer = false;
+  try {
+    const auth = useAuth();
+    isCustomer = auth?.isRole ? auth.isRole("customer") : false;
+  } catch {
+    // Outside AuthContext fallback
+  }
+
   const effectiveKey = ticket ? getEffectiveComplaintStatus(ticket) : getEffectiveComplaintStatus(status);
   const isRework = typeof ticket === "object" && Boolean(
     ticket?.reassignment_reason ||
@@ -101,9 +110,9 @@ export function StatusBadge({ status, ticket }: StatusBadgeProps) {
     pir_rejected: { bg: "bg-amber-100", text: "text-amber-800", label: "Info Requested" },
     pir_approved_work_in_progress: { bg: "bg-blue-100", text: "text-blue-800", label: "Resolution & Sign-off" },
     resolution_pending: { bg: "bg-blue-100", text: "text-blue-800", label: "Resolution Pending" },
-    rework_required: { bg: "bg-amber-100 dark:bg-amber-950/60", text: "text-amber-800 dark:text-amber-300", label: "Reassigned" },
-    reassigned: { bg: "bg-amber-100 dark:bg-amber-950/60", text: "text-amber-800 dark:text-amber-300", label: "Reassigned" },
-    "Reassigned": { bg: "bg-amber-100 dark:bg-amber-950/60", text: "text-amber-800 dark:text-amber-300", label: "Reassigned" },
+    rework_required: { bg: "bg-amber-100 dark:bg-amber-950/60", text: "text-amber-800 dark:text-amber-300", label: isCustomer ? "In Progress" : "Reassigned" },
+    reassigned: { bg: "bg-amber-100 dark:bg-amber-950/60", text: "text-amber-800 dark:text-amber-300", label: isCustomer ? "In Progress" : "Reassigned" },
+    "Reassigned": { bg: "bg-amber-100 dark:bg-amber-950/60", text: "text-amber-800 dark:text-amber-300", label: isCustomer ? "In Progress" : "Reassigned" },
     completed: { bg: "bg-emerald-100", text: "text-emerald-700", label: "Completed" },
     resolved: { bg: "bg-emerald-100", text: "text-emerald-700", label: "Resolved" },
     pending_verification: { bg: "bg-cyan-100", text: "text-cyan-700", label: "Pending Verification" },
@@ -126,7 +135,7 @@ export function StatusBadge({ status, ticket }: StatusBadgeProps) {
       <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${config.bg} ${config.text}`}>
         {config.label}
       </span>
-      {isRework && effectiveKey !== "reassigned" && (
+      {!isCustomer && isRework && effectiveKey !== "reassigned" && (
         <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-300/50">
           Rework
         </span>

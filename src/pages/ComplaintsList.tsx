@@ -33,8 +33,9 @@ const statusFilters = [
   "unassigned",
   "assigned",
   "reassigned",
-  "in-progress",
   "dispatched",
+  "in-progress",
+  "pending_verification",
   "completed",
   "closed"
 ];
@@ -408,17 +409,29 @@ const ComplaintsList = () => {
     } else if (statusFilter === "active") {
       matchStatus = effectiveStatus !== "completed" && effectiveStatus !== "closed";
     } else if (statusFilter === "completed") {
-      matchStatus = effectiveStatus === "completed";
+      matchStatus = effectiveStatus === "completed" || effectiveStatus === "resolved";
     } else if (statusFilter === "closed") {
       matchStatus = effectiveStatus === "closed";
     } else if (statusFilter === "reassigned") {
-      matchStatus = effectiveStatus === "reassigned" || Boolean(
-        (t.reassignment_reason || t.reassigned_at || (Array.isArray(t.rework_history) && t.rework_history.length > 0)) &&
-        effectiveStatus !== "closed" &&
-        effectiveStatus !== "completed"
-      );
+      // Shows tickets currently awaiting technician pickup after reassignment
+      matchStatus = effectiveStatus === "reassigned" || effectiveStatus === "rework_required";
+    } else if (statusFilter === "dispatched") {
+      matchStatus = effectiveStatus === "dispatched";
     } else if (statusFilter === "in-progress" || statusFilter === "in_progress") {
-      matchStatus = (effectiveStatus === "in-progress" || effectiveStatus === "in_progress");
+      matchStatus = (
+        effectiveStatus === "in-progress" ||
+        effectiveStatus === "in_progress" ||
+        effectiveStatus === "pir_approved_work_in_progress" ||
+        effectiveStatus === "pir_submitted_awaiting_approval" ||
+        effectiveStatus === "pir_submitted" ||
+        effectiveStatus === "pir_rejected"
+      );
+    } else if (statusFilter === "pending_verification" || statusFilter === "pending-verification") {
+      matchStatus = (
+        effectiveStatus === "pending_verification" ||
+        effectiveStatus === "resolution_submitted" ||
+        effectiveStatus === "awaiting_verification"
+      );
     } else {
       matchStatus = effectiveStatus === statusFilter;
     }
@@ -742,7 +755,7 @@ const ComplaintsList = () => {
                     : "bg-muted text-muted-foreground border-border/40 hover:bg-muted/80"
                 }`}
               >
-              {s === "all" ? "All Tickets" : s.replace("-", " ")}
+              {s === "all" ? "All Tickets" : s === "pending_verification" ? "Pending Verification" : s.replace("-", " ")}
             </button>
           ))}
         </div>
@@ -853,7 +866,6 @@ const ComplaintsList = () => {
             {[
               { id: "all", label: "All" },
               { id: "active", label: "Active" },
-              { id: "reassigned", label: "Reassigned" },
               { id: "completed", label: "Completed" },
               { id: "closed", label: "Closed" }
             ].map((tab) => (
