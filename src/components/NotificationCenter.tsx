@@ -54,7 +54,12 @@ export function NotificationCenter() {
 
     fetchInitialData();
     const interval = setInterval(fetchInitialData, 30000);
-    return () => clearInterval(interval);
+    const handleRefresh = () => fetchInitialData();
+    window.addEventListener("notification-refresh", handleRefresh);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("notification-refresh", handleRefresh);
+    };
   }, [user?.id]);
 
   // Realtime updates are disabled to prevent WebSocket 403 errors

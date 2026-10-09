@@ -21,6 +21,8 @@ import { compressVideoForUpload } from "@/lib/videoCompression";
 import { uploadEvidenceWithProgress, type UploadProgressState } from "@/lib/fileUploadHelper";
 import { UploadProgressBar } from "@/components/UploadProgressBar";
 import { notificationService } from "@/services/notificationService";
+import { sendWhatsAppMessage } from "@/utils/whatsappService";
+import { whatsappTemplates } from "@/utils/whatsappTemplates";
 import DatePicker from "react-datepicker";
 import "react-datepicker/dist/react-datepicker.css";
 import { formatFullCustomerAddress } from "@/lib/utils";
@@ -298,7 +300,7 @@ const ComplaintEdit = () => {
   const [selectedAssetId, setSelectedAssetId] = useState("");
   const [availableFieldOfWork, setAvailableFieldOfWork] = useState<string[]>([]);
 
-  // 📦 Assets to Service (Multi-Asset Line Items)
+  // 📦 Assets to Service (Multi-Asset Line Items for Existing BTL Customers)
   const [assets, setAssets] = useState<Array<{
     id?: string;
     asset_type: string;
@@ -317,6 +319,45 @@ const ComplaintEdit = () => {
       service_charge: 0,
     },
   ]);
+
+  // 🛠️ Simple Multi-Asset List for Non-BTL (Walk-in / Direct) Customers
+  const [nonBtlAssets, setNonBtlAssets] = useState<Array<{
+    equipment_name: string;
+    serial_number: string;
+    reported_issue: string;
+  }>>([
+    {
+      equipment_name: '',
+      serial_number: '',
+      reported_issue: '',
+    },
+  ]);
+  const [nonBtlIsChargeable, setNonBtlIsChargeable] = useState<boolean>(true);
+  const [nonBtlServiceCharge, setNonBtlServiceCharge] = useState<number>(0);
+
+  const handleAddNonBtlAsset = () => {
+    setNonBtlAssets((prev) => [
+      ...prev,
+      {
+        equipment_name: '',
+        serial_number: '',
+        reported_issue: '',
+      },
+    ]);
+  };
+
+  const handleRemoveNonBtlAsset = (index: number) => {
+    if (nonBtlAssets.length <= 1) return;
+    setNonBtlAssets((prev) => prev.filter((_, idx) => idx !== index));
+  };
+
+  const handleUpdateNonBtlAsset = (index: number, field: 'equipment_name' | 'serial_number' | 'reported_issue', value: string) => {
+    setNonBtlAssets((prev) => {
+      const next = [...prev];
+      next[index] = { ...next[index], [field]: value };
+      return next;
+    });
+  };
 
   const handleAddAsset = () => {
     setAssets((prev) => [
@@ -434,8 +475,9 @@ const ComplaintEdit = () => {
     }
   }, [assets, userOverrodeFieldOfWork, mapToStandardCategory]);
 
-  // 🛡️ Auto-sync Coverage & Chargeable Service based on assets
+  // 🛡️ Auto-sync Coverage & Chargeable Service based on assets (for Existing BTL Customers)
   useEffect(() => {
+    if (customerType === "New / Non-BTL Customer") return;
     if (!assets || assets.length === 0) return;
 
     const hasExpiredOrChargeable = assets.some(
@@ -480,7 +522,7 @@ const ComplaintEdit = () => {
         };
       });
     }
-  }, [assets]);
+  }, [assets, customerType]);
 
   // 📝 New Complaint Draft Persistence & Clearing
   const isDraftClearedRef = useRef(false);
@@ -567,6 +609,15 @@ const ComplaintEdit = () => {
         if (parsed.assets && Array.isArray(parsed.assets) && parsed.assets.length > 0) {
           setAssets(parsed.assets);
         }
+        if (parsed.nonBtlAssets && Array.isArray(parsed.nonBtlAssets) && parsed.nonBtlAssets.length > 0) {
+          setNonBtlAssets(parsed.nonBtlAssets);
+        }
+        if (typeof parsed.nonBtlIsChargeable === 'boolean') {
+          setNonBtlIsChargeable(parsed.nonBtlIsChargeable);
+        }
+        if (typeof parsed.nonBtlServiceCharge === 'number') {
+          setNonBtlServiceCharge(parsed.nonBtlServiceCharge);
+        }
         if (parsed.userOverrodeFieldOfWork) setUserOverrodeFieldOfWork(Boolean(parsed.userOverrodeFieldOfWork));
       }
     } catch (e) {
@@ -589,6 +640,9 @@ const ComplaintEdit = () => {
             leadTechnicianId,
             evidenceUrls,
             assets,
+            nonBtlAssets,
+            nonBtlIsChargeable,
+            nonBtlServiceCharge,
             userOverrodeFieldOfWork,
           };
           localStorage.setItem('draft_new_complaint', JSON.stringify(data));
@@ -598,7 +652,7 @@ const ComplaintEdit = () => {
       }
     }, 500);
     return () => clearTimeout(timer);
-  }, [isNew, isSaving, form, customerType, selectedSupervisorId, selectedTechnicianIds, leadTechnicianId, evidenceUrls, assets, userOverrodeFieldOfWork]);
+  }, [isNew, isSaving, form, customerType, selectedSupervisorId, selectedTechnicianIds, leadTechnicianId, evidenceUrls, assets, nonBtlAssets, nonBtlIsChargeable, nonBtlServiceCharge, userOverrodeFieldOfWork]);
 
   // ✅ Validation checks controlling the "Create Complaint" / "Save" button state
   const hasValidCustomer = Boolean(
@@ -609,10 +663,12 @@ const ComplaintEdit = () => {
 
   const hasValidLocation = Boolean(form.location && form.location.trim().length > 0);
 
-  // Must have at least 1 valid asset with a name
+  // Asset validation: Required for Existing BTL customers, optional for Non-BTL customers
+  const isNonBtlCustomer = customerType !== "Existing BTL Customer";
   const hasValidAssets = Boolean(
-    assets.length > 0 &&
-    assets.some(a => (a.asset_name || '').trim().length > 0)
+    isNonBtlCustomer
+      ? true
+      : (assets.length > 0 && assets.some(a => (a.asset_name || '').trim().length > 0))
   );
 
   // Main issue text area
@@ -633,11 +689,11 @@ const ComplaintEdit = () => {
     const list: string[] = [];
     if (!hasValidCustomer) list.push(customerType === "Existing BTL Customer" ? "Customer" : "Customer Name");
     if (!hasValidLocation) list.push("Location");
-    if (!hasValidAssets) list.push("Asset Name");
+    if (!hasValidAssets) list.push(isNonBtlCustomer ? "Equipment Name" : "Asset Name");
     if (!hasValidDescription) list.push("Problem Description");
     if (!hasValidFieldOfWork) list.push("Field of Work");
     return list;
-  }, [hasValidCustomer, customerType, hasValidLocation, hasValidAssets, hasValidDescription, hasValidFieldOfWork]);
+  }, [hasValidCustomer, customerType, hasValidLocation, hasValidAssets, isNonBtlCustomer, hasValidDescription, hasValidFieldOfWork]);
 
   // 🛡️ Derived Asset & Warranty Expiry Information
   const selectedAsset = useMemo(() => {
@@ -1204,7 +1260,7 @@ const ComplaintEdit = () => {
 
       // Load complaint_assets
       if ((existingComplaint as any).complaint_assets && (existingComplaint as any).complaint_assets.length > 0) {
-        setAssets((existingComplaint as any).complaint_assets.map((a: any) => ({
+        const loadedAssets = (existingComplaint as any).complaint_assets.map((a: any) => ({
           id: a.id,
           asset_type: a.asset_type || '',
           asset_name: a.asset_name || '',
@@ -1212,7 +1268,15 @@ const ComplaintEdit = () => {
           warranty_status: (a.warranty_status === 'Expired' ? 'Expired' : 'Active') as 'Active' | 'Expired',
           is_chargeable: typeof a.is_chargeable === 'boolean' ? a.is_chargeable : (a.warranty_status === 'Expired'),
           service_charge: Number(a.service_charge) || 0,
+        }));
+        setAssets(loadedAssets);
+        setNonBtlAssets(loadedAssets.map((a: any) => ({
+          equipment_name: a.asset_name || '',
+          serial_number: '',
+          reported_issue: a.reported_issue || '',
         })));
+        setNonBtlIsChargeable(existingComplaint.chargeable_service === 'Yes' || String(existingComplaint.chargeable_service) === 'true' || loadedAssets.some((a: any) => a.is_chargeable));
+        setNonBtlServiceCharge(Number(existingComplaint.service_charge) || 0);
       } else if (existingComplaint.id) {
         supabase
           .from('complaint_assets')
@@ -1221,7 +1285,7 @@ const ComplaintEdit = () => {
           .order('created_at', { ascending: true })
           .then(({ data, error }) => {
             if (!error && data && data.length > 0) {
-              setAssets(data.map((a: any) => ({
+              const loadedAssets = data.map((a: any) => ({
                 id: a.id,
                 asset_type: a.asset_type || '',
                 asset_name: a.asset_name || '',
@@ -1229,17 +1293,33 @@ const ComplaintEdit = () => {
                 warranty_status: (a.warranty_status === 'Expired' ? 'Expired' : 'Active') as 'Active' | 'Expired',
                 is_chargeable: typeof a.is_chargeable === 'boolean' ? a.is_chargeable : (a.warranty_status === 'Expired'),
                 service_charge: Number(a.service_charge) || 0,
+              }));
+              setAssets(loadedAssets);
+              setNonBtlAssets(loadedAssets.map((a: any) => ({
+                equipment_name: a.asset_name || '',
+                serial_number: '',
+                reported_issue: a.reported_issue || '',
               })));
+              setNonBtlIsChargeable(existingComplaint.chargeable_service === 'Yes' || String(existingComplaint.chargeable_service) === 'true' || loadedAssets.some((a: any) => a.is_chargeable));
+              setNonBtlServiceCharge(Number(existingComplaint.service_charge) || 0);
             } else {
               // Legacy single-asset fallback
+              const legacyName = existingComplaint.brand || existingComplaint.title || '';
               setAssets([{
                 asset_type: existingComplaint.field_of_work || '',
-                asset_name: existingComplaint.brand || existingComplaint.title || '',
+                asset_name: legacyName,
                 reported_issue: existingComplaint.description || '',
                 warranty_status: existingComplaint.coverage === 'Out of Warranty' ? 'Expired' : 'Active',
                 is_chargeable: existingComplaint.chargeable_service === 'Yes' || String(existingComplaint.chargeable_service) === 'true',
                 service_charge: Number(existingComplaint.service_charge) || 0,
               }]);
+              setNonBtlAssets([{
+                equipment_name: legacyName,
+                serial_number: '',
+                reported_issue: existingComplaint.description || '',
+              }]);
+              setNonBtlIsChargeable(existingComplaint.chargeable_service === 'Yes' || String(existingComplaint.chargeable_service) === 'true');
+              setNonBtlServiceCharge(Number(existingComplaint.service_charge) || 0);
             }
           });
       }
@@ -1479,9 +1559,19 @@ const ComplaintEdit = () => {
       return;
     }
     
-    // Ensure title exists or generate from description / asset
+    // Ensure title exists or generate cleanly from description / asset
     if (!form.title || form.title.trim() === "") {
-      form.title = form.description ? form.description.slice(0, 60).trim() : (assets[0]?.asset_name || "Complaint Service Request");
+      const assetPart = assets[0]?.asset_name || assets[0]?.asset_type || "";
+      const descPart = form.description ? form.description.slice(0, 60).trim() : "";
+      if (assetPart && descPart) {
+        form.title = `${assetPart} - ${descPart}`.slice(0, 150);
+      } else if (descPart) {
+        form.title = descPart.slice(0, 150);
+      } else if (assetPart) {
+        form.title = `${assetPart} Service Request`;
+      } else {
+        form.title = "Service Request";
+      }
     }
     
     if (isCustomer || customerType === "Existing BTL Customer") {
@@ -1519,28 +1609,68 @@ const ComplaintEdit = () => {
     }
 
     // Mandatory Assets to Service Check: must have at least 1 valid asset with a name
-    const validAssets = assets.filter(a => (a.asset_name || '').trim().length > 0);
-    if (validAssets.length === 0) {
-      toast.error("Please add at least one asset with an asset name");
-      return;
-    }
+    let validAssets: Array<{
+      asset_type: string;
+      asset_name: string;
+      reported_issue: string;
+      warranty_status: string;
+      is_chargeable: boolean;
+      service_charge: number;
+    }> = [];
 
-    // Auto-fill asset_type if left empty
-    validAssets.forEach(a => {
-      if (!a.asset_type || a.asset_type.trim() === "") {
-        a.asset_type = form.fieldOfWork || "General";
+    if (customerType !== "Existing BTL Customer") {
+      // 🛠️ Map simple Non-BTL items to backend complaint_assets structure (Optional)
+      const nonBtlItemsWithData = nonBtlAssets.filter(
+        item => (item.equipment_name || '').trim().length > 0 || 
+                (item.serial_number || '').trim().length > 0 || 
+                (item.reported_issue || '').trim().length > 0
+      );
+
+      validAssets = nonBtlItemsWithData.map((item, index) => {
+        const eqName = item.equipment_name?.trim() || (item.serial_number?.trim() ? `Equipment (${item.serial_number.trim()})` : (form.fieldOfWork || 'General Equipment'));
+        const snPart = item.equipment_name?.trim() && item.serial_number && item.serial_number.trim().length > 0 ? ` (S/N: ${item.serial_number.trim()})` : '';
+        return {
+          asset_type: form.fieldOfWork || "Other",
+          asset_name: `${eqName}${snPart}`,
+          reported_issue: item.reported_issue?.trim() || form.description?.slice(0, 100) || '',
+          warranty_status: "Out of Warranty",
+          is_chargeable: nonBtlIsChargeable,
+          service_charge: index === 0 && nonBtlIsChargeable ? Number(nonBtlServiceCharge) || 0 : 0
+        };
+      });
+
+      // Synchronize form coverage, chargeableService, and serviceCharge for Non-BTL
+      form.coverage = "Out of Warranty";
+      form.chargeableService = nonBtlIsChargeable ? "Yes" : "No";
+      form.serviceCharge = nonBtlIsChargeable ? (Number(nonBtlServiceCharge) || 0) : 0;
+      if (!form.brand && nonBtlItemsWithData[0]?.equipment_name) {
+        form.brand = nonBtlItemsWithData[0].equipment_name.trim();
       }
-    });
+    } else {
+      // Standard Existing BTL customer validation
+      validAssets = assets.filter(a => (a.asset_name || '').trim().length > 0);
+      if (validAssets.length === 0) {
+        toast.error("Please add at least one asset with an asset name");
+        return;
+      }
 
-    // Auto-sync fieldOfWork, coverage, chargeableService if empty so backward-compatible schemas remain satisfied
-    if (!form.fieldOfWork && validAssets[0]?.asset_type) {
-      form.fieldOfWork = validAssets[0].asset_type;
-    }
-    if (!form.coverage) {
-      form.coverage = assets.some(a => a.warranty_status === 'Active') ? 'Under Warranty' : 'Out of Warranty';
-    }
-    if (!form.chargeableService) {
-      form.chargeableService = assets.some(a => a.is_chargeable) ? 'Yes' : 'No';
+      // Auto-fill asset_type if left empty
+      validAssets.forEach(a => {
+        if (!a.asset_type || a.asset_type.trim() === "") {
+          a.asset_type = form.fieldOfWork || "General";
+        }
+      });
+
+      // Auto-sync fieldOfWork, coverage, chargeableService if empty so backward-compatible schemas remain satisfied
+      if (!form.fieldOfWork && validAssets[0]?.asset_type) {
+        form.fieldOfWork = validAssets[0].asset_type;
+      }
+      if (!form.coverage) {
+        form.coverage = assets.some(a => a.warranty_status === 'Active') ? 'Under Warranty' : 'Out of Warranty';
+      }
+      if (!form.chargeableService) {
+        form.chargeableService = assets.some(a => a.is_chargeable) ? 'Yes' : 'No';
+      }
     }
     
     if (!form.fieldOfWork || form.fieldOfWork.trim() === "") {
@@ -1774,9 +1904,9 @@ const ComplaintEdit = () => {
           location_id: (isExistingBtl && selectedLocationId) ? selectedLocationId : null,
           location: form.location || null,
           field_of_work: form.fieldOfWork || null,
-          coverage: form.coverage || (assets.some(a => a.warranty_status === 'Active') ? "Under Warranty" : "Out of Warranty"),
-          chargeable_service: form.chargeableService || (assets.some(a => a.is_chargeable) ? "Yes" : "No"),
-          service_charge: form.chargeableService === "Yes" ? (Number(form.serviceCharge) || totalChargeableAmount) : totalChargeableAmount,
+          coverage: form.coverage || (validAssets.some(a => a.warranty_status === 'Active') ? "Under Warranty" : "Out of Warranty"),
+          chargeable_service: form.chargeableService || (validAssets.some(a => a.is_chargeable) ? "Yes" : "No"),
+          service_charge: form.chargeableService === "Yes" ? (Number(form.serviceCharge) || totalChargeableAmount) : (customerType === "New / Non-BTL Customer" ? (Number(nonBtlServiceCharge) || 0) : totalChargeableAmount),
           brand: form.brand || null,
           severity: form.severity || null,
           current_phase: phase,
@@ -1887,6 +2017,34 @@ const ComplaintEdit = () => {
                 }
               }
             }
+
+            // In-App Notification to Customer
+            const targetCustomerUserId = form.customerId || linkedCustomerId;
+            if (targetCustomerUserId) {
+              await notificationService.insertNotification(
+                targetCustomerUserId,
+                newComplaint.id,
+                'info',
+                '🔔 Complaint Registered',
+                `Your complaint #${displayTicketId} has been successfully registered. Our team will review and update you shortly.`,
+                1
+              );
+            }
+
+            // WhatsApp Message to Customer (Requirement 1)
+            const recipientCustPhone = form.customerPhone?.trim();
+            if (recipientCustPhone) {
+              const custName = form.customerName || "Customer";
+              const waMsg = whatsappTemplates.complaintCreatedCustomer({
+                customerName: custName,
+                ticketId: displayTicketId,
+              });
+              sendWhatsAppMessage(recipientCustPhone, waMsg, {
+                name: custName,
+                ticketId: displayTicketId,
+                event_type: "complaint_created",
+              }).catch((e) => console.warn("Complaint creation WhatsApp dispatch skipped:", e));
+            }
           } catch (notifErr) {
             console.warn("Background notification dispatch:", notifErr);
           }
@@ -1955,9 +2113,9 @@ const ComplaintEdit = () => {
           location: form.location || null,
           location_id: selectedLocationId || null,
           field_of_work: form.fieldOfWork || null,
-          coverage: form.coverage || (assets.some(a => a.warranty_status === 'Active') ? "Under Warranty" : "Out of Warranty"),
-          chargeable_service: form.chargeableService || (assets.some(a => a.is_chargeable) ? "Yes" : "No"),
-          service_charge: form.chargeableService === "Yes" ? (Number(form.serviceCharge) || totalChargeableAmount) : totalChargeableAmount,
+          coverage: form.coverage || (validAssets.some(a => a.warranty_status === 'Active') ? "Under Warranty" : "Out of Warranty"),
+          chargeable_service: form.chargeableService || (validAssets.some(a => a.is_chargeable) ? "Yes" : "No"),
+          service_charge: form.chargeableService === "Yes" ? (Number(form.serviceCharge) || totalChargeableAmount) : (customerType === "New / Non-BTL Customer" ? (Number(nonBtlServiceCharge) || 0) : totalChargeableAmount),
           brand: form.brand || null,
           severity: form.severity || null,
           status: nextStatus,
@@ -2016,6 +2174,78 @@ const ComplaintEdit = () => {
               undefined,
               user?.id
             );
+          }
+        }
+
+        // 🔔 Schedule Change Trigger (Requirement 3 & 5)
+        const prevDateStr = existingComplaint?.scheduled_date ? formatDateToYYYYMMDD(new Date(existingComplaint.scheduled_date)) : null;
+        const nextDateStr = formatDateToYYYYMMDD(form.scheduledDate);
+        const prevTimeStr = existingComplaint?.scheduled_time ? existingComplaint.scheduled_time.slice(0, 5) : null;
+        const nextTimeStr = form.scheduledTime ? form.scheduledTime.slice(0, 5) : null;
+        const scheduleChanged = Boolean((prevDateStr && nextDateStr && prevDateStr !== nextDateStr) || (prevTimeStr && nextTimeStr && prevTimeStr !== nextTimeStr));
+
+        if (scheduleChanged && nextDateStr) {
+          const effectiveDate = nextDateStr;
+          const effectiveTime = nextTimeStr || "10:00 AM";
+          const custName = form.customerName || "Customer";
+
+          // 1. In-App + WhatsApp to Assigned Technicians
+          if (techObjs && techObjs.length > 0) {
+            for (const t of techObjs) {
+              await notificationService.insertNotification(
+                t.technician_id,
+                id!,
+                'info',
+                '📅 Schedule Update',
+                `Schedule Update for #${existingTicketDisplay}: New Date/Time is ${effectiveDate} at ${effectiveTime}.`,
+                3,
+                undefined,
+                user?.id
+              );
+
+              const techProfile = (technicians as any[])?.find((tp: any) => tp.id === t.technician_id);
+              if (techProfile?.phone) {
+                const waMsg = whatsappTemplates.scheduleUpdateTechnician({
+                  ticketId: existingTicketDisplay,
+                  customerName: custName,
+                  date: effectiveDate,
+                  time: effectiveTime,
+                });
+                sendWhatsAppMessage(techProfile.phone, waMsg, {
+                  ticketId: existingTicketDisplay,
+                  event_type: "schedule_change",
+                }).catch(() => {});
+              }
+            }
+          }
+
+          // 2. In-App + WhatsApp to Customer
+          const custUserId = form.customerId || existingComplaint?.customer_id;
+          if (custUserId) {
+            await notificationService.insertNotification(
+              custUserId,
+              id!,
+              'info',
+              '📅 Schedule Update',
+              `Schedule Update: Your visit for #${existingTicketDisplay} is now scheduled for ${effectiveDate} at ${effectiveTime}.`,
+              3,
+              undefined,
+              user?.id
+            );
+          }
+
+          const custPhone = form.customerPhone || existingComplaint?.customer_phone;
+          if (custPhone) {
+            const waCustMsg = whatsappTemplates.scheduleUpdateCustomer({
+              customerName: custName,
+              ticketId: existingTicketDisplay,
+              date: effectiveDate,
+              time: effectiveTime,
+            });
+            sendWhatsAppMessage(custPhone, waCustMsg, {
+              ticketId: existingTicketDisplay,
+              event_type: "schedule_change",
+            }).catch(() => {});
           }
         }
 
@@ -2100,42 +2330,10 @@ const ComplaintEdit = () => {
 
       <motion.form initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} onSubmit={handleSave} className="glass-card rounded-xl p-6 space-y-6">
         {/* ==================================================================== */}
-        {/* 📋 SECTION 1: TOP DETAILS (TICKET ID, ISSUE TITLE, CUSTOMER & SITE) */}
+        {/* ==================================================================== */}
+        {/* 📋 SECTION 1: TOP DETAILS (CUSTOMER & SITE) */}
         {/* ==================================================================== */}
         <div className="space-y-4">
-          {/* Ticket ID & Full-Width Issue Title */}
-          <div className={`grid grid-cols-1 ${!isNew ? 'md:grid-cols-3' : 'grid-cols-1'} gap-4`}>
-            {!isNew && (
-              <div className="space-y-1.5 md:col-span-1">
-                <label className="text-sm font-medium">Ticket ID (Auto-Generated)</label>
-                <Input 
-                  value={existingComplaint?.ticket_id || `Ticket #${id?.slice(0, 8)}`} 
-                  disabled 
-                  readOnly
-                  className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100 font-mono text-xs"
-                />
-              </div>
-            )}
-
-            <div className={`space-y-1.5 ${!isNew ? 'md:col-span-2' : 'w-full'}`}>
-              <div className="flex justify-between items-center">
-                <label className="text-sm font-medium">Issue Title <span className="text-destructive">*</span></label>
-                <span className="text-xs text-muted-foreground">
-                  {(form.title || "").length}/250
-                </span>
-              </div>
-              <Input 
-                value={form.title} 
-                onChange={(e) => setForm(prev => ({ ...prev, title: e.target.value }))} 
-                placeholder="Brief description of the problem..." 
-                required 
-                disabled={isSaving || (!isNew && !isAdminOrSupervisor)} 
-                maxLength={250} 
-                className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100"
-              />
-            </div>
-          </div>
-
           {/* Customer & Location 2-Column Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
             {isCustomer ? (
@@ -2541,258 +2739,449 @@ const ComplaintEdit = () => {
         </div>
 
         {/* ==================================================================== */}
-        {/* 📦 SECTION 2: ASSETS TO SERVICE (FULL WIDTH - NO EMPTY GAPS)        */}
+        {/* 📦 SECTION 2: ASSETS TO SERVICE                                      */}
         {/* ==================================================================== */}
-        <div className="space-y-4 p-5 bg-card border border-border/80 rounded-2xl shadow-xs">
-          {/* Header */}
-          <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
-            <div className="flex items-center gap-2.5">
-              <Package className="w-5 h-5 text-blue-600 dark:text-blue-400" />
-              <h3 className="font-bold text-base text-slate-800 dark:text-slate-100">Assets to Service</h3>
-              <span className="bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300 px-2.5 py-0.5 rounded-full text-xs font-semibold">
-                {assets.length} {assets.length === 1 ? 'Asset' : 'Assets'}
-              </span>
+        {customerType !== "Existing BTL Customer" ? (
+          /* 🛠️ SIMPLE MULTI-ASSET UI FOR NON-BTL / WALK-IN CUSTOMERS */
+          <div className="space-y-4 p-5 bg-card border border-amber-200/80 dark:border-amber-900/60 rounded-2xl shadow-xs">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-amber-100 dark:border-amber-950">
+              <div className="flex items-center gap-2.5">
+                <Package className="w-5 h-5 text-amber-600 dark:text-amber-400" />
+                <div>
+                  <h3 className="font-bold text-base text-slate-800 dark:text-slate-100">Equipment / Asset Details</h3>
+                  <p className="text-xs text-muted-foreground">Simple equipment entry for walk-in and direct customer repairs</p>
+                </div>
+              </div>
+
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleAddNonBtlAsset}
+                disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
+                className="border-dashed border-2 border-amber-300 hover:border-amber-500 text-amber-700 hover:text-amber-800 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-300 dark:hover:bg-amber-950/50 font-semibold text-xs h-9 px-3 gap-1.5 transition-all shadow-none"
+              >
+                <Plus className="w-4 h-4" />
+                + Add Another Equipment
+              </Button>
             </div>
 
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={handleAddAsset}
-              disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
-              className="border-dashed border-2 border-blue-200 hover:border-blue-400 text-blue-600 hover:text-blue-700 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-400 dark:hover:bg-blue-950/50 font-semibold text-xs h-9 px-3 gap-1.5 transition-all shadow-none"
-            >
-              <Plus className="w-4 h-4" />
-              + Add Asset
-            </Button>
-          </div>
+            {/* List of Non-BTL Equipment Cards */}
+            <div className="space-y-3">
+              {nonBtlAssets.map((item, index) => (
+                <div
+                  key={index}
+                  className="border border-slate-200 dark:border-slate-800 rounded-xl p-3.5 bg-slate-50/50 dark:bg-slate-900/40 shadow-xs transition-all hover:border-amber-300 dark:hover:border-amber-800"
+                >
+                  <div className="flex items-center justify-between pb-2 mb-2.5 border-b border-slate-100 dark:border-slate-800/80">
+                    <span className="text-xs font-bold uppercase tracking-wider text-amber-800 dark:text-amber-300">
+                      Equipment #{index + 1}
+                    </span>
+                    {nonBtlAssets.length > 1 && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleRemoveNonBtlAsset(index)}
+                        disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
+                        className="h-7 px-2 text-xs text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/40 gap-1"
+                        title="Remove this equipment"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        Remove
+                      </Button>
+                    )}
+                  </div>
 
-          {/* List of asset cards */}
-          {assets.length === 0 ? (
-            <div className="text-center py-8 border-2 border-dashed rounded-xl border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/30">
-              <Package className="w-8 h-8 text-slate-400 mx-auto mb-2 opacity-60" />
-              <p className="text-sm font-medium text-slate-600 dark:text-slate-400 mb-3">No assets added to this complaint yet.</p>
+                  <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-start">
+                    {/* Equipment Name (Optional) */}
+                    <div className="md:col-span-7 space-y-1">
+                      <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                        Equipment / Brand Name <span className="text-muted-foreground font-normal">(Optional)</span>
+                      </label>
+                      <Input
+                        placeholder="e.g., Hikvision Camera, Luminous Inverter, Router, DVR"
+                        value={item.equipment_name}
+                        onChange={(e) => handleUpdateNonBtlAsset(index, 'equipment_name', e.target.value)}
+                        disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
+                        className="h-10 text-sm bg-white dark:bg-card"
+                      />
+                    </div>
+
+                    {/* Serial / Model No (Optional - explicitly not mandatory) */}
+                    <div className="md:col-span-5 space-y-1">
+                      <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                        Serial / Model No <span className="text-muted-foreground font-normal">(Optional)</span>
+                      </label>
+                      <Input
+                        placeholder="e.g., SN-12345678, Model #99"
+                        value={item.serial_number}
+                        onChange={(e) => handleUpdateNonBtlAsset(index, 'serial_number', e.target.value)}
+                        disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
+                        className="h-10 text-sm bg-white dark:bg-card"
+                      />
+                    </div>
+
+                    {/* Specific Equipment Issue (Optional) */}
+                    <div className="md:col-span-12 space-y-1">
+                      <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
+                        Specific Issue for this item <span className="text-muted-foreground font-normal">(Optional)</span>
+                      </label>
+                      <Input
+                        placeholder="e.g., No power, video display flickering, battery backup low..."
+                        value={item.reported_issue}
+                        onChange={(e) => handleUpdateNonBtlAsset(index, 'reported_issue', e.target.value)}
+                        disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
+                        className="h-9 text-xs bg-white dark:bg-card"
+                      />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Global Billing & Chargeable Section for Non-BTL */}
+            <div className="bg-amber-50/60 dark:bg-amber-950/20 border border-amber-200/80 dark:border-amber-900/40 rounded-xl p-4 mt-2 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="space-y-0.5">
+                  <span className="text-xs font-bold uppercase tracking-wider text-amber-900 dark:text-amber-200">
+                    💳 Billing & Service Chargeability
+                  </span>
+                  <p className="text-xs text-muted-foreground">
+                    Specify if this walk-in service is chargeable or covered as a complimentary/free inspection.
+                  </p>
+                </div>
+
+                {/* Chargeable Toggle Options */}
+                <div className="flex items-center gap-2">
+                  <label className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold cursor-pointer transition-colors ${
+                    nonBtlIsChargeable 
+                      ? 'bg-amber-100 text-amber-900 border-amber-300 dark:bg-amber-900/50 dark:text-amber-200 dark:border-amber-700' 
+                      : 'bg-white text-slate-600 border-slate-200 dark:bg-card dark:text-slate-300 dark:border-slate-700 hover:bg-slate-50'
+                  }`}>
+                    <input
+                      type="radio"
+                      name="non_btl_chargeable_toggle"
+                      checked={nonBtlIsChargeable}
+                      onChange={() => {
+                        setNonBtlIsChargeable(true);
+                        setForm(prev => ({ ...prev, chargeableService: "Yes", coverage: "Out of Warranty" }));
+                      }}
+                      disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
+                      className="h-3.5 w-3.5 text-amber-600 focus:ring-amber-500"
+                    />
+                    <span>Yes (Chargeable)</span>
+                  </label>
+
+                  <label className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold cursor-pointer transition-colors ${
+                    !nonBtlIsChargeable 
+                      ? 'bg-emerald-100 text-emerald-900 border-emerald-300 dark:bg-emerald-900/50 dark:text-emerald-200 dark:border-emerald-700' 
+                      : 'bg-white text-slate-600 border-slate-200 dark:bg-card dark:text-slate-300 dark:border-slate-700 hover:bg-slate-50'
+                  }`}>
+                    <input
+                      type="radio"
+                      name="non_btl_chargeable_toggle"
+                      checked={!nonBtlIsChargeable}
+                      onChange={() => {
+                        setNonBtlIsChargeable(false);
+                        setNonBtlServiceCharge(0);
+                        setForm(prev => ({ ...prev, chargeableService: "No", serviceCharge: 0, coverage: "Out of Warranty" }));
+                      }}
+                      disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
+                      className="h-3.5 w-3.5 text-emerald-600 focus:ring-emerald-500"
+                    />
+                    <span>No (Free / Complimentary)</span>
+                  </label>
+                </div>
+              </div>
+
+              {/* Service Charge Input if Chargeable is Yes */}
+              {nonBtlIsChargeable && (
+                <div className="pt-2 border-t border-amber-200/60 dark:border-amber-900/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="space-y-0.5">
+                    <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                      Service / Visiting Charge Amount (₹) <span className="text-destructive">*</span>
+                    </label>
+                    <p className="text-[11px] text-muted-foreground">Standard inspection or repair estimate for walk-in client</p>
+                  </div>
+                  <div className="relative w-full sm:w-48">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400 select-none">
+                      ₹
+                    </span>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      placeholder="e.g. 500"
+                      value={nonBtlServiceCharge || ''}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value) || 0;
+                        setNonBtlServiceCharge(val);
+                        setForm(prev => ({ ...prev, serviceCharge: val }));
+                      }}
+                      disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
+                      className="h-10 pl-7 text-sm font-bold text-amber-700 dark:text-amber-300 bg-white dark:bg-card border-amber-300 dark:border-amber-700"
+                      required
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          /* 📦 EXISTING COMPLEX REGISTRY FOR REGISTERED BTL CUSTOMERS */
+          <div className="space-y-4 p-5 bg-card border border-border/80 rounded-2xl shadow-xs">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <Package className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                <h3 className="font-bold text-base text-slate-800 dark:text-slate-100">Assets to Service</h3>
+                <span className="bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300 px-2.5 py-0.5 rounded-full text-xs font-semibold">
+                  {assets.length} {assets.length === 1 ? 'Asset' : 'Assets'}
+                </span>
+              </div>
+
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
                 onClick={handleAddAsset}
-                className="border-dashed border-2 border-blue-200 text-blue-600 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-400 gap-1.5 font-semibold text-xs h-9"
+                disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
+                className="border-dashed border-2 border-blue-200 hover:border-blue-400 text-blue-600 hover:text-blue-700 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-400 dark:hover:bg-blue-950/50 font-semibold text-xs h-9 px-3 gap-1.5 transition-all shadow-none"
               >
                 <Plus className="w-4 h-4" />
-                + Add First Asset
+                + Add Asset
               </Button>
             </div>
-          ) : (
-            <div className="space-y-3">
-              {assets.map((asset, index) => {
-                const isExpiredOrChargeable = asset.warranty_status === 'Expired' || Boolean(asset.is_chargeable);
 
-                return (
-                  <div
-                    key={index}
-                    className="border border-slate-200 dark:border-slate-800 rounded-lg p-4 mb-3 bg-white dark:bg-card shadow-sm transition-all hover:border-slate-300 dark:hover:border-slate-700"
-                  >
-                    {/* Top Bar inside Card: Item Label, Badges & Quick-fill */}
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pb-2.5 mb-3 border-b border-slate-100 dark:border-slate-800/80">
-                      <div className="flex items-center flex-wrap gap-2">
-                        <span className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                          Item #{index + 1}
-                        </span>
-                        {asset.warranty_status === 'Active' ? (
-                          <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
-                            Active Warranty (Free)
-                          </span>
-                        ) : asset.warranty_status === 'Expired' ? (
-                          <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300 border border-amber-200 dark:border-amber-800">
-                            Warranty Expired • Chargeable
-                          </span>
-                        ) : (
-                          <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
-                            Not Applicable
-                          </span>
-                        )}
+            {/* List of asset cards */}
+            {assets.length === 0 ? (
+              <div className="text-center py-8 border-2 border-dashed rounded-xl border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/30">
+                <Package className="w-8 h-8 text-slate-400 mx-auto mb-2 opacity-60" />
+                <p className="text-sm font-medium text-slate-600 dark:text-slate-400 mb-3">No assets added to this complaint yet.</p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleAddAsset}
+                  className="border-dashed border-2 border-blue-200 text-blue-600 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-400 gap-1.5 font-semibold text-xs h-9"
+                >
+                  <Plus className="w-4 h-4" />
+                  + Add First Asset
+                </Button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {assets.map((asset, index) => {
+                  const isExpiredOrChargeable = asset.warranty_status === 'Expired' || Boolean(asset.is_chargeable);
 
-                        {asset.warranty_status !== 'Expired' && (
-                          <label className="text-[11px] text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 flex items-center gap-1.5 cursor-pointer ml-1 select-none">
-                            <Checkbox
-                              id={`chargeable-check-${index}`}
-                              checked={asset.is_chargeable}
-                              onCheckedChange={(checked) => handleUpdateAsset(index, 'is_chargeable', Boolean(checked))}
-                              disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
-                              className="h-3.5 w-3.5"
-                            />
-                            <span>Manual Chargeable Override</span>
-                          </label>
-                        )}
-                      </div>
-
-                      {/* Optional Quick-fill from registered customer assets if available */}
-                      {customerAssets.length > 0 && (
-                        <div className="flex items-center gap-1.5 w-full sm:w-auto min-w-0">
-                          <span className="text-[10px] text-slate-500 dark:text-slate-400 font-medium whitespace-nowrap shrink-0">
-                            Registered:
+                  return (
+                    <div
+                      key={index}
+                      className="border border-slate-200 dark:border-slate-800 rounded-lg p-4 mb-3 bg-white dark:bg-card shadow-sm transition-all hover:border-slate-300 dark:hover:border-slate-700"
+                    >
+                      {/* Top Bar inside Card: Item Label, Badges & Quick-fill */}
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pb-2.5 mb-3 border-b border-slate-100 dark:border-slate-800/80">
+                        <div className="flex items-center flex-wrap gap-2">
+                          <span className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                            Item #{index + 1}
                           </span>
-                          <div className="flex-1 min-w-0 sm:w-[200px]">
-                            <Select
-                              onValueChange={(val) => handleSelectRegisteredAssetForRow(index, val)}
-                              disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
-                            >
-                              <SelectTrigger className="h-7 text-[11px] px-2 w-full min-w-0 bg-slate-50 dark:bg-slate-900 border-dashed text-slate-600 dark:text-slate-300">
-                                <SelectValue placeholder="Quick-fill..." />
-                              </SelectTrigger>
-                              <SelectContent 
-                                className="max-h-56 w-[calc(100vw-3.5rem)] sm:w-[280px] max-w-sm"
-                                align="end"
-                                side="bottom"
-                              >
-                                {customerAssets.map((ca: any) => {
-                                  const brandPart = ca.brand ? `[${ca.brand}] ` : '';
-                                  const namePart = ca.product_name || ca.category || 'Asset';
-                                  return (
-                                    <SelectItem key={ca.id} value={ca.id} className="text-xs cursor-pointer">
-                                      <span className="truncate block max-w-[260px]" title={`${brandPart}${namePart} (${ca.category || 'Item'})`}>
-                                        {brandPart}{namePart} ({ca.category || 'Item'})
-                                      </span>
-                                    </SelectItem>
-                                  );
-                                })}
-                              </SelectContent>
-                            </Select>
-                          </div>
+                          {asset.warranty_status === 'Active' ? (
+                            <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
+                              Active Warranty (Free)
+                            </span>
+                          ) : asset.warranty_status === 'Expired' ? (
+                            <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300 border border-amber-200 dark:border-amber-800">
+                              Warranty Expired • Chargeable
+                            </span>
+                          ) : (
+                            <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                              Not Applicable
+                            </span>
+                          )}
+
+                          {asset.warranty_status !== 'Expired' && (
+                            <label className="text-[11px] text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 flex items-center gap-1.5 cursor-pointer ml-1 select-none">
+                              <Checkbox
+                                id={`chargeable-check-${index}`}
+                                checked={asset.is_chargeable}
+                                onCheckedChange={(checked) => handleUpdateAsset(index, 'is_chargeable', Boolean(checked))}
+                                disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
+                                className="h-3.5 w-3.5"
+                              />
+                              <span>Manual Chargeable Override</span>
+                            </label>
+                          )}
                         </div>
-                      )}
-                    </div>
 
-                    {/* Top Row (Grid Layout: 12 Columns) */}
-                    <div className="grid grid-cols-12 gap-3 items-end">
-                      {/* Column 1 (Wide): Asset Name */}
-                      <div className="col-span-12 sm:col-span-4 space-y-1">
-                        <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
-                          Asset Name <span className="text-destructive">*</span>
-                        </label>
-                        <Input
-                          placeholder="e.g., Front Gate Camera"
-                          value={asset.asset_name}
-                          onChange={(e) => handleUpdateAsset(index, 'asset_name', e.target.value)}
-                          disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
-                          className="h-9 text-sm"
-                          required
-                        />
+                        {/* Optional Quick-fill from registered customer assets if available */}
+                        {customerAssets.length > 0 && (
+                          <div className="flex items-center gap-1.5 w-full sm:w-auto min-w-0">
+                            <span className="text-[10px] text-slate-500 dark:text-slate-400 font-medium whitespace-nowrap shrink-0">
+                              Registered:
+                            </span>
+                            <div className="flex-1 min-w-0 sm:w-[200px]">
+                              <Select
+                                onValueChange={(val) => handleSelectRegisteredAssetForRow(index, val)}
+                                disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
+                              >
+                                <SelectTrigger className="h-7 text-[11px] px-2 w-full min-w-0 bg-slate-50 dark:bg-slate-900 border-dashed text-slate-600 dark:text-slate-300">
+                                  <SelectValue placeholder="Quick-fill..." />
+                                </SelectTrigger>
+                                <SelectContent 
+                                  className="max-h-56 w-[calc(100vw-3.5rem)] sm:w-[280px] max-w-sm"
+                                  align="end"
+                                  side="bottom"
+                                >
+                                  {customerAssets.map((ca: any) => {
+                                    const brandPart = ca.brand ? `[${ca.brand}] ` : '';
+                                    const namePart = ca.product_name || ca.category || 'Asset';
+                                    return (
+                                      <SelectItem key={ca.id} value={ca.id} className="text-xs cursor-pointer">
+                                        <span className="truncate block max-w-[260px]" title={`${brandPart}${namePart} (${ca.category || 'Item'})`}>
+                                          {brandPart}{namePart} ({ca.category || 'Item'})
+                                        </span>
+                                      </SelectItem>
+                                    );
+                                  })}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                          </div>
+                        )}
                       </div>
 
-                      {/* Column 2 (Medium): Asset Type */}
-                      <div className="col-span-12 sm:col-span-3 space-y-1">
-                        <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
-                          Asset Type <span className="text-destructive">*</span>
-                        </label>
-                        <Input
-                          placeholder="e.g., Camera, DVR, Solar"
-                          value={asset.asset_type}
-                          onChange={(e) => handleUpdateAsset(index, 'asset_type', e.target.value)}
-                          disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
-                          className="h-9 text-sm"
-                          required
-                        />
-                      </div>
-
-                      {/* Column 3 (Small): Warranty Status */}
-                      <div className="col-span-6 sm:col-span-2 space-y-1">
-                        <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
-                          Warranty Status
-                        </label>
-                        <Select
-                          value={asset.warranty_status}
-                          onValueChange={(val) => handleUpdateAsset(index, 'warranty_status', val)}
-                          disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
-                        >
-                          <SelectTrigger className="h-9 text-sm">
-                            <SelectValue placeholder="Status" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="Active">Active</SelectItem>
-                            <SelectItem value="Expired">Expired</SelectItem>
-                            <SelectItem value="Not Applicable">Not Applicable</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-
-                      {/* Column 4 (Small): Service Charge (Enabled if Expired / Chargeable) */}
-                      <div className="col-span-5 sm:col-span-2 space-y-1">
-                        <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
-                          Service Charge
-                        </label>
-                        <div className="relative">
-                          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-medium text-slate-400 select-none">
-                            ₹
-                          </span>
+                      {/* Top Row (Grid Layout: 12 Columns) */}
+                      <div className="grid grid-cols-12 gap-3 items-end">
+                        {/* Column 1 (Wide): Asset Name */}
+                        <div className="col-span-12 sm:col-span-4 space-y-1">
+                          <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                            Asset Name <span className="text-destructive">*</span>
+                          </label>
                           <Input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            placeholder="0"
-                            value={asset.service_charge || ''}
-                            onChange={(e) => handleUpdateAsset(index, 'service_charge', parseFloat(e.target.value) || 0)}
-                            disabled={!isExpiredOrChargeable || isSaving || (!isNew && !isAdminOrSupervisor)}
-                            className="h-9 pl-6 text-sm font-medium disabled:bg-slate-50 dark:disabled:bg-slate-900/40 disabled:text-slate-400 disabled:border-slate-200 dark:disabled:border-slate-800"
+                            placeholder="e.g., Front Gate Camera"
+                            value={asset.asset_name}
+                            onChange={(e) => handleUpdateAsset(index, 'asset_name', e.target.value)}
+                            disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
+                            className="h-9 text-sm"
+                            required
                           />
                         </div>
+
+                        {/* Column 2 (Medium): Asset Type */}
+                        <div className="col-span-12 sm:col-span-3 space-y-1">
+                          <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                            Asset Type <span className="text-destructive">*</span>
+                          </label>
+                          <Input
+                            placeholder="e.g., Camera, DVR, Solar"
+                            value={asset.asset_type}
+                            onChange={(e) => handleUpdateAsset(index, 'asset_type', e.target.value)}
+                            disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
+                            className="h-9 text-sm"
+                            required
+                          />
+                        </div>
+
+                        {/* Column 3 (Small): Warranty Status */}
+                        <div className="col-span-6 sm:col-span-2 space-y-1">
+                          <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                            Warranty Status
+                          </label>
+                          <Select
+                            value={asset.warranty_status}
+                            onValueChange={(val) => handleUpdateAsset(index, 'warranty_status', val)}
+                            disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
+                          >
+                            <SelectTrigger className="h-9 text-sm">
+                              <SelectValue placeholder="Status" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="Active">Active</SelectItem>
+                              <SelectItem value="Expired">Expired</SelectItem>
+                              <SelectItem value="Not Applicable">Not Applicable</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+
+                        {/* Column 4 (Small): Service Charge (Enabled if Expired / Chargeable) */}
+                        <div className="col-span-5 sm:col-span-2 space-y-1">
+                          <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                            Service Charge
+                          </label>
+                          <div className="relative">
+                            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-medium text-slate-400 select-none">
+                              ₹
+                            </span>
+                            <Input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              placeholder="0"
+                              value={asset.service_charge || ''}
+                              onChange={(e) => handleUpdateAsset(index, 'service_charge', parseFloat(e.target.value) || 0)}
+                              disabled={!isExpiredOrChargeable || isSaving || (!isNew && !isAdminOrSupervisor)}
+                              className="h-9 pl-6 text-sm font-medium disabled:bg-slate-50 dark:disabled:bg-slate-900/40 disabled:text-slate-400 disabled:border-slate-200 dark:disabled:border-slate-800"
+                            />
+                          </div>
+                        </div>
+
+                        {/* Column 5 (Icon): Delete/Trash Button */}
+                        <div className="col-span-1 sm:col-span-1 flex items-end justify-center pb-0.5">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => handleRemoveAsset(index)}
+                            disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
+                            className="h-9 w-9 text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 rounded-lg transition-colors"
+                            title="Remove this asset"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </div>
                       </div>
 
-                      {/* Column 5 (Icon): Delete/Trash Button */}
-                      <div className="col-span-1 sm:col-span-1 flex items-end justify-center pb-0.5">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => handleRemoveAsset(index)}
+                      {/* Bottom Row (Full Width): Reported Issue */}
+                      <div className="mt-3 space-y-1">
+                        <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                          Reported Issue
+                        </label>
+                        <Input
+                          placeholder="Describe the issue with this equipment (e.g., No power, video flicker, lens blur)..."
+                          value={asset.reported_issue}
+                          onChange={(e) => handleUpdateAsset(index, 'reported_issue', e.target.value)}
                           disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
-                          className="h-9 w-9 text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 rounded-lg transition-colors"
-                          title="Remove this asset"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </Button>
+                          className="h-9 text-sm w-full"
+                        />
                       </div>
                     </div>
-
-                    {/* Bottom Row (Full Width): Reported Issue */}
-                    <div className="mt-3 space-y-1">
-                      <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
-                        Reported Issue
-                      </label>
-                      <Input
-                        placeholder="Describe the issue with this equipment (e.g., No power, video flicker, lens blur)..."
-                        value={asset.reported_issue}
-                        onChange={(e) => handleUpdateAsset(index, 'reported_issue', e.target.value)}
-                        disabled={isSaving || (!isNew && !isAdminOrSupervisor)}
-                        className="h-9 text-sm w-full"
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* Footer Summary: Invoice-style footer */}
-          {assets.length > 0 && (
-            <div className="bg-slate-50 dark:bg-slate-900/60 rounded-lg p-4 mt-4 border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-              <div className="text-slate-500 dark:text-slate-400 text-sm flex items-center flex-wrap gap-2">
-                <span>Total Assets: <strong className="text-slate-700 dark:text-slate-200 font-semibold">{assets.length}</strong></span>
-                <span>•</span>
-                <span>Chargeable: <strong className="text-amber-600 dark:text-amber-400 font-semibold">{assets.filter(a => a.is_chargeable || a.warranty_status === 'Expired').length}</strong></span>
-                <span>•</span>
-                <span>Under Warranty: <strong className="text-emerald-600 dark:text-emerald-400 font-semibold">{assets.filter(a => a.warranty_status === 'Active' && !a.is_chargeable).length}</strong></span>
+                  );
+                })}
               </div>
-              <div className="flex items-center gap-2 shrink-0">
-                <span className="text-sm font-bold text-slate-700 dark:text-slate-200">Total Chargeable Amount:</span>
-                <span className="text-xl font-bold text-emerald-600 dark:text-emerald-400">
-                  ₹{totalChargeableAmount.toLocaleString('en-IN')}
-                </span>
+            )}
+
+            {/* Footer Summary: Invoice-style footer */}
+            {assets.length > 0 && (
+              <div className="bg-slate-50 dark:bg-slate-900/60 rounded-lg p-4 mt-4 border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                <div className="text-slate-500 dark:text-slate-400 text-sm flex items-center flex-wrap gap-2">
+                  <span>Total Assets: <strong className="text-slate-700 dark:text-slate-200 font-semibold">{assets.length}</strong></span>
+                  <span>•</span>
+                  <span>Chargeable: <strong className="text-amber-600 dark:text-amber-400 font-semibold">{assets.filter(a => a.is_chargeable || a.warranty_status === 'Expired').length}</strong></span>
+                  <span>•</span>
+                  <span>Under Warranty: <strong className="text-emerald-600 dark:text-emerald-400 font-semibold">{assets.filter(a => a.warranty_status === 'Active' && !a.is_chargeable).length}</strong></span>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="text-sm font-bold text-slate-700 dark:text-slate-200">Total Chargeable Amount:</span>
+                  <span className="text-xl font-bold text-emerald-600 dark:text-emerald-400">
+                    ₹{totalChargeableAmount.toLocaleString('en-IN')}
+                  </span>
+                </div>
               </div>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+        )}
 
         {/* ==================================================================== */}
         {/* ⚙️ SECTION 3: JOB DETAILS & CLASSIFICATION (COMPACT 4-COLUMN GRID)   */}
@@ -2854,94 +3243,99 @@ const ComplaintEdit = () => {
             </Select>
           </div>
 
-          {/* Coverage Dropdown */}
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between">
-              <label className="text-sm font-medium">
-                Coverage <span className="text-destructive">*</span>
-              </label>
-              {assets.length > 0 && (
-                <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">
-                  Auto-set
-                </span>
-              )}
-            </div>
-            <Select 
-              value={form.coverage} 
-              onValueChange={(v) => {
-                setForm(prev => ({
-                  ...prev,
-                  coverage: v,
-                  chargeableService: (v === 'Under Warranty' || v === 'AMC' || v === 'CAMC') ? 'No' : 'Yes'
-                }));
-              }} 
-              disabled={isSaving || assets.length > 0}
-            >
-              <SelectTrigger className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100">
-                <SelectValue placeholder="Select coverage" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="Under Warranty">Under Warranty</SelectItem>
-                <SelectItem value="Out of Warranty">Out of Warranty</SelectItem>
-                <SelectItem value="AMC">AMC</SelectItem>
-                <SelectItem value="CAMC">CAMC</SelectItem>
-                <SelectItem value="Chargeable Service">Chargeable Service</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Chargeable Service Dropdown */}
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between">
-              <label className="text-sm font-medium">
-                Chargeable <span className="text-destructive">*</span>
-              </label>
-              {assets.length > 0 && (
-                <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">
-                  Auto-set
-                </span>
-              )}
-            </div>
-            <Select 
-              value={form.chargeableService} 
-              onValueChange={(v) => setForm(prev => ({ ...prev, chargeableService: v }))} 
-              disabled={isSaving || assets.length > 0}
-            >
-              <SelectTrigger className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100">
-                <SelectValue placeholder="Select Chargeable" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="Yes">Yes (Chargeable)</SelectItem>
-                <SelectItem value="No">No (Warranty Scope)</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Conditional Service Charge Amount Field */}
-          {form.chargeableService === "Yes" && (
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
-                <label className="text-sm font-medium">
-                  Service Charge (₹) <span className="text-destructive">*</span>
-                </label>
-                {assets.length > 0 && (
-                  <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">
-                    Asset sum
-                  </span>
-                )}
+          {/* Coverage, Chargeable, and Service Charge (Only for Existing BTL Customers; Non-BTL configured in Equipment section) */}
+          {customerType === "Existing BTL Customer" && (
+            <>
+              {/* Coverage Dropdown */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium">
+                    Coverage <span className="text-destructive">*</span>
+                  </label>
+                  {assets.length > 0 && (
+                    <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">
+                      Auto-set
+                    </span>
+                  )}
+                </div>
+                <Select 
+                  value={form.coverage} 
+                  onValueChange={(v) => {
+                    setForm(prev => ({
+                      ...prev,
+                      coverage: v,
+                      chargeableService: (v === 'Under Warranty' || v === 'AMC' || v === 'CAMC') ? 'No' : 'Yes'
+                    }));
+                  }} 
+                  disabled={isSaving || assets.length > 0}
+                >
+                  <SelectTrigger className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100">
+                    <SelectValue placeholder="Select coverage" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Under Warranty">Under Warranty</SelectItem>
+                    <SelectItem value="Out of Warranty">Out of Warranty</SelectItem>
+                    <SelectItem value="AMC">AMC</SelectItem>
+                    <SelectItem value="CAMC">CAMC</SelectItem>
+                    <SelectItem value="Chargeable Service">Chargeable Service</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
-              <Input
-                type="number"
-                min="0"
-                step="0.01"
-                placeholder="Amount (e.g. 500)"
-                value={form.serviceCharge || ""}
-                onChange={(e) => setForm(prev => ({ ...prev, serviceCharge: parseFloat(e.target.value) || 0 }))}
-                disabled={isSaving || assets.length > 0}
-                className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100 font-medium"
-                required
-              />
-            </div>
+
+              {/* Chargeable Service Dropdown */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium">
+                    Chargeable <span className="text-destructive">*</span>
+                  </label>
+                  {assets.length > 0 && (
+                    <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">
+                      Auto-set
+                    </span>
+                  )}
+                </div>
+                <Select 
+                  value={form.chargeableService} 
+                  onValueChange={(v) => setForm(prev => ({ ...prev, chargeableService: v }))} 
+                  disabled={isSaving || assets.length > 0}
+                >
+                  <SelectTrigger className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100">
+                    <SelectValue placeholder="Select Chargeable" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Yes">Yes (Chargeable)</SelectItem>
+                    <SelectItem value="No">No (Warranty Scope)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Conditional Service Charge Amount Field */}
+              {form.chargeableService === "Yes" && (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm font-medium">
+                      Service Charge (₹) <span className="text-destructive">*</span>
+                    </label>
+                    {assets.length > 0 && (
+                      <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">
+                        Asset sum
+                      </span>
+                    )}
+                  </div>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    placeholder="Amount (e.g. 500)"
+                    value={form.serviceCharge || ""}
+                    onChange={(e) => setForm(prev => ({ ...prev, serviceCharge: parseFloat(e.target.value) || 0 }))}
+                    disabled={isSaving || assets.length > 0}
+                    className="h-10 disabled:bg-slate-100 disabled:text-slate-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:opacity-100 font-medium"
+                    required
+                  />
+                </div>
+              )}
+            </>
           )}
 
           {/* Assigned Supervisor */}

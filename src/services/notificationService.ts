@@ -87,6 +87,10 @@ export const notificationService = {
         console.warn('Error inserting notification:', error);
       }
 
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('notification-refresh'));
+      }
+
       // 2. Fetch target user's email to send email notification
       const { data: profile, error: profileError } = await supabase
         .from('profiles')
@@ -123,6 +127,20 @@ export const notificationService = {
         console.warn('Failed to notify user:', err);
       }
     }
+  },
+
+  // Helper function to send in-app notification cleanly
+  async sendInAppNotification(
+    userId: string,
+    title: string,
+    message: string,
+    type: 'info' | 'success' | 'warning' | 'error' | 'assignment' | 'status_change' | 'feedback' = 'info',
+    ticketId?: string,
+    phase: number = 1,
+    actionUrl?: string,
+    excludeUserId?: string
+  ) {
+    return this.notifyUser(userId, ticketId || '', type, title, message, phase, actionUrl, excludeUserId);
   },
 
   // Notify all admin users
@@ -164,6 +182,26 @@ export const notificationService = {
       return admins?.map((a: any) => a.id) || [];
     } catch (err) {
       console.error('Failed to get admin IDs:', err);
+      return [];
+    }
+  },
+
+  // Get Admin profiles with phone numbers for WhatsApp dispatch
+  async getAdminProfiles(): Promise<{ id: string; name: string; phone: string }[]> {
+    try {
+      const { data: admins } = await supabase
+        .from('profiles')
+        .select('id, full_name, phone')
+        .eq('role', 'admin');
+
+      return (admins || [])
+        .filter((a: any) => a.phone && String(a.phone).trim().length > 0)
+        .map((a: any) => ({
+          id: a.id,
+          name: a.full_name || 'Admin',
+          phone: String(a.phone).trim()
+        }));
+    } catch {
       return [];
     }
   },

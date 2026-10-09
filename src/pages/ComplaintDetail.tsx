@@ -40,6 +40,7 @@ import {
   getFieldVisitScheduledMessage,
   getTechnicianSignOffMessage,
 } from "@/utils/whatsappService";
+import { whatsappTemplates } from "@/utils/whatsappTemplates";
 
 type SignatureMode = "draw" | "upload";
 type SatisfactionLevel = "satisfied" | "partially_satisfied" | "unsatisfied" | "";
@@ -302,21 +303,21 @@ const ComplaintDetail = () => {
       if (trimmedName.includes('@')) {
         const { data } = await supabase
           .from('profiles')
-          .select('id, email, full_name')
+          .select('id, email, full_name, phone')
           .ilike('email', trimmedName)
           .maybeSingle();
         if (data) return data;
       }
       const { data: exactMatch } = await supabase
         .from('profiles')
-        .select('id, email, full_name')
+        .select('id, email, full_name, phone')
         .eq('full_name', trimmedName)
         .maybeSingle();
       if (exactMatch) return exactMatch;
 
       const { data: partialMatch } = await supabase
         .from('profiles')
-        .select('id, email, full_name')
+        .select('id, email, full_name, phone')
         .ilike('full_name', `%${trimmedName}%`)
         .limit(1);
       return partialMatch?.[0] || null;
@@ -1312,6 +1313,13 @@ const ComplaintDetail = () => {
         is_lead: tid === reassignLeadTechId,
       }));
 
+      // 🎯 Explicitly extract PREVIOUS technicians to notify about cancellation (Requirement 4)
+      const previousTechIds: string[] = (ticket.complaint_technicians && ticket.complaint_technicians.length > 0)
+        ? ticket.complaint_technicians.map((ct: any) => ct.technician_id)
+        : (ticket.assigned_to ? [ticket.assigned_to] : []);
+
+      const cancelledTechIds = previousTechIds.filter((tid: string) => !reassignSelectedTechs.includes(tid));
+
       await complaintService.reassignTechnicians(
         ticket.id,
         techPayload,
@@ -1320,59 +1328,107 @@ const ComplaintDetail = () => {
         reassignScheduledTime || null
       );
 
-      // 🔔 WhatsApp Dispatch on Reassignment
       const recipientPhone = customerPhone || ticket.customer_phone || ticket.profiles?.phone;
       const recipientName = ticket.customer_name || ticket.profiles?.full_name || "Customer";
-      const leadTechObj = allTechnicians.find((t: any) => t.id === reassignLeadTechId);
-      const leadName = leadTechObj?.full_name || "New Field Technician";
       const slicedId = formatComplaintTicketId(ticket);
+      const scheduledDateStr = reassignScheduledDate || ticket.scheduled_date || "the scheduled date";
+      const scheduledTimeStr = reassignScheduledTime ? reassignScheduledTime.slice(0, 5) : (ticket.scheduled_time ? ticket.scheduled_time.slice(0, 5) : "10:00 AM");
+      const newTechNames = reassignSelectedTechs.map((tid: string) => allTechnicians.find((t: any) => t.id === tid)?.full_name || 'Technician').join(', ');
 
-      if (recipientPhone) {
+      // 1. Notify OLD Technicians (Cancelled) via In-App + WhatsApp
+      for (const oldTechId of cancelledTechIds) {
         try {
-          await supabase.functions.invoke('send-walkin-whatsapp', {
-            body: {
-              phone: recipientPhone,
-              name: recipientName,
-              ticketId: slicedId,
-              technicianName: leadName,
-              date: reassignScheduledDate || ticket.scheduled_date || "the scheduled date",
-              time: reassignScheduledTime ? reassignScheduledTime.slice(0, 5) : (ticket.scheduled_time ? ticket.scheduled_time.slice(0, 5) : ""),
-              event_type: "reassignment"
-            }
-          });
-        } catch (waErr) {
-          console.warn("Reassign WhatsApp dispatch skipped:", waErr);
-        }
-      }
-
-      // 🔔 In-App Notifications for Reassigned Technicians & Customer
-      try {
-        for (const techId of reassignSelectedTechs) {
           await notificationService.insertNotification(
-            techId,
+            oldTechId,
             ticket.id,
-            "assignment",
-            "Complaint Reassigned",
-            `You have been assigned to Complaint #${slicedId} (${ticket.title || 'Service Ticket'}). Lead: ${leadName}.`,
+            "warning",
+            "⚠️ Job Cancelled / Reassigned",
+            `Job #${slicedId} has been cancelled/reassigned. You are no longer required to visit ${recipientName}.`,
             3,
             `/complaints/${ticket.id}`,
             user?.id
           );
+
+          const oldTechObj = allTechnicians.find((t: any) => t.id === oldTechId);
+          if (oldTechObj?.phone) {
+            const cancelMsg = whatsappTemplates.reassignOldTechnician({
+              ticketId: slicedId,
+              customerName: recipientName,
+            });
+            await sendWhatsAppMessage(oldTechObj.phone, cancelMsg, {
+              ticketId: slicedId,
+              event_type: "reassignment_cancellation",
+            });
+          }
+        } catch (oldTechErr) {
+          console.warn("Cancelled tech notification failed:", oldTechErr);
         }
+      }
+
+      // 2. Notify NEW Technicians (Assigned) via In-App + WhatsApp
+      for (const newTechId of reassignSelectedTechs) {
+        try {
+          await notificationService.insertNotification(
+            newTechId,
+            ticket.id,
+            "assignment",
+            "📋 New Job Assigned (Reassignment)",
+            `New Job Assigned (Reassignment): #${slicedId} for ${recipientName}. Scheduled: ${scheduledDateStr} at ${scheduledTimeStr}.`,
+            3,
+            `/complaints/${ticket.id}`,
+            user?.id
+          );
+
+          const newTechObj = allTechnicians.find((t: any) => t.id === newTechId);
+          if (newTechObj?.phone) {
+            const newTechMsg = whatsappTemplates.reassignNewTechnician({
+              ticketId: slicedId,
+              customerName: recipientName,
+              date: scheduledDateStr,
+              time: scheduledTimeStr,
+              location: ticket.location || "Customer Site",
+            });
+            await sendWhatsAppMessage(newTechObj.phone, newTechMsg, {
+              ticketId: slicedId,
+              event_type: "reassignment_assigned",
+            });
+          }
+        } catch (newTechErr) {
+          console.warn("New assigned tech notification failed:", newTechErr);
+        }
+      }
+
+      // 3. Notify Customer via In-App + WhatsApp
+      try {
         if (ticket.customer_id) {
           await notificationService.insertNotification(
             ticket.customer_id,
             ticket.id,
             "assignment",
-            "Technician Reassigned",
-            `Technician ${leadName} has been assigned to your complaint #${slicedId}.`,
+            "🔄 Visit Rescheduled",
+            `Update: Your visit is rescheduled. New Technicians: ${newTechNames}. New Time: ${scheduledDateStr} at ${scheduledTimeStr}.`,
             3,
             `/complaints/${ticket.id}`,
             user?.id
           );
         }
-      } catch (notifErr) {
-        console.warn("Reassign notification skipped:", notifErr);
+
+        if (recipientPhone) {
+          const custUpdateMsg = whatsappTemplates.reassignCustomer({
+            customerName: recipientName,
+            ticketId: slicedId,
+            techNames: newTechNames,
+            date: scheduledDateStr,
+            time: scheduledTimeStr,
+          });
+          await sendWhatsAppMessage(recipientPhone, custUpdateMsg, {
+            name: recipientName,
+            ticketId: slicedId,
+            event_type: "reassignment_customer",
+          });
+        }
+      } catch (custNotifErr) {
+        console.warn("Customer reassignment notification failed:", custNotifErr);
       }
 
       toast.success("Technicians reassigned successfully! Ticket dispatched to site in Phase 3.");
@@ -1459,6 +1515,27 @@ const ComplaintDetail = () => {
         user?.id
       );
 
+      // Notify Supervisor In-App
+      if (ticket.assigned_supervisor) {
+        try {
+          const supProf = await fetchProfileByName(ticket.assigned_supervisor);
+          if (supProf) {
+            await notificationService.insertNotification(
+              supProf.id,
+              ticket.id,
+              "info",
+              "👨‍🔧 Field Team Assigned",
+              `Complaint #${slicedId} assigned to ${fieldVisitSelectedTechs.length} technician(s). Lead: ${leadName}. Scheduled: ${fieldVisitScheduledDate} at ${fieldVisitScheduledTime}.`,
+              3,
+              undefined,
+              user?.id
+            );
+          }
+        } catch (supErr) {
+          console.warn("Supervisor field visit notification skipped:", supErr);
+        }
+      }
+
       if (ticket.customer_id) {
         await notificationService.insertNotification(
           ticket.customer_id,
@@ -1472,32 +1549,76 @@ const ComplaintDetail = () => {
         );
       }
 
-      // 🔔 Stage 3: Automated WhatsApp on Field Visit Scheduled
+      // 🔔 WhatsApp Dispatch on Field Visit Scheduled (Requirement 3 & 5)
       const recipientPhone = getCustomerPhone(ticket) || customerPhone;
       const recipientName = getCustomerName(ticket);
       const scheduledDateStr = fieldVisitScheduledDate || ticket.scheduled_date || "the scheduled date";
       const scheduledTimeStr = fieldVisitScheduledTime || (ticket.scheduled_time ? ticket.scheduled_time.slice(0, 5) : "10:00 AM");
+      const allAssignedTechNames = fieldVisitSelectedTechs
+        .map((tid: string) => allTechnicians.find((t: any) => t.id === tid)?.full_name || 'Technician')
+        .join(', ');
 
+      const prevDate = ticket.scheduled_date;
+      const prevTime = ticket.scheduled_time ? ticket.scheduled_time.slice(0, 5) : "";
+      const isScheduleChange = Boolean(prevDate && (prevDate !== fieldVisitScheduledDate || (prevTime && prevTime !== fieldVisitScheduledTime.slice(0, 5))));
+
+      // 1. WhatsApp to Customer
       if (recipientPhone) {
         try {
-          const visitMsg = getFieldVisitScheduledMessage({
-            customerName: recipientName,
-            technicianName: leadName,
-            ticketId: slicedId,
-            scheduledDate: scheduledDateStr,
-            scheduledTime: scheduledTimeStr,
-          });
-          await sendWhatsAppMessage(recipientPhone, visitMsg, {
+          const custVisitMsg = isScheduleChange
+            ? whatsappTemplates.scheduleUpdateCustomer({
+                customerName: recipientName,
+                ticketId: slicedId,
+                date: scheduledDateStr,
+                time: scheduledTimeStr,
+              })
+            : whatsappTemplates.fieldVisitCustomer({
+                customerName: recipientName,
+                ticketId: slicedId,
+                date: scheduledDateStr,
+                time: scheduledTimeStr,
+                techNames: allAssignedTechNames,
+              });
+
+          await sendWhatsAppMessage(recipientPhone, custVisitMsg, {
             name: recipientName,
             ticketId: slicedId,
-            technicianName: leadName,
-            date: scheduledDateStr,
-            time: scheduledTimeStr,
-            event_type: "field_visit_scheduled",
+            event_type: isScheduleChange ? "schedule_change" : "field_visit_scheduled",
           });
-          console.log("✅ Stage 3: Field Visit Scheduled WhatsApp sent successfully");
+          console.log("✅ Stage 3: Field Visit Customer WhatsApp sent successfully");
         } catch (waErr) {
-          console.warn("Stage 3: Field Visit WhatsApp dispatch skipped:", waErr);
+          console.warn("Stage 3: Customer Field Visit WhatsApp dispatch skipped:", waErr);
+        }
+      }
+
+      // 2. WhatsApp to Each Assigned Technician
+      for (const tech of techPayload) {
+        try {
+          const techObj = allTechnicians.find((t: any) => t.id === tech.technician_id);
+          if (techObj?.phone) {
+            const waTechMsg = isScheduleChange
+              ? whatsappTemplates.scheduleUpdateTechnician({
+                  ticketId: slicedId,
+                  customerName: recipientName,
+                  date: scheduledDateStr,
+                  time: scheduledTimeStr,
+                })
+              : whatsappTemplates.fieldVisitTechnician({
+                  ticketId: slicedId,
+                  customerName: recipientName,
+                  date: scheduledDateStr,
+                  time: scheduledTimeStr,
+                  location: ticket.location || "Customer Site",
+                  teamSize: fieldVisitSelectedTechs.length,
+                });
+
+            await sendWhatsAppMessage(techObj.phone, waTechMsg, {
+              ticketId: slicedId,
+              event_type: isScheduleChange ? "schedule_change" : "field_visit_assigned",
+            });
+          }
+        } catch (techWaErr) {
+          console.warn("Assigned technician WhatsApp dispatch skipped:", techWaErr);
         }
       }
 
@@ -1779,14 +1900,17 @@ const ComplaintDetail = () => {
     const slicedId = formatComplaintTicketId(ticket);
     const supervisorDisplayName = currentUserFullName || ticket.assigned_supervisor || 'Supervisor';
 
+    const now = new Date().toISOString();
+    const generatedHpCode = ticket.happiness_code || Math.floor(10000 + Math.random() * 90000).toString();
+
     try {
       if (ticket.customer_id) {
         await notificationService.insertNotification(
           ticket.customer_id,
           ticket.id,
           'success',
-          '📞 Remote Fix Resolved',
-          `Your issue for Ticket #${slicedId} was resolved remotely by ${supervisorDisplayName}.`,
+          '🛠️ Issue Resolved Remotely',
+          `Your issue for Ticket #${slicedId} was resolved remotely. Your Happiness Code is: ${generatedHpCode}.`,
           2,
           undefined,
           user?.id
@@ -1805,9 +1929,6 @@ const ComplaintDetail = () => {
     } catch (notificationError) {
       console.warn("Notification failed, continuing with save:", notificationError);
     }
-
-    const now = new Date().toISOString();
-    const generatedHpCode = ticket.happiness_code || Math.floor(10000 + Math.random() * 90000).toString();
 
     updateMutation.mutate({
       status: 'pending_verification',
@@ -1829,11 +1950,11 @@ const ComplaintDetail = () => {
         setRemoteResolutionNotes("");
         toast.success("Remote resolution saved & Happiness Code generated successfully.");
 
-        // 🔔 Stage 2: Automated WhatsApp on Remote Resolution
+        // 🔔 Stage 2: Automated WhatsApp on Remote Resolution (Requirement 2)
         const recipientPhone = getCustomerPhone(ticket) || customerPhone;
         const recipientName = getCustomerName(ticket);
         if (recipientPhone) {
-          const remoteMsg = getRemoteResolutionMessage({
+          const remoteMsg = whatsappTemplates.remoteFixCustomer({
             customerName: recipientName,
             ticketId: slicedId,
             happinessCode: generatedHpCode,
@@ -2129,7 +2250,12 @@ const ComplaintDetail = () => {
   };
 
   const saveJourneyStart = async (startLocJson: string | null) => {
-    // Notify Supervisor, Customer, and Admin
+    const techName = ticket.assigned_technician || currentUserFullName || "Technician";
+    const slicedId = formatComplaintTicketId(ticket);
+    const recipientPhone = getCustomerPhone(ticket) || customerPhone;
+    const recipientName = getCustomerName(ticket);
+
+    // Notify Supervisor, Customer, and Admin In-App (Requirement 6)
     let supervisorId = null;
     if (ticket.assigned_supervisor) {
       const supervisorProfile = await fetchProfileByName(ticket.assigned_supervisor);
@@ -2146,11 +2272,47 @@ const ComplaintDetail = () => {
       ticket.id,
       'info',
       '🚀 Journey Started',
-      `Technician ${ticket.assigned_technician || currentUserFullName} has started their journey for Ticket #${ticket.id.slice(0, 8)}.`,
+      `Technician ${techName} has started their journey for Ticket #${slicedId}.`,
       3,
       undefined,
       user?.id
     );
+
+    // 🔔 WhatsApp to Customer (Requirement 6)
+    if (recipientPhone) {
+      const custJourneyMsg = whatsappTemplates.journeyStartedCustomer({
+        customerName: recipientName,
+        techName: techName,
+        ticketId: slicedId,
+      });
+      sendWhatsAppMessage(recipientPhone, custJourneyMsg, {
+        name: recipientName,
+        ticketId: slicedId,
+        event_type: "journey_started_customer",
+      }).catch((e) => console.warn("Customer journey start WhatsApp error:", e));
+    }
+
+    // 🔔 WhatsApp to Admin (Requirement 6)
+    void (async () => {
+      try {
+        const adminProfiles = await notificationService.getAdminProfiles();
+        for (const admin of adminProfiles) {
+          if (admin.phone) {
+            const adminMsg = whatsappTemplates.journeyStartedAdmin({
+              techName: techName,
+              ticketId: slicedId,
+              customerName: recipientName,
+            });
+            await sendWhatsAppMessage(admin.phone, adminMsg, {
+              ticketId: slicedId,
+              event_type: "journey_started_admin",
+            });
+          }
+        }
+      } catch (adminWaErr) {
+        console.warn("Admin journey start WhatsApp error:", adminWaErr);
+      }
+    })();
 
     updateMutation.mutate({
       status: "dispatched",
@@ -2512,37 +2674,74 @@ const ComplaintDetail = () => {
           }
 
           const adminIds = await notificationService.getAdminUserIds();
-          const recipientIds = [ticket.customer_id, supervisorId, ...adminIds].filter(Boolean) as string[];
-
-          await notificationService.insertNotification(
-            recipientIds,
-            ticket.id,
-            'status_change',
-            '✅ Resolution Submitted',
-            `Ticket #${formatComplaintTicketId(ticket)} has been resolved by Lead Technician ${leadTechnicianName}. Pending supervisor QA verification.`,
-            6,
-            undefined,
-            user?.id
-          );
-
-          // 🔔 Stage 4: Automated WhatsApp on Technician Sign-Off
-          const recipientPhone = getCustomerPhone(ticket) || customerPhone;
-          const recipientName = getCustomerName(ticket);
           const slicedId = formatComplaintTicketId(ticket);
 
+          // 1. In-App to Admin & Supervisor (Requirement 8)
+          const adminSupRecipients = [supervisorId, ...adminIds].filter(Boolean) as string[];
+          if (adminSupRecipients.length > 0) {
+            await notificationService.insertNotification(
+              adminSupRecipients,
+              ticket.id,
+              'status_change',
+              '✅ Resolution Submitted',
+              `Resolution submitted for Ticket #${slicedId}. Awaiting QA verification.`,
+              6,
+              undefined,
+              user?.id
+            );
+          }
+
+          // In-App to Customer
+          if (ticket.customer_id) {
+            await notificationService.insertNotification(
+              ticket.customer_id,
+              ticket.id,
+              'status_change',
+              '✅ Work Completed',
+              `Work completed for Ticket #${slicedId}. Your Happiness Code is: ${generatedHappinessCode}.`,
+              6,
+              undefined,
+              user?.id
+            );
+          }
+
+          const recipientPhone = getCustomerPhone(ticket) || customerPhone;
+          const recipientName = getCustomerName(ticket);
+
+          // 2. WhatsApp to Customer (Requirement 8)
           if (recipientPhone) {
-            const signOffMsg = getTechnicianSignOffMessage({
+            const custMsg = whatsappTemplates.resolutionCustomer({
               customerName: recipientName,
               ticketId: slicedId,
               happinessCode: generatedHappinessCode,
             });
-            await sendWhatsAppMessage(recipientPhone, signOffMsg, {
+            await sendWhatsAppMessage(recipientPhone, custMsg, {
               name: recipientName,
               ticketId: slicedId,
-              event_type: "technician_signoff",
+              event_type: "resolution_submitted_customer",
               happiness_code: generatedHappinessCode,
             });
-            console.log("✅ Stage 4: Technician Sign-Off WhatsApp sent successfully");
+            console.log("✅ Stage 5: Resolution WhatsApp sent to customer");
+          }
+
+          // 3. WhatsApp to Admin (Requirement 8)
+          try {
+            const adminProfiles = await notificationService.getAdminProfiles();
+            for (const admin of adminProfiles) {
+              if (admin.phone) {
+                const adminMsg = whatsappTemplates.resolutionAdmin({
+                  ticketId: slicedId,
+                  techName: leadTechnicianName,
+                  customerName: recipientName,
+                });
+                await sendWhatsAppMessage(admin.phone, adminMsg, {
+                  ticketId: slicedId,
+                  event_type: "resolution_submitted_admin",
+                });
+              }
+            }
+          } catch (adminErr) {
+            console.warn("Resolution admin WhatsApp dispatch skipped:", adminErr);
           }
         } catch (bgErr) {
           console.warn("Background notification/WhatsApp error:", bgErr);
@@ -2822,38 +3021,82 @@ const ComplaintDetail = () => {
 
       await updateMutation.mutateAsync(payload);
 
-      if (ticket.customer_id) {
+      const recipientPhone = customerPhone || ticket.customer_phone || ticket.profiles?.phone;
+      const recipientName = ticket.customer_name || ticket.profiles?.full_name || "Customer";
+      const slicedId = formatComplaintTicketId(ticket);
+
+      // 1. In-App Notifications to ALL involved parties: Customer, Admin, Supervisor, Techs (Requirement 9)
+      const techIds = (ticket.complaint_technicians && ticket.complaint_technicians.length > 0)
+        ? ticket.complaint_technicians.map((ct: any) => ct.technician_id)
+        : (ticket.assigned_to ? [ticket.assigned_to] : []);
+
+      let supervisorId = null;
+      if (ticket.assigned_supervisor) {
+        const supProf = await fetchProfileByName(ticket.assigned_supervisor);
+        if (supProf) supervisorId = supProf.id;
+      }
+
+      const adminIds = await notificationService.getAdminUserIds();
+      const allInvolvedIds = Array.from(new Set([
+        ticket.customer_id,
+        supervisorId,
+        ...adminIds,
+        ...techIds,
+      ].filter(Boolean))) as string[];
+
+      if (allInvolvedIds.length > 0) {
         await notificationService.insertNotification(
-          ticket.customer_id,
+          allInvolvedIds,
           ticket.id,
           'success',
           '🎉 Ticket Closed',
-          `Ticket #${formatComplaintTicketId(ticket)} has been successfully closed. Thank you for choosing Brihaspathi.`,
+          `Ticket #${slicedId} has been successfully closed. Thank you for choosing Brihaspathi.`,
           6,
           undefined,
           user?.id
         );
       }
 
-      // 🔔 WhatsApp Dispatch on Final Closure
-      const recipientPhone = customerPhone || ticket.customer_phone || ticket.profiles?.phone;
-      const recipientName = ticket.customer_name || ticket.profiles?.full_name || "Customer";
-      const slicedId = formatComplaintTicketId(ticket);
-
+      // 2. WhatsApp to Customer (Requirement 9)
       if (recipientPhone) {
         try {
-          await supabase.functions.invoke('send-walkin-whatsapp', {
-            body: {
-              phone: recipientPhone,
-              name: recipientName,
-              ticketId: slicedId,
-              event_type: "closure",
-              message: `Dear Customer, your complaint ${slicedId} is successfully closed. Thank you for choosing Brihaspathi Technologies!`
-            }
+          const custCloseMsg = whatsappTemplates.ticketClosedCustomer({
+            customerName: recipientName,
+            ticketId: slicedId,
           });
-          console.log("✅ Final Closure WhatsApp sent successfully");
+          await sendWhatsAppMessage(recipientPhone, custCloseMsg, {
+            name: recipientName,
+            ticketId: slicedId,
+            event_type: "closure_customer",
+          });
         } catch (waErr) {
-          console.warn("Closure WhatsApp dispatch skipped:", waErr);
+          console.warn("Closure customer WhatsApp dispatch skipped:", waErr);
+        }
+      }
+
+      // 3. WhatsApp to ALL involved team members (Technicians & Supervisor)
+      const teamPhones: string[] = [];
+      for (const tid of techIds) {
+        const tObj = allTechnicians.find((t: any) => t.id === tid);
+        if (tObj?.phone && !teamPhones.includes(tObj.phone)) teamPhones.push(tObj.phone);
+      }
+      if (supervisorId) {
+        const supProf = await fetchProfileByName(ticket.assigned_supervisor);
+        if (supProf?.phone && !teamPhones.includes(supProf.phone)) teamPhones.push(supProf.phone);
+      }
+
+      for (const phone of teamPhones) {
+        try {
+          const teamCloseMsg = whatsappTemplates.ticketClosedInvolved({
+            ticketId: slicedId,
+            customerName: recipientName,
+          });
+          await sendWhatsAppMessage(phone, teamCloseMsg, {
+            ticketId: slicedId,
+            event_type: "closure_team",
+          });
+        } catch (teamWaErr) {
+          console.warn("Closure team WhatsApp dispatch skipped:", teamWaErr);
         }
       }
 
@@ -2882,13 +3125,36 @@ const ComplaintDetail = () => {
       }
       setIsFinalizingClosure(true);
       try {
-        if (ticket.customer_id) {
+        const recipientPhone = customerPhone || ticket.customer_phone || ticket.profiles?.phone;
+        const recipientName = ticket.customer_name || ticket.profiles?.full_name || "Customer";
+        const slicedId = formatComplaintTicketId(ticket);
+
+        // 1. In-App Notifications to ALL involved parties: Customer, Admin, Supervisor, Techs (Requirement 9)
+        const techIds = (ticket.complaint_technicians && ticket.complaint_technicians.length > 0)
+          ? ticket.complaint_technicians.map((ct: any) => ct.technician_id)
+          : (ticket.assigned_to ? [ticket.assigned_to] : []);
+
+        let supervisorId = null;
+        if (ticket.assigned_supervisor) {
+          const supProf = await fetchProfileByName(ticket.assigned_supervisor);
+          if (supProf) supervisorId = supProf.id;
+        }
+
+        const adminIds = await notificationService.getAdminUserIds();
+        const allInvolvedIds = Array.from(new Set([
+          ticket.customer_id,
+          supervisorId,
+          ...adminIds,
+          ...techIds,
+        ].filter(Boolean))) as string[];
+
+        if (allInvolvedIds.length > 0) {
           await notificationService.insertNotification(
-            ticket.customer_id,
+            allInvolvedIds,
             ticket.id,
             'success',
             '🎉 Ticket Closed',
-            `Ticket #${formatComplaintTicketId(ticket)} has been successfully closed. Thank you for choosing Brihaspathi.`,
+            `Ticket #${slicedId} has been successfully closed. Thank you for choosing Brihaspathi.`,
             6,
             undefined,
             user?.id
@@ -2902,25 +3168,46 @@ const ComplaintDetail = () => {
           closed_by: currentUserFullName || user?.email || "Supervisor"
         } as any);
 
-        // 🔔 Step 4: WhatsApp Dispatch on Final Closure
-        const recipientPhone = customerPhone || ticket.customer_phone || ticket.profiles?.phone;
-        const recipientName = ticket.customer_name || ticket.profiles?.full_name || "Customer";
-        const slicedId = formatComplaintTicketId(ticket);
-
+        // 2. WhatsApp to Customer (Requirement 9)
         if (recipientPhone) {
           try {
-            await supabase.functions.invoke('send-walkin-whatsapp', {
-              body: {
-                phone: recipientPhone,
-                name: recipientName,
-                ticketId: slicedId,
-                event_type: "closure",
-                message: `Dear Customer, your complaint ${slicedId} is successfully closed. Thank you for choosing Brihaspathi Technologies!`
-              }
+            const custCloseMsg = whatsappTemplates.ticketClosedCustomer({
+              customerName: recipientName,
+              ticketId: slicedId,
             });
-            console.log("✅ Step 4: Final Closure WhatsApp sent successfully");
+            await sendWhatsAppMessage(recipientPhone, custCloseMsg, {
+              name: recipientName,
+              ticketId: slicedId,
+              event_type: "closure_customer",
+            });
           } catch (waErr) {
-            console.warn("Step 4: Closure WhatsApp dispatch skipped:", waErr);
+            console.warn("Closure customer WhatsApp dispatch skipped:", waErr);
+          }
+        }
+
+        // 3. WhatsApp to ALL involved team members (Technicians & Supervisor)
+        const teamPhones: string[] = [];
+        for (const tid of techIds) {
+          const tObj = allTechnicians.find((t: any) => t.id === tid);
+          if (tObj?.phone && !teamPhones.includes(tObj.phone)) teamPhones.push(tObj.phone);
+        }
+        if (supervisorId) {
+          const supProf = await fetchProfileByName(ticket.assigned_supervisor);
+          if (supProf?.phone && !teamPhones.includes(supProf.phone)) teamPhones.push(supProf.phone);
+        }
+
+        for (const phone of teamPhones) {
+          try {
+            const teamCloseMsg = whatsappTemplates.ticketClosedInvolved({
+              ticketId: slicedId,
+              customerName: recipientName,
+            });
+            await sendWhatsAppMessage(phone, teamCloseMsg, {
+              ticketId: slicedId,
+              event_type: "closure_team",
+            });
+          } catch (teamWaErr) {
+            console.warn("Closure team WhatsApp dispatch skipped:", teamWaErr);
           }
         }
 
@@ -3329,11 +3616,7 @@ const ComplaintDetail = () => {
             <p className="text-slate-600 leading-relaxed">
               The complaint was registered by the customer. The Admin reviews the details and routes it to the designated supervisor.
             </p>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3 bg-white p-3 rounded-lg border">
-              <div>
-                <span className="text-xs text-muted-foreground block">Complaint Title</span>
-                <span className="font-medium text-slate-700 break-words" title={ticket.title}>{ticket.title}</span>
-              </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-3 bg-white p-3 rounded-lg border">
               <div>
                 <span className="text-xs text-muted-foreground block">Raised By</span>
                 <span className="font-medium text-slate-700">{ticket.customer_name || ticket.profiles?.full_name || ticket.created_by_name || 'Customer'}</span>
@@ -3933,9 +4216,6 @@ const ComplaintDetail = () => {
               {ticket.severity && <SeverityBadge severity={ticket.severity as any} />}
               {ticket.status && <StatusBadge status={getEffectiveComplaintStatus(ticket)} ticket={ticket} />}
             </div>
-            <h1 className="text-xl md:text-2xl font-display font-extrabold text-foreground tracking-tight break-words" title={ticket.title}>
-              {ticket.title}
-            </h1>
              <div className="text-xs text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1.5 min-w-0 w-full">
                <span className="flex items-center gap-1">
                  Customer: <span className="font-semibold text-foreground break-words">{ticket.customer_name || ticket.profiles?.full_name || ticket.created_by_name || "Customer"}</span>
@@ -3972,8 +4252,8 @@ const ComplaintDetail = () => {
         </div>
         
         <div className="flex flex-wrap items-center gap-2 w-full md:w-auto shrink-0 justify-start md:justify-end">
-          {/* 📲 WhatsApp Notification Center (Admin & Supervisor) */}
-          {(isAdmin || isSupervisor) && (
+          {/* 📲 WhatsApp Notification Center (Admin, Supervisor & Lead Technician) */}
+          {(isAdmin || isSupervisor || isLeadTechnician) && (
             <div className="shrink-0">
               <ManualWhatsAppButton
                 ticket={ticket}

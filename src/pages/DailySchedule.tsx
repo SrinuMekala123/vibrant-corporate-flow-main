@@ -832,12 +832,8 @@ const generateComplaintPrintHtml = (c: any, item: UnifiedScheduleTask, techList:
       <div class="section-header">Phase 1: Complaint Intake</div>
       <div class="section-body grid-2">
         <div class="field-group" style="grid-column: span 2;">
-          <div class="field-lbl">Issue Title</div>
-          <div class="field-val" style="font-weight: 700; color: #1e3a8a;">${escapeHtml(c.title || item.notes_description)}</div>
-        </div>
-        <div class="field-group" style="grid-column: span 2;">
-          <div class="field-lbl">Detailed Description</div>
-          <div class="field-val" style="white-space: pre-wrap;">${escapeHtml(c.description || "N/A")}</div>
+          <div class="field-lbl">Problem Description</div>
+          <div class="field-val" style="white-space: pre-wrap; font-weight: 600; color: #1e293b;">${escapeHtml(c.description || item.notes_description || "N/A")}</div>
         </div>
         <div class="field-group">
           <div class="field-lbl">Registered Date & Time</div>
@@ -3357,10 +3353,6 @@ const DailySchedule = () => {
                 <div className="space-y-3">
                   <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider border-b border-slate-200 pb-1">Complaint Details</h4>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Title</span>
-                      <p className="text-sm font-semibold text-slate-800">{fullDetails.title || viewingItem.notes_description}</p>
-                    </div>
                     <div className="space-y-1">
                       <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Severity</span>
                       <p className="text-sm font-semibold text-slate-800 capitalize">{fullDetails.severity || "N/A"}</p>

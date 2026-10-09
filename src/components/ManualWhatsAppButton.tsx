@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import { Loader2, Send, ExternalLink, Phone, User, MessageSquare, Sparkles, CheckCircle2 } from "lucide-react";
+import { Loader2, Send, ExternalLink, Phone, User, Users, Shield, MessageSquare, Sparkles, CheckCircle2 } from "lucide-react";
 import {
   sendWhatsAppMessage,
   getCustomerPhone,
@@ -20,17 +20,26 @@ import {
   getInstallationClosedMessage,
   getTicketFullSummaryMessage,
 } from "@/utils/whatsappService";
+import { whatsappTemplates } from "@/utils/whatsappTemplates";
 import { formatComplaintTicketId } from "@/services/complaintService";
 import { formatInstallationTicketId } from "@/services/installationService";
+import { useAuth } from "@/contexts/AuthContext";
+import { supabase } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
 
 export type WhatsAppStage =
   | "creation"
   | "remote_resolution"
   | "field_visit_scheduled"
+  | "reassign_old_tech"
+  | "reassign_new_tech"
+  | "journey_started"
+  | "resolution_submitted"
   | "technician_signoff"
   | "closed"
   | "summary";
+
+export type RecipientType = "customer" | "technician" | "admin";
 
 export interface ManualWhatsAppButtonProps {
   stage?: WhatsAppStage;
@@ -77,12 +86,30 @@ export function ManualWhatsAppButton({
   size = "sm",
   title,
 }: ManualWhatsAppButtonProps) {
+  const { user } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const [recipientType, setRecipientType] = useState<RecipientType>("customer");
   const [targetPhone, setTargetPhone] = useState("");
   const [targetName, setTargetName] = useState("");
   const [messageText, setMessageText] = useState("");
   const [activeStage, setActiveStage] = useState<WhatsAppStage>("creation");
+
+  // Technician & Admin state
+  const [techniciansList, setTechniciansList] = useState<Array<{ id: string; name: string; phone: string; is_lead?: boolean }>>([]);
+  const [selectedTechId, setSelectedTechId] = useState<string>("");
+  const [adminsList, setAdminsList] = useState<Array<{ id: string; name: string; phone: string }>>([]);
+  const [selectedAdminId, setSelectedAdminId] = useState<string>("");
+
+  const userRole = (user as any)?.role || "user";
+  const isAdminOrSupervisor = ["admin", "superadmin", "supervisor"].includes(userRole);
+  const isTechnician = userRole === "technician";
+
+  // Check if current user is lead technician
+  const isLeadTechnician = isTechnician && (
+    (ticket?.complaint_technicians && ticket.complaint_technicians.some((ct: any) => ct.technician_id === user?.id && ct.is_lead)) ||
+    (!ticket?.complaint_technicians?.length && ticket?.assigned_to === user?.id)
+  );
 
   const slicedId =
     ticketType === "installation"
@@ -92,31 +119,137 @@ export function ManualWhatsAppButton({
   const rawCustPhone = getCustomerPhone(ticket);
   const rawCustName = getCustomerName(ticket);
 
-  // Compute intelligent stage based on current ticket properties
-  const resolveDefaultStage = (): WhatsAppStage => {
+  // Load Technicians and Admins phone numbers when dialog opens
+  useEffect(() => {
+    if (!isOpen) return;
+
+    // 1. Fetch technicians from junction or ticket
+    const loadTechs = async () => {
+      const techs: Array<{ id: string; name: string; phone: string; is_lead?: boolean }> = [];
+      if (ticket?.complaint_technicians && ticket.complaint_technicians.length > 0) {
+        for (const ct of ticket.complaint_technicians) {
+          const tid = ct.technician_id;
+          const tName = ct.technician?.full_name || "Technician";
+          let tPhone = ct.technician?.phone || "";
+          if (!tPhone && tid) {
+            const { data: prof } = await supabase.from("profiles").select("phone, full_name").eq("id", tid).maybeSingle();
+            if (prof) {
+              tPhone = prof.phone || "";
+            }
+          }
+          techs.push({
+            id: tid,
+            name: tName,
+            phone: tPhone,
+            is_lead: Boolean(ct.is_lead),
+          });
+        }
+      } else if (ticket?.assigned_to) {
+        const { data: prof } = await supabase.from("profiles").select("id, full_name, phone").eq("id", ticket.assigned_to).maybeSingle();
+        if (prof) {
+          techs.push({
+            id: prof.id,
+            name: prof.full_name || ticket?.assigned_technician || "Technician",
+            phone: prof.phone || "",
+            is_lead: true,
+          });
+        }
+      } else if (ticket?.assigned_technician) {
+        techs.push({
+          id: "temp-1",
+          name: ticket.assigned_technician,
+          phone: "",
+          is_lead: true,
+        });
+      }
+      setTechniciansList(techs);
+      if (techs.length > 0 && !selectedTechId) {
+        setSelectedTechId(techs[0].id);
+      }
+    };
+
+    // 2. Fetch admins & supervisor
+    const loadAdmins = async () => {
+      const adms: Array<{ id: string; name: string; phone: string }> = [];
+      // Supervisor assigned to this ticket first
+      if (ticket?.assigned_supervisor) {
+        const { data: supProf } = await supabase
+          .from("profiles")
+          .select("id, full_name, phone")
+          .ilike("full_name", `%${ticket.assigned_supervisor}%`)
+          .maybeSingle();
+        if (supProf && supProf.phone) {
+          adms.push({ id: supProf.id, name: `${supProf.full_name} (Supervisor)`, phone: supProf.phone });
+        }
+      }
+
+      // System admins
+      const { data: adminProfiles } = await supabase
+        .from("profiles")
+        .select("id, full_name, phone")
+        .eq("role", "admin")
+        .not("phone", "is", null);
+
+      if (adminProfiles) {
+        for (const ap of adminProfiles) {
+          if (!adms.some((a) => a.id === ap.id) && ap.phone) {
+            adms.push({ id: ap.id, name: `${ap.full_name || "Admin"} (Admin)`, phone: ap.phone });
+          }
+        }
+      }
+
+      setAdminsList(adms);
+      if (adms.length > 0 && !selectedAdminId) {
+        setSelectedAdminId(adms[0].id);
+      }
+    };
+
+    loadTechs();
+    loadAdmins();
+  }, [isOpen, ticket]);
+
+  // Compute intelligent default stage based on current ticket state
+  const resolveDefaultStage = (recType: RecipientType): WhatsAppStage => {
     if (stage) return stage;
+
     if (ticketType === "installation") {
       if (ticket?.status === "closed" || ticket?.status === "force_closed" || ticket?.force_closed) return "closed";
       if (ticket?.status === "completed" || ticket?.current_phase >= 5) return "technician_signoff";
       if (ticket?.status === "Assigned" || ticket?.current_phase >= 2 || ticket?.scheduled_date) return "field_visit_scheduled";
       return "creation";
-    } else {
-      if (ticket?.status === "closed" || ticket?.status === "completed" || ticket?.current_phase >= 6) return "closed";
-      if (ticket?.status === "completed" || ticket?.current_phase >= 5 || ticket?.resolution_type === "on_site") return "technician_signoff";
-      if (ticket?.resolution_type === "remote_fixed" || ticket?.happiness_code || ticket?.status === "resolved_remotely") return "remote_resolution";
+    }
+
+    // Complaints logic
+    if (recType === "customer") {
+      if (ticket?.status === "closed" || ticket?.current_phase >= 6) return "closed";
+      if (ticket?.current_phase >= 5 || ticket?.happiness_code) return "resolution_submitted";
+      if (ticket?.resolution_type === "remote_fixed" || ticket?.status === "resolved_remotely") return "remote_resolution";
+      if (ticket?.status === "in_progress" || ticket?.status === "in-progress" || ticket?.current_phase >= 4) return "journey_started";
       if (ticket?.current_phase >= 3 || ticket?.status === "assigned" || ticket?.scheduled_date) return "field_visit_scheduled";
       return "creation";
+    } else if (recType === "technician") {
+      if (ticket?.reassignment_reason || ticket?.status === "rework_required") return "reassign_new_tech";
+      return "field_visit_scheduled";
+    } else {
+      // admin
+      if (ticket?.current_phase >= 5) return "resolution_submitted";
+      return "journey_started";
     }
   };
 
-  const generateTemplate = (stg: WhatsAppStage, name: string): string => {
-    const techName =
+  // Helper variables for template construction
+  const getTechName = () => {
+    return (
       customTechnicianName ||
       ticket?.assigned_technician ||
       ticket?.technician_name ||
-      "Field Technician";
+      techniciansList[0]?.name ||
+      "Technician"
+    );
+  };
 
-    const sDate =
+  const getFormattedDate = () => {
+    return (
       customScheduledDate ||
       (ticket?.scheduled_date
         ? new Date(`${ticket.scheduled_date}T00:00:00`).toLocaleDateString("en-IN", {
@@ -124,156 +257,210 @@ export function ManualWhatsAppButton({
             month: "short",
             year: "numeric",
           })
-        : "the scheduled date");
+        : "the scheduled date")
+    );
+  };
 
-    const sTime =
+  const getFormattedTime = () => {
+    return (
       customScheduledTime ||
-      (ticket?.scheduled_time ? ticket.scheduled_time.slice(0, 5) : "10:00 AM");
+      (ticket?.scheduled_time ? ticket.scheduled_time.slice(0, 5) : "10:00 AM")
+    );
+  };
 
-    const hpCode =
+  const getHappinessCodeVal = () => {
+    return (
       customHappinessCode ||
       ticket?.happiness_code ||
       ticket?.walk_in_happiness_code ||
-      "XXXXX";
+      "XXXXX"
+    );
+  };
 
-    const equipType =
-      customEquipmentType ||
-      ticket?.equipment_model ||
-      ticket?.brand ||
-      ticket?.equipment_details ||
-      "Equipment Installation";
+  const getLocationDisplay = () => {
+    return (
+      ticket?.location ||
+      ticket?.installation_site_address ||
+      ticket?.address ||
+      ticket?.customer_address ||
+      ticket?.site_address ||
+      "Customer Site"
+    );
+  };
+
+  // Standard Template Generator matching the 9-stage matrix and requirements
+  const generateTemplate = (stg: WhatsAppStage, recType: RecipientType, currentRecipientName: string): string => {
+    const techName = getTechName();
+    const sDate = getFormattedDate();
+    const sTime = getFormattedTime();
+    const hpCode = getHappinessCodeVal();
+    const loc = getLocationDisplay();
+    const custName = rawCustName || "Customer";
 
     if (stg === "summary") {
-      const locDisplay =
-        ticket?.location ||
-        ticket?.installation_site_address ||
-        ticket?.address ||
-        ticket?.customer_address ||
-        ticket?.site_address;
       return getTicketFullSummaryMessage({
         ticketType,
         ticketId: slicedId,
-        customerName: name,
-        titleOrEquipment: ticket?.title || equipType,
+        customerName: custName,
+        titleOrEquipment: ticket?.title || ticket?.brand || "Service Request",
         status: ticket?.status,
         phase: ticket?.current_phase,
         technicianName: techName,
-        scheduledDate: sDate !== "the scheduled date" ? sDate : (ticket?.scheduled_date || undefined),
-        scheduledTime: sTime !== "10:00 AM" ? sTime : (ticket?.scheduled_time || undefined),
-        happinessCode: hpCode !== "XXXXX" ? hpCode : (ticket?.happiness_code || undefined),
-        location: locDisplay || undefined,
-        notes: ticket?.resolution_notes || ticket?.notes || undefined,
+        scheduledDate: sDate !== "the scheduled date" ? sDate : undefined,
+        scheduledTime: sTime !== "10:00 AM" ? sTime : undefined,
+        happinessCode: hpCode !== "XXXXX" ? hpCode : undefined,
+        location: loc !== "Customer Site" ? loc : undefined,
+        notes: ticket?.resolution_notes || ticket?.description || undefined,
       });
     }
 
     if (ticketType === "installation") {
       switch (stg) {
         case "creation":
-          return getInstallationCreatedMessage({
-            customerName: name,
-            ticketId: slicedId,
-            equipmentType: equipType,
-          });
+          return getInstallationCreatedMessage({ customerName: custName, ticketId: slicedId, equipmentType: "Equipment" });
         case "field_visit_scheduled":
-          return getInstallationScheduledMessage({
-            customerName: name,
-            technicianName: techName,
-            ticketId: slicedId,
-            scheduledDate: sDate,
-            scheduledTime: sTime,
-          });
+          return getInstallationScheduledMessage({ customerName: custName, technicianName: techName, ticketId: slicedId, scheduledDate: sDate, scheduledTime: sTime });
         case "technician_signoff":
-          return getInstallationSignOffMessage({
-            customerName: name,
-            ticketId: slicedId,
-            happinessCode: hpCode,
-          });
+          return getInstallationSignOffMessage({ customerName: custName, ticketId: slicedId, happinessCode: hpCode });
         case "closed":
-          return getInstallationClosedMessage({
-            customerName: name,
-            ticketId: slicedId,
-          });
+          return getInstallationClosedMessage({ customerName: custName, ticketId: slicedId });
         default:
-          return getInstallationCreatedMessage({
-            customerName: name,
-            ticketId: slicedId,
-            equipmentType: equipType,
-          });
+          return getInstallationCreatedMessage({ customerName: custName, ticketId: slicedId, equipmentType: "Equipment" });
       }
-    } else {
+    }
+
+    // Complaints template resolution based on Recipient Type & Stage:
+    if (recType === "customer") {
       switch (stg) {
         case "creation":
-          return getComplaintCreatedMessage({
-            customerName: name,
-            ticketId: slicedId,
-          });
+          return whatsappTemplates.complaintCreatedCustomer({ customerName: currentRecipientName || custName, ticketId: slicedId });
         case "remote_resolution":
-          return getRemoteResolutionMessage({
-            customerName: name,
-            ticketId: slicedId,
-            happinessCode: hpCode,
-          });
+          return `Dear ${currentRecipientName || custName}, your complaint #${slicedId} has been resolved remotely. Your Happiness Code is: ${hpCode}. Please share this with our supervisor. - Brihaspathi Technologies`;
         case "field_visit_scheduled":
-          return getFieldVisitScheduledMessage({
-            customerName: name,
-            technicianName: techName,
-            ticketId: slicedId,
-            scheduledDate: sDate,
-            scheduledTime: sTime,
-          });
+          return `Dear ${currentRecipientName || custName}, Technician ${techName} has been assigned to your complaint #${slicedId}. The site visit is scheduled for ${sDate} at ${sTime}. - Brihaspathi Technologies`;
+        case "reassign_old_tech":
+        case "reassign_new_tech":
+          return `Update: Your visit for complaint #${slicedId} has been rescheduled. Technicians: ${techName}. Scheduled: ${sDate} at ${sTime}. - Brihaspathi Technologies`;
+        case "journey_started":
+          return `Your technician ${techName} has started their journey to your location for complaint #${slicedId}. - Brihaspathi Technologies`;
+        case "resolution_submitted":
         case "technician_signoff":
-          return getTechnicianSignOffMessage({
-            customerName: name,
-            ticketId: slicedId,
-            happinessCode: hpCode,
-          });
+          return `Work completed for #${slicedId}! Your Happiness Code is: ${hpCode}. Please share this with our supervisor. - Brihaspathi Technologies`;
         case "closed":
-          return getComplaintClosedMessage({
-            customerName: name,
-            ticketId: slicedId,
-          });
+          return `Your complaint #${slicedId} has been successfully closed. Thank you for choosing Brihaspathi!`;
         default:
-          return getComplaintCreatedMessage({
-            customerName: name,
-            ticketId: slicedId,
-          });
+          return whatsappTemplates.complaintCreatedCustomer({ customerName: currentRecipientName || custName, ticketId: slicedId });
+      }
+    } else if (recType === "technician") {
+      switch (stg) {
+        case "field_visit_scheduled":
+          return `New Job Assigned: Complaint #${slicedId} for ${custName} at ${loc}. Scheduled: ${sDate} at ${sTime}. Team size: ${techniciansList.length || 1} tech(s). - Brihaspathi Technologies`;
+        case "reassign_old_tech":
+          return `Job Update: Complaint #${slicedId} has been cancelled/reassigned. You are no longer required to visit ${custName}. - Brihaspathi Technologies`;
+        case "reassign_new_tech":
+          return `New Job Assigned (Reassignment): Complaint #${slicedId} for ${custName}. Scheduled: ${sDate} at ${sTime}. - Brihaspathi Technologies`;
+        default:
+          return `Job Update: Complaint #${slicedId} for ${custName}. Scheduled: ${sDate} at ${sTime}. - Brihaspathi Technologies`;
+      }
+    } else {
+      // Admin / Supervisor
+      switch (stg) {
+        case "journey_started":
+          return `Technician ${techName} started journey for #${slicedId} (Customer: ${custName}). - Brihaspathi Technologies`;
+        case "resolution_submitted":
+        case "technician_signoff":
+          return `Resolution submitted for #${slicedId} by ${techName}. Please verify. - Brihaspathi Technologies`;
+        default:
+          return `Update: Complaint #${slicedId} for ${custName} status: ${ticket?.status || "In-Progress"}. - Brihaspathi Technologies`;
       }
     }
   };
 
-  // Initialize dialog state with computed template
+  // Initialize dialog state when opened
   const handleOpenModal = (e?: React.MouseEvent) => {
     if (e) {
       e.preventDefault();
       e.stopPropagation();
     }
 
-    const phone = rawCustPhone;
-    const name = rawCustName;
-    const initialStage = resolveDefaultStage();
+    const initialRecType: RecipientType = "customer";
+    const initialStage = resolveDefaultStage(initialRecType);
 
-    setTargetPhone(phone);
-    setTargetName(name);
+    setRecipientType(initialRecType);
+    setTargetPhone(rawCustPhone);
+    setTargetName(rawCustName);
     setActiveStage(initialStage);
-    setMessageText(generateTemplate(initialStage, name));
+    setMessageText(generateTemplate(initialStage, initialRecType, rawCustName));
     setIsOpen(true);
   };
 
-  const handleStageChange = (newStage: WhatsAppStage) => {
+  // Change recipient type tab
+  const handleRecipientTypeChange = (newRecType: RecipientType) => {
+    setRecipientType(newRecType);
+    let newPhone = "";
+    let newName = "";
+
+    if (newRecType === "customer") {
+      newPhone = rawCustPhone;
+      newName = rawCustName;
+    } else if (newRecType === "technician") {
+      const chosenTech = techniciansList.find((t) => t.id === selectedTechId) || techniciansList[0];
+      newPhone = chosenTech?.phone || "";
+      newName = chosenTech?.name || getTechName();
+    } else {
+      const chosenAdmin = adminsList.find((a) => a.id === selectedAdminId) || adminsList[0];
+      newPhone = chosenAdmin?.phone || "";
+      newName = chosenAdmin?.name || "Admin/Supervisor";
+    }
+
+    setTargetPhone(newPhone);
+    setTargetName(newName);
+
+    const newStage = resolveDefaultStage(newRecType);
     setActiveStage(newStage);
-    setMessageText(generateTemplate(newStage, targetName || rawCustName));
+    setMessageText(generateTemplate(newStage, newRecType, newName));
   };
 
+  // Change selected technician from dropdown
+  const handleSelectTechnician = (techId: string) => {
+    setSelectedTechId(techId);
+    const chosen = techniciansList.find((t) => t.id === techId);
+    if (chosen) {
+      setTargetPhone(chosen.phone || "");
+      setTargetName(chosen.name);
+      setMessageText(generateTemplate(activeStage, "technician", chosen.name));
+    }
+  };
+
+  // Change selected admin from dropdown
+  const handleSelectAdmin = (adminId: string) => {
+    setSelectedAdminId(adminId);
+    const chosen = adminsList.find((a) => a.id === adminId);
+    if (chosen) {
+      setTargetPhone(chosen.phone || "");
+      setTargetName(chosen.name);
+      setMessageText(generateTemplate(activeStage, "admin", chosen.name));
+    }
+  };
+
+  // Change stage template button
+  const handleStageChange = (newStage: WhatsAppStage) => {
+    setActiveStage(newStage);
+    setMessageText(generateTemplate(newStage, recipientType, targetName));
+  };
+
+  // Open in WhatsApp Web / App directly
   const handleOpenWhatsAppWeb = () => {
     const cleanPhone = targetPhone.replace(/\D/g, "");
     const formattedPhone = cleanPhone.length === 10 ? `91${cleanPhone}` : cleanPhone;
-    const url = `https://api.whatsapp.com/send?phone=${formattedPhone}&text=${encodeURIComponent(messageText)}`;
+    const url = `https://wa.me/${formattedPhone}?text=${encodeURIComponent(messageText)}`;
     window.open(url, "_blank");
   };
 
+  // Automated Send via Edge function with fallback to WhatsApp Web
   const handleSendMessage = async () => {
     if (!targetPhone.trim()) {
-      toast.error("Please provide a valid customer phone number.");
+      toast.error(`Please provide a valid phone number for ${targetName || recipientType}.`);
       return;
     }
     if (!messageText.trim()) {
@@ -295,16 +482,15 @@ export function ManualWhatsAppButton({
       });
 
       if (res.success) {
-        toast.success(`WhatsApp message dispatched successfully to ${targetPhone}!`);
+        toast.success(`WhatsApp message dispatched successfully to ${targetName || targetPhone}!`);
         setIsOpen(false);
       } else {
-        console.warn("API WhatsApp gateway returned issue:", res.error);
         toast.info("WhatsApp API gateway unavailable. Opening WhatsApp Web / App directly...");
         handleOpenWhatsAppWeb();
         setIsOpen(false);
       }
     } catch (err: any) {
-      console.warn("Manual WhatsApp trigger failed:", err);
+      console.warn("Manual WhatsApp trigger fallback:", err);
       toast.info("Opening WhatsApp Web / App directly...");
       handleOpenWhatsAppWeb();
       setIsOpen(false);
@@ -313,26 +499,39 @@ export function ManualWhatsAppButton({
     }
   };
 
-  // Complaint Stages List
-  const complaintStages: { key: WhatsAppStage; label: string; icon: string }[] = [
-    { key: "creation", label: "1. Registered", icon: "📋" },
-    { key: "remote_resolution", label: "2. Remote Fix (Code)", icon: "📞" },
-    { key: "field_visit_scheduled", label: "3. Scheduled", icon: "📅" },
-    { key: "technician_signoff", label: "4. On-site Sign-Off", icon: "🔧" },
-    { key: "closed", label: "5. Closed", icon: "✓" },
-    { key: "summary", label: "📊 Share Summary (with Code)", icon: "📊" },
-  ];
+  // Available Stage Templates depending on Recipient Type & User Role
+  const getAvailableStages = (): { key: WhatsAppStage; label: string; icon: string }[] => {
+    if (recipientType === "customer") {
+      const stages: { key: WhatsAppStage; label: string; icon: string }[] = [
+        { key: "creation", label: "1. Registered", icon: "📋" },
+        { key: "field_visit_scheduled", label: "2. Visit Scheduled", icon: "📅" },
+        { key: "journey_started", label: "3. Journey Started", icon: "🚀" },
+        { key: "remote_resolution", label: "4. Remote Fixed (Code)", icon: "📞" },
+        { key: "resolution_submitted", label: "5. Work Done (Code)", icon: "🔧" },
+        { key: "closed", label: "6. Closed", icon: "✓" },
+        { key: "summary", label: "📊 Share Summary", icon: "📊" },
+      ];
+      // Lead Tech should only see stages they are involved in
+      if (!isAdminOrSupervisor && isLeadTechnician) {
+        return stages.filter((s) => ["journey_started", "resolution_submitted", "summary"].includes(s.key));
+      }
+      return stages;
+    }
 
-  // Installation Stages List
-  const installationStages: { key: WhatsAppStage; label: string; icon: string }[] = [
-    { key: "creation", label: "1. Created", icon: "📋" },
-    { key: "field_visit_scheduled", label: "2. Assigned & Scheduled", icon: "📅" },
-    { key: "technician_signoff", label: "3. Completed (Code)", icon: "🔐" },
-    { key: "closed", label: "4. Verified & Closed", icon: "✓" },
-    { key: "summary", label: "📊 Share Summary (with Code)", icon: "📊" },
-  ];
+    if (recipientType === "technician") {
+      return [
+        { key: "field_visit_scheduled", label: "1. Visit Assigned", icon: "📅" },
+        { key: "reassign_old_tech", label: "2. Cancel/Reassigned (Old Tech)", icon: "❌" },
+        { key: "reassign_new_tech", label: "3. Reassigned (New Tech)", icon: "🔄" },
+      ];
+    }
 
-  const stageList = ticketType === "installation" ? installationStages : complaintStages;
+    // Admin / Supervisor recipient
+    return [
+      { key: "journey_started", label: "1. Journey Started", icon: "🚀" },
+      { key: "resolution_submitted", label: "2. Resolution Submitted", icon: "📋" },
+    ];
+  };
 
   // Render Trigger Button
   const renderTrigger = () => {
@@ -382,17 +581,19 @@ export function ManualWhatsAppButton({
         )}
       >
         <WhatsAppIcon className="w-4 h-4 mr-1.5" />
-        <span>{buttonText || "Send WhatsApp"}</span>
+        <span>{buttonText || "WhatsApp Update"}</span>
       </Button>
     );
   };
+
+  const currentStageList = getAvailableStages();
 
   return (
     <>
       {renderTrigger()}
 
       <Dialog open={isOpen} onOpenChange={setIsOpen}>
-        <DialogContent className="sm:max-w-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xl rounded-2xl p-6">
+        <DialogContent className="sm:max-w-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xl rounded-2xl p-6">
           <DialogHeader>
             <div className="flex items-center justify-between">
               <DialogTitle className="flex items-center gap-2 text-base font-bold text-slate-900 dark:text-white">
@@ -406,23 +607,75 @@ export function ManualWhatsAppButton({
               </span>
             </div>
             <DialogDescription className="text-xs text-muted-foreground pt-1">
-              Select a stage template below or customize the message before sending to the customer.
+              Select recipient role and lifecycle template to preview and dispatch pre-filled WhatsApp messages.
             </DialogDescription>
           </DialogHeader>
 
-          {/* Interactive Template Stage Selector */}
+          {/* 1. Recipient Role Selection Tabs */}
           <div className="space-y-1.5 pt-1">
             <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500 block">
-              Choose Stage Template:
+              1. Select Recipient:
+            </label>
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={() => handleRecipientTypeChange("customer")}
+                className={cn(
+                  "flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl text-xs font-semibold border transition-all cursor-pointer",
+                  recipientType === "customer"
+                    ? "bg-emerald-600 text-white border-emerald-600 shadow-xs"
+                    : "bg-slate-50 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-100"
+                )}
+              >
+                <User className="w-3.5 h-3.5" />
+                <span>Customer</span>
+              </button>
+
+              {isAdminOrSupervisor && (
+                <button
+                  type="button"
+                  onClick={() => handleRecipientTypeChange("technician")}
+                  className={cn(
+                    "flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl text-xs font-semibold border transition-all cursor-pointer",
+                    recipientType === "technician"
+                      ? "bg-emerald-600 text-white border-emerald-600 shadow-xs"
+                      : "bg-slate-50 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-100"
+                  )}
+                >
+                  <Users className="w-3.5 h-3.5" />
+                  <span>Technicians</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => handleRecipientTypeChange("admin")}
+                className={cn(
+                  "flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl text-xs font-semibold border transition-all cursor-pointer",
+                  recipientType === "admin"
+                    ? "bg-emerald-600 text-white border-emerald-600 shadow-xs"
+                    : "bg-slate-50 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-100"
+                )}
+              >
+                <Shield className="w-3.5 h-3.5" />
+                <span>Admin / Supv</span>
+              </button>
+            </div>
+          </div>
+
+          {/* 2. Interactive Template Stage Selector */}
+          <div className="space-y-1.5 pt-1">
+            <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500 block">
+              2. Choose Stage Template:
             </label>
             <div className="flex flex-wrap gap-1.5">
-              {stageList.map((st) => (
+              {currentStageList.map((st) => (
                 <button
                   key={st.key}
                   type="button"
                   onClick={() => handleStageChange(st.key)}
                   className={cn(
-                    "text-xs px-2.5 py-1 rounded-lg font-semibold border transition-all cursor-pointer flex items-center gap-1",
+                    "text-xs px-2.5 py-1.5 rounded-lg font-semibold border transition-all cursor-pointer flex items-center gap-1",
                     activeStage === st.key
                       ? "bg-emerald-600 text-white border-emerald-600 shadow-xs"
                       : "bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700"
@@ -435,8 +688,48 @@ export function ManualWhatsAppButton({
             </div>
           </div>
 
-          <div className="space-y-3.5 pt-2">
-            {/* Customer & Phone fields */}
+          {/* 3. Recipient Details & Phone */}
+          <div className="space-y-3 pt-1">
+            {/* Technician Picker when Recipient = Technician */}
+            {recipientType === "technician" && techniciansList.length > 0 && (
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Select Specific Technician
+                </label>
+                <select
+                  value={selectedTechId}
+                  onChange={(e) => handleSelectTechnician(e.target.value)}
+                  className="w-full h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-800 text-xs bg-white dark:bg-slate-950 font-medium"
+                >
+                  {techniciansList.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name} {t.is_lead ? "(Lead)" : ""} {t.phone ? `(${t.phone})` : "(No phone)"}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {/* Admin Picker when Recipient = Admin */}
+            {recipientType === "admin" && adminsList.length > 0 && (
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Select Supervisor / Admin
+                </label>
+                <select
+                  value={selectedAdminId}
+                  onChange={(e) => handleSelectAdmin(e.target.value)}
+                  className="w-full h-9 px-3 rounded-lg border border-slate-200 dark:border-slate-800 text-xs bg-white dark:bg-slate-950 font-medium"
+                >
+                  {adminsList.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name} ({a.phone})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
@@ -448,9 +741,9 @@ export function ManualWhatsAppButton({
                     value={targetName}
                     onChange={(e) => {
                       setTargetName(e.target.value);
-                      setMessageText(generateTemplate(activeStage, e.target.value));
+                      setMessageText(generateTemplate(activeStage, recipientType, e.target.value));
                     }}
-                    placeholder="Customer Name"
+                    placeholder="Recipient Name"
                     className="pl-8 text-xs h-9 bg-white dark:bg-slate-950"
                   />
                 </div>
@@ -458,7 +751,7 @@ export function ManualWhatsAppButton({
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                  Recipient WhatsApp Phone *
+                  WhatsApp Phone *
                 </label>
                 <div className="relative">
                   <Phone className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-muted-foreground" />
@@ -480,7 +773,7 @@ export function ManualWhatsAppButton({
                 </label>
                 <button
                   type="button"
-                  onClick={() => setMessageText(generateTemplate(activeStage, targetName || rawCustName))}
+                  onClick={() => setMessageText(generateTemplate(activeStage, recipientType, targetName))}
                   className="text-[11px] text-emerald-600 hover:underline font-medium"
                 >
                   Reset Template
